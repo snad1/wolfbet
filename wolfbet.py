@@ -862,12 +862,13 @@ def build_dashboard_screen() -> str:
 
     Layout (always exactly term_h lines):
       Row 1:       Header bar
-      Row 2:       Balance / PnL / WR
+      Row 2:       Balance / PnL / Wagered / WR
       Row 3:       Bets / Wins / Losses / Streaks
-      Row 4:       Bet size / Strategy / BPM / Rate limit
-      Row 5:       Separator ───
-      Row 6:       Bets table header
-      Row 7..N-2:  Recent bets (flex — fills remaining, padded with blanks)
+      Row 4:       Bet / Strategy / Multiplier / BPM / Rate limit
+      Row 5:       Peak / Low bal / Best win / Worst loss / Avg P/L
+      Row 6:       Separator ───
+      Row 7:       Bets table header
+      Row 8..N-2:  Recent bets (flex — fills remaining, padded with blanks)
       Row N-1:     Separator ───
       Row N:       Status + controls
     """
@@ -932,7 +933,7 @@ def build_dashboard_screen() -> str:
         f"  {_a('dim', 'Str')} {sk}"
         f"  {_a('dim', f'Best W+{state.max_win_streak}/L-{state.max_loss_streak}')}")
 
-    # ── Row 4: Stats line 2 ──────────────────────────
+    # ── Row 4: Bet / Strategy / Rate ──────────────────
     rl = state.rate_remaining
     rl_c = "green" if rl > 100 else ("yellow" if rl > 20 else "red")
     spark = _sparkline(list(state.profit_history))
@@ -943,19 +944,40 @@ def build_dashboard_screen() -> str:
         s4 += f"  {_a('dim', 'Base')} {_a('bold_green', f'{state.base_bet:.8f}')}"
     s4 += (f"  {_a('dim', 'Hi')} {_a('white', f'{state.highest_bet:.8f}')}"
            f"  {_a('cyan', state.strategy)}"
+           f"  {_a('dim', f'{state.multiplier}x')}"
+           f"  {_a('dim', state.rule)}"
            f"  {_a('dim', 'BPM')} {_a('magenta', f'{state.bets_per_minute:.0f}')}"
            f"  {_a('dim', 'RL')} {_a(rl_c, f'{rl}/{state.rate_limit}')}"
            f"  {_a(sp_c, spark)}")
     add(s4)
 
-    # ── Row 5: Separator ──────────────────────────────
+    # ── Row 5: Extremes / Performance ────────────────
+    hi_bal = state.highest_balance if state.highest_balance > 0 else state.current_balance
+    lo_bal = state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance
+    avg_pnl = state.profit / state.total_bets if state.total_bets else 0.0
+    avg_c = "green" if avg_pnl >= 0 else "red"
+    avg_s = "+" if avg_pnl >= 0 else ""
+    bal_change = state.current_balance - state.start_balance
+    bc_c = "bold_green" if bal_change >= 0 else "bold_red"
+    bc_s = "+" if bal_change >= 0 else ""
+
+    s5 = (f" {_a('dim', 'Peak')} {_a('green', f'{hi_bal:.8f}')}"
+          f"  {_a('dim', 'Low')} {_a('red', f'{lo_bal:.8f}')}"
+          f"  {_a('dim', 'BestW')} {_a('green', f'+{state.highest_win:.8f}')}"
+          f"  {_a('dim', 'WorstL')} {_a('red', f'-{state.biggest_loss:.8f}')}"
+          f"  {_a('dim', 'Avg')} {_a(avg_c, f'{avg_s}{avg_pnl:.8f}')}"
+          f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
+    add(s5)
+
+    # ── Row 6: Separator ──────────────────────────────
     add(_a("dim_blue", "─" * term_w))
 
     # ── Row 6: Bets table header ──────────────────────
     add(_a("dim", f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
 
-    # ── Rows 7..N-2: Recent bet rows (flex area) ─────
-    bets_avail = max(0, term_h - 8)
+    # ── Rows 8..N-2: Recent bet rows (flex area) ─────
+    # top(7) + bottom(2) = 9 pinned lines
+    bets_avail = max(0, term_h - 9)
     recent = list(state.recent_bets)[-bets_avail:] if bets_avail > 0 else []
 
     for b in reversed(recent):
