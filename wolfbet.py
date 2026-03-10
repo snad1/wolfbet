@@ -1525,72 +1525,73 @@ def cmd_stats():
         return
     conn = _db_conn()
 
-    # session list
+    # session list — fetch all columns
     rows = conn.execute("""
         SELECT id, substr(started_at,1,16) AS started, substr(ended_at,1,16) AS ended,
-               UPPER(currency) AS cur, strategy, total_bets,
-               wins, losses, profit, wagered,
+               UPPER(currency) AS cur, strategy, multiplier, base_bet,
+               total_bets, wins, losses, profit, wagered,
+               start_balance, end_balance,
                max_win_streak, max_loss_streak
         FROM sessions ORDER BY id DESC LIMIT 20
     """).fetchall()
 
     console.print(Rule("[bold cyan]Session History (last 20)[/]"))
-    t = Table(box=box.SIMPLE, expand=True)
-    t.add_column("ID",       width=4,  justify="center")
-    t.add_column("Started",  width=16)
-    t.add_column("Ended",    width=16)
-    t.add_column("Cur",      width=5,  justify="center")
-    t.add_column("Strategy", width=16)
-    t.add_column("Bets",     width=7,  justify="right")
-    t.add_column("W/L",      width=11, justify="center")
-    t.add_column("Profit",   width=16, justify="right")
-    t.add_column("Wagered",  width=14, justify="right")
-    t.add_column("WR",       width=6,  justify="right")
-    t.add_column("Streaks",  width=10, justify="center")
 
+    # Print each session as a detailed block
     for r in rows:
-        sid, started, ended, cur, strat, bets, wins, losses, profit, wagered, mws, mls = r
+        sid, started, ended, cur, strat, mult, base, bets, wins, losses, \
+            profit, wagered, start_bal, end_bal, mws, mls = r
         bets = bets or 0
         wins = wins or 0
         losses = losses or 0
         profit = profit or 0
         wagered = wagered or 0
+        start_bal = start_bal or 0
+        end_bal = end_bal or 0
         mws = mws or 0
         mls = mls or 0
+        mult = mult or 0
+        base = base or 0
         pc = "green" if profit >= 0 else "red"
         ps = "+" if profit >= 0 else ""
-        wr = f"{wins/bets*100:.0f}%" if bets > 0 else "—"
-        t.add_row(
-            str(sid), (started or "")[:16], (ended or "running")[:16],
-            cur or "?", strat or "?",
-            str(bets), f"{wins}/{losses}",
-            Text(f"{ps}{profit:.8f}", style=pc),
-            f"{wagered:.8f}",
-            wr, f"W{mws}/L{mls}"
-        )
-    console.print(t)
+        wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+
+        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:16]} → {(ended or 'running')[:16]}[/]")
+        console.print(f"    [dim]Currency:[/] {cur or '?'}  [dim]Strategy:[/] {strat or '?'}  [dim]Mult:[/] {mult}x  [dim]Base:[/] {base:.8f}")
+        console.print(f"    [dim]Bets:[/] {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
+        console.print(f"    [dim]Profit:[/] [{pc}]{ps}{profit:.8f}[/]  [dim]Wagered:[/] {wagered:.8f}")
+        console.print(f"    [dim]Balance:[/] {start_bal:.8f} → {end_bal:.8f}")
+        console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}")
+        console.print()
 
     # totals
     totals = conn.execute("""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
                COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
-               COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0)
+               COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
+               COALESCE(MAX(profit),0), COALESCE(MIN(profit),0),
+               COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0)
         FROM sessions
     """).fetchone()
     conn.close()
 
-    sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered, best_ws, best_ls = totals
+    sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered, \
+        best_ws, best_ls, best_profit, worst_profit, max_bets, avg_bets = totals
     pc = "green" if tot_profit >= 0 else "red"
     ps = "+" if tot_profit >= 0 else ""
     wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "—"
+    bp_c = "green" if best_profit >= 0 else "red"
+    wp_c = "green" if worst_profit >= 0 else "red"
 
-    console.print()
-    console.print("[bold cyan]All-Time Totals[/]")
-    console.print(f"  [dim]Sessions:[/]   {sessions}")
-    console.print(f"  [dim]Bets:[/]       {tot_bets}  (W {tot_wins} / L {tot_losses}  WR {wr})")
-    console.print(f"  [dim]Wagered:[/]    {tot_wagered:.8f}")
-    console.print(f"  [dim]Profit:[/]     [{pc}]{ps}{tot_profit:.8f}[/]")
-    console.print(f"  [dim]Streaks:[/]    Best W+{best_ws}  Worst L-{best_ls}")
+    console.print(Rule("[bold cyan]All-Time Totals[/]"))
+    console.print(f"  [dim]Sessions:[/]      {sessions}")
+    console.print(f"  [dim]Total Bets:[/]    {tot_bets}  (W {tot_wins} / L {tot_losses}  WR {wr})")
+    console.print(f"  [dim]Wagered:[/]       {tot_wagered:.8f}")
+    console.print(f"  [dim]Profit:[/]        [{pc}]{ps}{tot_profit:.8f}[/]")
+    console.print(f"  [dim]Best Session:[/]  [{bp_c}]+{best_profit:.8f}[/]")
+    console.print(f"  [dim]Worst Session:[/] [{wp_c}]{worst_profit:.8f}[/]")
+    console.print(f"  [dim]Best Streaks:[/]  W+{best_ws}  L-{best_ls}")
+    console.print(f"  [dim]Max Bets/Ses:[/]  {max_bets}  [dim]Avg:[/] {avg_bets:.0f}")
     console.print()
 
 def cmd_last_bets(n: int):
