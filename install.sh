@@ -190,41 +190,7 @@ cmd_tmux() {
 }
 
 cmd_stats() {
-    DB="$HOME/.wolfbet_autobot.db"
-    if [ ! -f "$DB" ]; then
-        echo "No database found."
-        exit 1
-    fi
-
-    echo ""
-    echo "── WolfBet AutoBot — Session History ──"
-    echo ""
-
-    sqlite3 -column -header "$DB" << SQL
-SELECT
-    id,
-    substr(started_at, 1, 16)  AS started,
-    substr(ended_at,   1, 16)  AS ended,
-    UPPER(currency) AS cur,
-    strategy,
-    total_bets AS bets,
-    printf("%+.8f", profit)    AS profit,
-    printf("%.8f", wagered)    AS wagered,
-    printf("%.0f%%", CAST(wins AS REAL) / MAX(total_bets, 1) * 100) AS wr
-FROM sessions
-ORDER BY id DESC
-LIMIT 20;
-SQL
-
-    echo ""
-    echo "── All-Time Totals ──"
-    sqlite3 "$DB" << SQL
-SELECT printf("  Sessions : %d",    COUNT(*))          FROM sessions
-UNION ALL SELECT printf("  Bets     : %d",    SUM(total_bets))   FROM sessions
-UNION ALL SELECT printf("  Wagered  : %.8f",  SUM(wagered))      FROM sessions
-UNION ALL SELECT printf("  Profit   : %+.8f", SUM(profit))       FROM sessions;
-SQL
-    echo ""
+    "$PYTHON" "$BOT" --stats
 }
 
 cmd_presets() {
