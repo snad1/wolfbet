@@ -950,9 +950,10 @@ def build_dashboard_screen() -> str:
       Row 3:       Bets / Wins / Losses / Streaks
       Row 4:       Bet / Strategy / Multiplier / BPM / Rate limit
       Row 5:       Peak / Low bal / Best win / Worst loss / Avg P/L
-      Row 6:       Separator ───
-      Row 7:       Bets table header
-      Row 8..N-2:  Recent bets (flex — fills remaining, padded with blanks)
+      Row 6:       Sparkline (P/L graph)
+      Row 7:       Separator ───
+      Row 8:       Bets table header
+      Row 9..N-2:  Recent bets (flex — fills remaining, padded with blanks)
       Row N-1:     Separator ───
       Row N:       Status + controls
     """
@@ -1020,8 +1021,6 @@ def build_dashboard_screen() -> str:
     # ── Row 4: Bet / Strategy / Rate ──────────────────
     rl = state.rate_remaining
     rl_c = "green" if rl > 100 else ("yellow" if rl > 20 else "red")
-    spark = _sparkline(list(state.profit_history))
-    sp_c = "green" if p >= 0 else "red"
 
     s4 = (f" {_a('dim', 'Bet')} {_a('yellow', f'{state.current_bet:.8f}')}")
     if state.profit_increment and state.profit_threshold:
@@ -1033,8 +1032,7 @@ def build_dashboard_screen() -> str:
            f"  {_a('dim', 'BPS')} {_a('magenta', f'{state.bets_per_second:.1f}')}"
            f"  {_a('dim', 'BPM')} {_a('magenta', f'{state.bets_per_minute:.0f}')}"
            f"  {_a('dim', 'RL')} {_a(rl_c, f'{rl}/{state.rate_limit}')}"
-           f"  {_a('dim', 'Speed')} {_a('magenta', _fmt_speed())}"
-           f"  {_a(sp_c, spark)}")
+           f"  {_a('dim', 'Speed')} {_a('magenta', _fmt_speed())}")
     add(s4)
 
     # ── Row 5: Extremes / Performance ────────────────
@@ -1055,15 +1053,20 @@ def build_dashboard_screen() -> str:
           f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
     add(s5)
 
-    # ── Row 6: Separator ──────────────────────────────
+    # ── Row 6: Sparkline ─────────────────────────────
+    spark = _sparkline(list(state.profit_history))
+    sp_c = "green" if p >= 0 else "red"
+    add(f" {_a('dim', 'P/L')} {_a(sp_c, spark)}")
+
+    # ── Row 7: Separator ──────────────────────────────
     add(_a("dim_blue", "─" * term_w))
 
-    # ── Row 6: Bets table header ──────────────────────
+    # ── Row 8: Bets table header ──────────────────────
     add(_a("dim", f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
 
-    # ── Rows 8..N-2: Recent bet rows (flex area) ─────
-    # top(7) + bottom(2) = 9 pinned lines
-    bets_avail = max(0, term_h - 9)
+    # ── Rows 9..N-2: Recent bet rows (flex area) ─────
+    # top(8) + bottom(2) = 10 pinned lines
+    bets_avail = max(0, term_h - 10)
     recent = list(state.recent_bets)[-bets_avail:] if bets_avail > 0 else []
 
     for b in reversed(recent):
