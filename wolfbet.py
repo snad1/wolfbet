@@ -1734,9 +1734,9 @@ def _load_and_connect():
 
 def main():
     parser = argparse.ArgumentParser(description="WolfBet AutoBot v" + VERSION)
+    parser.add_argument("--resume",  action="store_true", help="Skip wizard, reuse saved config")
+    parser.add_argument("--daemon",  action="store_true", help="Run in background (no TUI, implies --resume)")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--resume",  action="store_true", help="Skip wizard, reuse saved config")
-    group.add_argument("--daemon",  action="store_true", help="Run in background (no TUI)")
     group.add_argument("--status",  action="store_true", help="Show status of running session")
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
@@ -1753,6 +1753,10 @@ def main():
     # ── Verbose mode ──────────────────────────────────────
     if args.verbose:
         logger.setLevel(logging.DEBUG)
+
+    # ── --daemon implies --resume ──────────────────────────
+    if args.daemon:
+        args.resume = True
 
     # ── Quick commands (no DB/state needed) ───────────────
     if args.status:
