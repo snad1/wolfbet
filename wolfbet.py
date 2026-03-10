@@ -836,8 +836,29 @@ def _sparkline(values) -> str:
     span   = mx - mn or 1
     return "".join(SPARKLINE[int((v - mn) / span * 7)] for v in values)
 
+# ── ANSI color helpers (no Rich dependency for TUI) ─────
+_RST  = "\033[0m"
+_BOLD = "\033[1m"
+_DIM  = "\033[2m"
+_COLORS = {
+    "red": "\033[31m", "green": "\033[32m", "yellow": "\033[33m",
+    "blue": "\033[34m", "magenta": "\033[35m", "cyan": "\033[36m",
+    "white": "\033[37m",
+    "bg_blue": "\033[44m",
+    "bold_red": "\033[1;31m", "bold_green": "\033[1;32m",
+    "bold_yellow": "\033[1;33m", "bold_cyan": "\033[1;36m",
+    "bold_white": "\033[1;37m",
+    "dim_blue": "\033[2;34m", "dim": "\033[2m",
+}
+_CLR_EOL = "\033[K"
+
+def _a(color: str, text: str) -> str:
+    """Apply ANSI color to text and reset."""
+    code = _COLORS.get(color, "")
+    return f"{code}{text}{_RST}" if code else text
+
 def build_dashboard_screen() -> str:
-    """Build full-screen dashboard as a single ANSI string ready to write.
+    """Build full-screen dashboard using direct ANSI codes.
 
     Layout (always exactly term_h lines):
       Row 1:       Header bar
@@ -850,8 +871,6 @@ def build_dashboard_screen() -> str:
       Row N-1:     Separator ───
       Row N:       Status + controls
     """
-    from io import StringIO
-
     try:
         term_size = os.get_terminal_size()
         term_h = term_size.lines
@@ -860,138 +879,117 @@ def build_dashboard_screen() -> str:
         term_h = 24
         term_w = 80
 
-    # Create a dedicated Console that renders to a buffer
-    buf = StringIO()
-    rc = Console(file=buf, width=term_w, force_terminal=True, color_system="auto",
-                 highlight=False, markup=True)
+    lines = []  # list of raw ANSI strings, one per terminal row
 
-    def emit(t: Text):
-        rc.print(t, overflow="ellipsis", no_wrap=True, crop=True)
+    def add(s: str):
+        lines.append(f"{s}{_CLR_EOL}")
 
-    def emit_blank():
-        buf.write("\033[K\n")
+    def add_blank():
+        lines.append(_CLR_EOL)
 
     # ── Row 1: Header ─────────────────────────────────
     uptime = str(timedelta(seconds=int(time.time() - state.session_start)))
     if state.running and not state.paused:
-        st_str, st_sty = "LIVE", "bold green"
+        st_ind = _a("bold_green", "● LIVE")
     elif state.paused:
-        st_str, st_sty = "PAUSED", "bold yellow"
+        st_ind = _a("bold_yellow", "● PAUSED")
     else:
-        st_str, st_sty = "STOPPED", "bold red"
+        st_ind = _a("bold_red", "● STOPPED")
 
-    hdr = Text()
-    hdr.append("─── ", style="dim blue")
-    hdr.append(f"WolfBet v{VERSION}", style="bold cyan")
-    hdr.append(f"  #{state.session_id}  {uptime}", style="white")
-    hdr.append(f"  ● {st_str} ", style=st_sty)
-    hdr.append("─" * max(0, term_w - len(hdr.plain) - 1), style="dim blue")
-    emit(hdr)
+    hdr_text = f"WolfBet v{VERSION}  #{state.session_id}  {uptime}  "
+    # visible chars used: 4 + len(hdr_text) + len("● STATUS") + 1
+    hdr_vis = 4 + len(hdr_text) + len("● STOPPED") + 1
+    fill = max(0, term_w - hdr_vis)
+    add(f"{_a('dim_blue', '─── ')}{_a('bold_cyan', f'WolfBet v{VERSION}')}"
+        f"{_a('white', f'  #{state.session_id}  {uptime}')}  {st_ind} "
+        f"{_a('dim_blue', '─' * fill)}")
 
     # ── Row 2: Balance bar ────────────────────────────
     p = state.profit
     ps = "+" if p >= 0 else ""
-    pc = "green" if p >= 0 else "red"
+    pc = "bold_green" if p >= 0 else "bold_red"
     wr = (state.wins / state.total_bets * 100) if state.total_bets else 0
+    wr_c = "bold_green" if wr >= 50 else "bold_red"
 
-    bal = Text()
-    bal.append(" BAL ", style="bold white on blue")
-    bal.append(f" {state.current_balance:.8f} {state.currency.upper()}", style="bold white")
-    bal.append("  PnL ", style="dim")
-    bal.append(f"{ps}{p:.8f}", style=f"bold {pc}")
-    bal.append("  WAG ", style="dim")
-    bal.append(f"{state.wagered:.8f}", style="yellow")
-    bal.append("  WR ", style="dim")
-    wr_sty = "bold green" if wr >= 50 else "bold red"
-    bal.append(f"{wr:.1f}%", style=wr_sty)
-    emit(bal)
+    add(f"{_COLORS['bg_blue']}{_BOLD}{_COLORS['white']} BAL {_RST} "
+        f"{_a('bold_white', f'{state.current_balance:.8f} {state.currency.upper()}')}"
+        f"  {_a('dim', 'PnL')} {_a(pc, f'{ps}{p:.8f}')}"
+        f"  {_a('dim', 'WAG')} {_a('yellow', f'{state.wagered:.8f}')}"
+        f"  {_a('dim', 'WR')} {_a(wr_c, f'{wr:.1f}%')}")
 
     # ── Row 3: Stats line 1 ──────────────────────────
     cs = state.current_streak
-    sk_txt = f"W+{cs}" if cs > 0 else (f"L{cs}" if cs < 0 else "—")
-    sk_sty = "green" if cs > 0 else ("red" if cs < 0 else "dim")
+    if cs > 0:
+        sk = _a("green", f"W+{cs}")
+    elif cs < 0:
+        sk = _a("red", f"L{cs}")
+    else:
+        sk = _a("dim", "—")
 
-    s1 = Text()
-    s1.append(" Bets ", style="dim")
-    s1.append(str(state.total_bets), style="bold white")
-    s1.append("  W ", style="green")
-    s1.append(str(state.wins), style="bold green")
-    s1.append("  L ", style="red")
-    s1.append(str(state.losses), style="bold red")
-    s1.append("  Str ", style="dim")
-    s1.append(sk_txt, style=sk_sty)
-    s1.append(f"  Best W+{state.max_win_streak}/L-{state.max_loss_streak}", style="dim")
-    emit(s1)
+    add(f" {_a('dim', 'Bets')} {_a('bold_white', str(state.total_bets))}"
+        f"  {_a('green', 'W')} {_a('bold_green', str(state.wins))}"
+        f"  {_a('red', 'L')} {_a('bold_red', str(state.losses))}"
+        f"  {_a('dim', 'Str')} {sk}"
+        f"  {_a('dim', f'Best W+{state.max_win_streak}/L-{state.max_loss_streak}')}")
 
     # ── Row 4: Stats line 2 ──────────────────────────
-    rl_sty = "green" if state.rate_remaining > 100 else ("yellow" if state.rate_remaining > 20 else "red")
-
-    s2 = Text()
-    s2.append(" Bet ", style="dim")
-    s2.append(f"{state.current_bet:.8f}", style="yellow")
-    if state.profit_increment and state.profit_threshold:
-        s2.append("  Base ", style="dim")
-        s2.append(f"{state.base_bet:.8f}", style="bold green")
-    s2.append("  Hi ", style="dim")
-    s2.append(f"{state.highest_bet:.8f}", style="white")
-    s2.append(f"  {state.strategy}", style="cyan")
-    s2.append(f"  BPM ", style="dim")
-    s2.append(f"{state.bets_per_minute:.0f}", style="magenta")
-    s2.append(f"  RL ", style="dim")
-    s2.append(f"{state.rate_remaining}/{state.rate_limit}", style=rl_sty)
-    s2.append("  ", style="dim")
+    rl = state.rate_remaining
+    rl_c = "green" if rl > 100 else ("yellow" if rl > 20 else "red")
     spark = _sparkline(list(state.profit_history))
-    s2.append(spark, style="green" if p >= 0 else "red")
-    emit(s2)
+    sp_c = "green" if p >= 0 else "red"
+
+    s4 = (f" {_a('dim', 'Bet')} {_a('yellow', f'{state.current_bet:.8f}')}")
+    if state.profit_increment and state.profit_threshold:
+        s4 += f"  {_a('dim', 'Base')} {_a('bold_green', f'{state.base_bet:.8f}')}"
+    s4 += (f"  {_a('dim', 'Hi')} {_a('white', f'{state.highest_bet:.8f}')}"
+           f"  {_a('cyan', state.strategy)}"
+           f"  {_a('dim', 'BPM')} {_a('magenta', f'{state.bets_per_minute:.0f}')}"
+           f"  {_a('dim', 'RL')} {_a(rl_c, f'{rl}/{state.rate_limit}')}"
+           f"  {_a(sp_c, spark)}")
+    add(s4)
 
     # ── Row 5: Separator ──────────────────────────────
-    emit(Text("─" * term_w, style="dim blue"))
+    add(_a("dim_blue", "─" * term_w))
 
     # ── Row 6: Bets table header ──────────────────────
-    bh = Text()
-    bh.append(f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}", style="dim")
-    emit(bh)
+    add(_a("dim", f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
 
     # ── Rows 7..N-2: Recent bet rows (flex area) ─────
-    # top(6) + bottom(2) = 8 pinned lines
     bets_avail = max(0, term_h - 8)
     recent = list(state.recent_bets)[-bets_avail:] if bets_avail > 0 else []
 
     for b in reversed(recent):
-        row = Text()
-        brc = "bold green" if b["state"] == "win" else "bold red"
-        pcs = "green" if b["pnl"] >= 0 else "red"
-        sign = "+" if b["pnl"] >= 0 else ""
-        wl  = " W " if b["state"] == "win" else " L "
+        bwl_c = "bold_green" if b["state"] == "win" else "bold_red"
+        bwl_t = " W " if b["state"] == "win" else " L "
+        bpnl_c = "green" if b["pnl"] >= 0 else "red"
+        bsign = "+" if b["pnl"] >= 0 else ""
+        bn = b["n"]
+        btm = b["time"]
+        bamt = b["amt"]
+        broll = b["roll"]
+        bpnl = b["pnl"]
+        bbal = b["bal"]
+        add(f"{_a('dim', f'{bn:>6}')}"
+            f"  {_a('dim', f'{btm:<9}')}"
+            f" {_a('white', f'{bamt:>14.8f}')}"
+            f"  {_a('white', f'{broll:>7.2f}')}"
+            f"  {_a(bwl_c, bwl_t)}"
+            f"  {_a(bpnl_c, f'{bsign}{bpnl:>14.8f}')}"
+            f"  {_a('white', f'{bbal:>14.8f}')}")
 
-        row.append(f"{b['n']:>6}", style="dim")
-        row.append(f"  {b['time']:<9}", style="dim")
-        row.append(f" {b['amt']:>14.8f}", style="white")
-        row.append(f"  {b['roll']:>7.2f}", style="white")
-        row.append(f"  ", style="dim")
-        row.append(wl, style=brc)
-        row.append(f"  {sign}{b['pnl']:>14.8f}", style=pcs)
-        row.append(f"  {b['bal']:>14.8f}", style="white")
-        emit(row)
-
-    # Pad empty lines to fill the flex area
+    # Pad empty lines
     for _ in range(bets_avail - len(recent)):
-        emit_blank()
+        add_blank()
 
     # ── Row N-1: Bottom separator ─────────────────────
-    emit(Text("─" * term_w, style="dim blue"))
+    add(_a("dim_blue", "─" * term_w))
 
     # ── Row N: Status + controls ──────────────────────
-    status_line = Text()
     status_txt = state.status[:60]
-    status_line.append(f" {status_txt}", style="white")
-    keys = "  [P]ause [R]esume [Q]uit [H]istory"
-    pad = max(0, term_w - len(status_txt) - len(keys) - 2)
-    status_line.append(" " * pad, style="dim")
-    status_line.append(keys, style="dim")
-    emit(status_line)
+    keys = "[P]ause [R]esume [Q]uit [H]istory"
+    add(f" {_a('white', status_txt)}  {_a('dim', keys)}")
 
-    return buf.getvalue()
+    return "\r\n".join(lines)
 
 # ══════════════════════════════════════════════════════════
 #  HISTORY SCREEN
