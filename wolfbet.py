@@ -19,7 +19,7 @@ try:
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
-    from rich.live import Live
+    # from rich.live import Live  # replaced by direct ANSI rendering
     from rich.prompt import Prompt, Confirm
     from rich.align import Align
     from rich.rule import Rule
@@ -836,22 +836,36 @@ def _sparkline(values) -> str:
     span   = mx - mn or 1
     return "".join(SPARKLINE[int((v - mn) / span * 7)] for v in values)
 
-def build_dashboard() -> Table:
-    """Build a full-screen dashboard pinned like htop.
+def _render_line(text_obj: Text, width: int) -> str:
+    """Render a Rich Text object to an ANSI string, truncated/padded to exact width."""
+    with console.capture() as cap:
+        console.print(text_obj, end="", width=width, overflow="ellipsis", no_wrap=True, crop=True)
+    line = cap.get()
+    # Strip any trailing newline from capture
+    return line.rstrip("\n")
+
+def build_dashboard_lines() -> list:
+    """Build full-screen dashboard as a list of ANSI-rendered lines.
 
     Layout (always exactly term_h lines):
-      Top (pinned):    header, balance, stats1, stats2, separator  = 5 lines
-      Middle (flex):   bets_header + bet rows + empty padding      = term_h - 7 lines
-      Bottom (pinned): separator, status/controls                  = 2 lines
+      Row 1:       Header bar
+      Row 2:       Balance / PnL / WR
+      Row 3:       Bets / Wins / Losses / Streaks
+      Row 4:       Bet size / Strategy / BPM / Rate limit
+      Row 5:       Separator ───
+      Row 6:       Bets table header
+      Row 7..N-2:  Recent bets (flex — fills remaining, padded with blanks)
+      Row N-1:     Separator ───
+      Row N:       Status + controls
     """
     term_h = console.size.height
     term_w = console.size.width
+    lines = []
 
-    dash = Table(box=None, show_header=False, expand=True, padding=0,
-                 show_edge=False, show_footer=False)
-    dash.add_column(ratio=1)
+    def add(t: Text):
+        lines.append(_render_line(t, term_w))
 
-    # ── TOP: Row 1 — Header ─────────────────────────
+    # ── Row 1: Header ─────────────────────────────────
     uptime = str(timedelta(seconds=int(time.time() - state.session_start)))
     if state.running and not state.paused:
         st_str, st_sty = "LIVE", "bold green"
@@ -866,9 +880,9 @@ def build_dashboard() -> Table:
     hdr.append(f"  #{state.session_id}  {uptime}", style="white")
     hdr.append(f"  ● {st_str} ", style=st_sty)
     hdr.append("─" * max(0, term_w - len(hdr.plain) - 1), style="dim blue")
-    dash.add_row(hdr)
+    add(hdr)
 
-    # ── TOP: Row 2 — Balance bar ────────────────────
+    # ── Row 2: Balance bar ────────────────────────────
     p = state.profit
     ps = "+" if p >= 0 else ""
     pc = "green" if p >= 0 else "red"
@@ -884,9 +898,9 @@ def build_dashboard() -> Table:
     bal.append("  WR ", style="dim")
     wr_sty = "bold green" if wr >= 50 else "bold red"
     bal.append(f"{wr:.1f}%", style=wr_sty)
-    dash.add_row(bal)
+    add(bal)
 
-    # ── TOP: Row 3 — Stats line 1 ──────────────────
+    # ── Row 3: Stats line 1 ──────────────────────────
     cs = state.current_streak
     sk_txt = f"W+{cs}" if cs > 0 else (f"L{cs}" if cs < 0 else "—")
     sk_sty = "green" if cs > 0 else ("red" if cs < 0 else "dim")
@@ -901,9 +915,9 @@ def build_dashboard() -> Table:
     s1.append("  Str ", style="dim")
     s1.append(sk_txt, style=sk_sty)
     s1.append(f"  Best W+{state.max_win_streak}/L-{state.max_loss_streak}", style="dim")
-    dash.add_row(s1)
+    add(s1)
 
-    # ── TOP: Row 4 — Stats line 2 ──────────────────
+    # ── Row 4: Stats line 2 ──────────────────────────
     rl_sty = "green" if state.rate_remaining > 100 else ("yellow" if state.rate_remaining > 20 else "red")
 
     s2 = Text()
@@ -922,51 +936,46 @@ def build_dashboard() -> Table:
     s2.append("  ", style="dim")
     spark = _sparkline(list(state.profit_history))
     s2.append(spark, style="green" if p >= 0 else "red")
-    dash.add_row(s2)
+    add(s2)
 
-    # ── TOP: Row 5 — Separator ──────────────────────
-    dash.add_row(Text("─" * term_w, style="dim blue"))
+    # ── Row 5: Separator ──────────────────────────────
+    add(Text("─" * term_w, style="dim blue"))
 
-    # ── MIDDLE: Recent bets (fills remaining space) ──
-    # Pinned lines: top(5) + bottom(2) = 7  |  bets header = 1
-    # Available for bet rows = term_h - 7 - 1 (header)
+    # ── Row 6: Bets table header ──────────────────────
+    bh = Text()
+    bh.append(f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}", style="dim")
+    add(bh)
+
+    # ── Rows 7..N-2: Recent bet rows (flex area) ─────
+    # top(6) + bottom(2) = 8 pinned lines
     bets_avail = max(0, term_h - 8)
-
-    bets_t = Table(box=None, expand=True, show_edge=False, padding=(0, 1),
-                   show_header=True, header_style="dim")
-    bets_t.add_column("#",      style="dim",  width=6, justify="right")
-    bets_t.add_column("Time",   style="dim",  width=9)
-    bets_t.add_column("Amount",               width=14, justify="right")
-    bets_t.add_column("Roll",                 width=7,  justify="right")
-    bets_t.add_column("W/L",                  width=4,  justify="center")
-    bets_t.add_column("P/L",                  width=15, justify="right")
-    bets_t.add_column("Balance",              width=15, justify="right")
-
     recent = list(state.recent_bets)[-bets_avail:] if bets_avail > 0 else []
-    num_bet_rows = len(recent)
+
     for b in reversed(recent):
+        row = Text()
         rc  = "bold green" if b["state"] == "win" else "bold red"
         pcs = "green" if b["pnl"] >= 0 else "red"
         sign = "+" if b["pnl"] >= 0 else ""
-        bets_t.add_row(
-            str(b["n"]), b["time"], f"{b['amt']:.8f}", f"{b['roll']:.2f}",
-            Text("W" if b["state"] == "win" else "L", style=rc),
-            Text(f"{sign}{b['pnl']:.8f}", style=pcs),
-            f"{b['bal']:.8f}",
-        )
+        wl  = " W " if b["state"] == "win" else " L "
 
-    # Pad empty rows so the middle section always fills the space
-    empty_rows = bets_avail - num_bet_rows
-    for _ in range(empty_rows):
-        bets_t.add_row("", "", "", "", "", "", "")
+        row.append(f"{b['n']:>6}", style="dim")
+        row.append(f"  {b['time']:<9}", style="dim")
+        row.append(f" {b['amt']:>14.8f}", style="white")
+        row.append(f"  {b['roll']:>7.2f}", style="white")
+        row.append(f"  ", style="dim")
+        row.append(wl, style=rc)
+        row.append(f"  {sign}{b['pnl']:>14.8f}", style=pcs)
+        row.append(f"  {b['bal']:>14.8f}", style="white")
+        add(row)
 
-    dash.add_row(bets_t)
+    # Pad empty lines to fill the flex area
+    for _ in range(bets_avail - len(recent)):
+        lines.append("")
 
-    # ── BOTTOM (pinned): Separator + Status ──────────
-    sb = Text()
-    sb.append("─" * term_w, style="dim blue")
-    dash.add_row(sb)
+    # ── Row N-1: Bottom separator ─────────────────────
+    add(Text("─" * term_w, style="dim blue"))
 
+    # ── Row N: Status + controls ──────────────────────
     status_line = Text()
     status_txt = state.status[:60]
     status_line.append(f" {status_txt}", style="white")
@@ -974,9 +983,9 @@ def build_dashboard() -> Table:
     pad = max(0, term_w - len(status_txt) - len(keys) - 2)
     status_line.append(" " * pad, style="dim")
     status_line.append(keys, style="dim")
-    dash.add_row(status_line)
+    add(status_line)
 
-    return dash
+    return lines
 
 # ══════════════════════════════════════════════════════════
 #  HISTORY SCREEN
@@ -1860,17 +1869,59 @@ def main():
         return
 
     # ══════════════════════════════════════════════════════
-    #  TUI MODE — interactive dashboard
+    #  TUI MODE — interactive dashboard (direct ANSI rendering)
     # ══════════════════════════════════════════════════════
     t_input = threading.Thread(target=input_handler, daemon=True, name="InputHandler")
     t_input.start()
 
-    with Live(build_dashboard(), refresh_per_second=2, screen=True, console=console) as live:
+    # Save terminal state and enter alternate screen buffer
+    _old_term = None
+    try:
+        import termios
+        _old_term = termios.tcgetattr(sys.stdin.fileno())
+    except Exception:
+        pass
+
+    sys.stdout.write("\033[?1049h")  # enter alt screen
+    sys.stdout.write("\033[?25l")    # hide cursor
+    sys.stdout.flush()
+
+    try:
         while state.running or state.paused:
-            live.update(build_dashboard())
+            dash_lines = build_dashboard_lines()
+            # Move cursor to top-left, then write each line
+            sys.stdout.write("\033[H")  # cursor home
+            for line in dash_lines:
+                # Write line + clear to end of line + newline
+                sys.stdout.write(f"{line}\033[K\n")
+            sys.stdout.flush()
             time.sleep(0.5)
-        live.update(build_dashboard())
+
+        # Final render
+        dash_lines = build_dashboard_lines()
+        sys.stdout.write("\033[H")
+        for line in dash_lines:
+            sys.stdout.write(f"{line}\033[K\n")
+        sys.stdout.flush()
         time.sleep(1.0)
+    finally:
+        # Restore terminal: leave alt screen, show cursor, reset attributes
+        sys.stdout.write("\033[?25h")    # show cursor
+        sys.stdout.write("\033[?1049l")  # leave alt screen
+        sys.stdout.write("\033[0m")      # reset colors/attrs
+        sys.stdout.flush()
+        # Restore terminal settings if saved
+        if _old_term is not None:
+            try:
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _old_term)
+            except Exception:
+                pass
+        # As a fallback, run stty sane
+        try:
+            os.system("stty sane 2>/dev/null")
+        except Exception:
+            pass
 
     _db_save_session()
     _cleanup_state_file()
