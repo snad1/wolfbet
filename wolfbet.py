@@ -1639,7 +1639,7 @@ def cmd_stats():
 
     # session list — fetch all columns
     rows = conn.execute("""
-        SELECT id, substr(started_at,1,16) AS started, substr(ended_at,1,16) AS ended,
+        SELECT id, substr(started_at,1,19) AS started, substr(ended_at,1,19) AS ended,
                UPPER(currency) AS cur, strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
@@ -1688,7 +1688,7 @@ def cmd_stats():
         avg_c = "green" if avg_pnl >= 0 else "red"
         avg_s = "+" if avg_pnl >= 0 else ""
 
-        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:16]} → {(ended or 'running')[:16]}[/]")
+        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:19]} → {(ended or 'running')[:19]}[/]")
         console.print(f"    [dim]Currency:[/] {cur or '?'}  [dim]Strategy:[/] {strat or '?'}  [dim]Mult:[/] {mult}x  [dim]Base:[/] {base:.8f}")
         console.print(f"    [dim]Bets:[/] {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
         console.print(f"    [dim]Speed:[/] {bps:.1f} avg/s  {bpm:.0f} avg/m  [dim]BPS:[/] {s_low_bps}-{s_peak_bps}/s  [dim]BPM:[/] {s_low_bpm}-{s_peak_bpm}/m")
