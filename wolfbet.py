@@ -1512,21 +1512,35 @@ def _print_summary():
     console.print()
     console.print(Rule("[bold cyan]Session Complete[/]"))
     console.print()
+    # Finalize the current second/minute counters so peak/low are accurate
+    if state._bets_this_sec > 0:
+        if state._bets_this_sec > state.peak_bps:
+            state.peak_bps = state._bets_this_sec
+        if state._bets_this_sec < state.low_bps:
+            state.low_bps = state._bets_this_sec
+    if state._bets_this_min > 0:
+        if state._bets_this_min > state.peak_bpm:
+            state.peak_bpm = state._bets_this_min
+        if state._bets_this_min < state.low_bpm:
+            state.low_bpm = state._bets_this_min
+
+    lo_bps = int(state.low_bps) if state.low_bps != float("inf") else 0
+    lo_bpm = int(state.low_bpm) if state.low_bpm != float("inf") else 0
+
     pairs = [
         ("Session ID",      str(state.session_id)),
         ("Total Bets",      str(state.total_bets)),
         ("Wins / Losses",   f"{state.wins} / {state.losses}"),
         ("Win Rate",        f"{state.wins/state.total_bets*100:.1f}%" if state.total_bets else "—"),
         ("Profit",          f"{state.profit:+.8f} {state.currency.upper()}"),
+        ("Start Balance",   f"{state.start_balance:.8f} {state.currency.upper()}"),
         ("Final Balance",   f"{state.current_balance:.8f} {state.currency.upper()}"),
         ("Streaks",         f"W+{state.max_win_streak}  L-{state.max_loss_streak}"),
         ("Best Win",        f"+{state.highest_win:.8f}"),
         ("Worst Loss",      f"-{state.biggest_loss:.8f}"),
         ("Speed",           f"{state.bets_per_second:.1f}/s  {state.bets_per_minute:.0f}/m  "
-                            f"Range: {int(state.low_bps) if state.low_bps != float('inf') else 0}"
-                            f"-{int(state.peak_bps)}/s  "
-                            f"{int(state.low_bpm) if state.low_bpm != float('inf') else 0}"
-                            f"-{int(state.peak_bpm)}/m"),
+                            f"Range: {lo_bps}-{int(state.peak_bps)}/s  "
+                            f"{lo_bpm}-{int(state.peak_bpm)}/m"),
     ]
     for k, v in pairs:
         sty = "green" if ("profit" in k.lower() and state.profit >= 0) else (
