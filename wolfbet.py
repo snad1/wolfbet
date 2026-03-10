@@ -836,16 +836,8 @@ def _sparkline(values) -> str:
     span   = mx - mn or 1
     return "".join(SPARKLINE[int((v - mn) / span * 7)] for v in values)
 
-def _render_line(text_obj: Text, width: int) -> str:
-    """Render a Rich Text object to an ANSI string, truncated/padded to exact width."""
-    with console.capture() as cap:
-        console.print(text_obj, end="", width=width, overflow="ellipsis", no_wrap=True, crop=True)
-    line = cap.get()
-    # Strip any trailing newline from capture
-    return line.rstrip("\n")
-
-def build_dashboard_lines() -> list:
-    """Build full-screen dashboard as a list of ANSI-rendered lines.
+def build_dashboard_screen() -> str:
+    """Build full-screen dashboard as a single ANSI string ready to write.
 
     Layout (always exactly term_h lines):
       Row 1:       Header bar
@@ -858,12 +850,26 @@ def build_dashboard_lines() -> list:
       Row N-1:     Separator ───
       Row N:       Status + controls
     """
-    term_h = console.size.height
-    term_w = console.size.width
-    lines = []
+    from io import StringIO
 
-    def add(t: Text):
-        lines.append(_render_line(t, term_w))
+    try:
+        term_size = os.get_terminal_size()
+        term_h = term_size.lines
+        term_w = term_size.columns
+    except OSError:
+        term_h = 24
+        term_w = 80
+
+    # Create a dedicated Console that renders to a buffer
+    buf = StringIO()
+    rc = Console(file=buf, width=term_w, force_terminal=True, color_system="auto",
+                 highlight=False, markup=True)
+
+    def emit(t: Text):
+        rc.print(t, overflow="ellipsis", no_wrap=True, crop=True)
+
+    def emit_blank():
+        buf.write("\033[K\n")
 
     # ── Row 1: Header ─────────────────────────────────
     uptime = str(timedelta(seconds=int(time.time() - state.session_start)))
@@ -880,7 +886,7 @@ def build_dashboard_lines() -> list:
     hdr.append(f"  #{state.session_id}  {uptime}", style="white")
     hdr.append(f"  ● {st_str} ", style=st_sty)
     hdr.append("─" * max(0, term_w - len(hdr.plain) - 1), style="dim blue")
-    add(hdr)
+    emit(hdr)
 
     # ── Row 2: Balance bar ────────────────────────────
     p = state.profit
@@ -898,7 +904,7 @@ def build_dashboard_lines() -> list:
     bal.append("  WR ", style="dim")
     wr_sty = "bold green" if wr >= 50 else "bold red"
     bal.append(f"{wr:.1f}%", style=wr_sty)
-    add(bal)
+    emit(bal)
 
     # ── Row 3: Stats line 1 ──────────────────────────
     cs = state.current_streak
@@ -915,7 +921,7 @@ def build_dashboard_lines() -> list:
     s1.append("  Str ", style="dim")
     s1.append(sk_txt, style=sk_sty)
     s1.append(f"  Best W+{state.max_win_streak}/L-{state.max_loss_streak}", style="dim")
-    add(s1)
+    emit(s1)
 
     # ── Row 4: Stats line 2 ──────────────────────────
     rl_sty = "green" if state.rate_remaining > 100 else ("yellow" if state.rate_remaining > 20 else "red")
@@ -936,15 +942,15 @@ def build_dashboard_lines() -> list:
     s2.append("  ", style="dim")
     spark = _sparkline(list(state.profit_history))
     s2.append(spark, style="green" if p >= 0 else "red")
-    add(s2)
+    emit(s2)
 
     # ── Row 5: Separator ──────────────────────────────
-    add(Text("─" * term_w, style="dim blue"))
+    emit(Text("─" * term_w, style="dim blue"))
 
     # ── Row 6: Bets table header ──────────────────────
     bh = Text()
     bh.append(f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}", style="dim")
-    add(bh)
+    emit(bh)
 
     # ── Rows 7..N-2: Recent bet rows (flex area) ─────
     # top(6) + bottom(2) = 8 pinned lines
@@ -953,7 +959,7 @@ def build_dashboard_lines() -> list:
 
     for b in reversed(recent):
         row = Text()
-        rc  = "bold green" if b["state"] == "win" else "bold red"
+        brc = "bold green" if b["state"] == "win" else "bold red"
         pcs = "green" if b["pnl"] >= 0 else "red"
         sign = "+" if b["pnl"] >= 0 else ""
         wl  = " W " if b["state"] == "win" else " L "
@@ -963,17 +969,17 @@ def build_dashboard_lines() -> list:
         row.append(f" {b['amt']:>14.8f}", style="white")
         row.append(f"  {b['roll']:>7.2f}", style="white")
         row.append(f"  ", style="dim")
-        row.append(wl, style=rc)
+        row.append(wl, style=brc)
         row.append(f"  {sign}{b['pnl']:>14.8f}", style=pcs)
         row.append(f"  {b['bal']:>14.8f}", style="white")
-        add(row)
+        emit(row)
 
     # Pad empty lines to fill the flex area
     for _ in range(bets_avail - len(recent)):
-        lines.append("")
+        emit_blank()
 
     # ── Row N-1: Bottom separator ─────────────────────
-    add(Text("─" * term_w, style="dim blue"))
+    emit(Text("─" * term_w, style="dim blue"))
 
     # ── Row N: Status + controls ──────────────────────
     status_line = Text()
@@ -983,9 +989,9 @@ def build_dashboard_lines() -> list:
     pad = max(0, term_w - len(status_txt) - len(keys) - 2)
     status_line.append(" " * pad, style="dim")
     status_line.append(keys, style="dim")
-    add(status_line)
+    emit(status_line)
 
-    return lines
+    return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════
 #  HISTORY SCREEN
@@ -1903,40 +1909,37 @@ def main():
 
     try:
         while state.running or state.paused:
-            dash_lines = build_dashboard_lines()
-            # Move cursor to top-left, then write each line
             sys.stdout.write("\033[H")  # cursor home
-            for line in dash_lines:
-                # Write line + clear to end of line + newline
-                sys.stdout.write(f"{line}\033[K\n")
+            sys.stdout.write(build_dashboard_screen())
             sys.stdout.flush()
             time.sleep(0.5)
 
         # Final render
-        dash_lines = build_dashboard_lines()
         sys.stdout.write("\033[H")
-        for line in dash_lines:
-            sys.stdout.write(f"{line}\033[K\n")
+        sys.stdout.write(build_dashboard_screen())
         sys.stdout.flush()
         time.sleep(1.0)
     finally:
-        # Restore terminal: leave alt screen, show cursor, reset attributes
+        # Restore terminal — order matters
         sys.stdout.write("\033[?25h")    # show cursor
         sys.stdout.write("\033[?1049l")  # leave alt screen
         sys.stdout.write("\033[0m")      # reset colors/attrs
         sys.stdout.flush()
-        # Restore terminal settings if saved
+        # Restore saved terminal settings first
         if _old_term is not None:
             try:
                 import termios
-                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _old_term)
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, _old_term)
             except Exception:
                 pass
-        # As a fallback, run stty sane
+        # Always run stty sane to fix any remaining issues (raw mode, echo, etc.)
+        import subprocess
         try:
-            os.system("stty sane 2>/dev/null")
+            subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)
         except Exception:
             pass
+        sys.stdout.write("\033c")  # full terminal reset (RIS)
+        sys.stdout.flush()
 
     _db_save_session()
     _cleanup_state_file()
