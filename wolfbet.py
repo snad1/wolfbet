@@ -91,7 +91,17 @@ def init_db():
             start_balance REAL,
             end_balance   REAL,
             max_win_streak  INTEGER DEFAULT 0,
-            max_loss_streak INTEGER DEFAULT 0
+            max_loss_streak INTEGER DEFAULT 0,
+            highest_balance REAL DEFAULT 0,
+            lowest_balance  REAL DEFAULT 0,
+            highest_win     REAL DEFAULT 0,
+            biggest_loss    REAL DEFAULT 0,
+            bets_per_minute REAL DEFAULT 0,
+            bets_per_second REAL DEFAULT 0,
+            peak_bps        REAL DEFAULT 0,
+            low_bps         REAL DEFAULT 0,
+            peak_bpm        REAL DEFAULT 0,
+            low_bpm         REAL DEFAULT 0
         )
     """)
     c.execute("""
@@ -110,6 +120,23 @@ def init_db():
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         )
     """)
+    # Migrate existing databases — add new columns if missing
+    for col, defn in [
+        ("highest_balance", "REAL DEFAULT 0"),
+        ("lowest_balance",  "REAL DEFAULT 0"),
+        ("highest_win",     "REAL DEFAULT 0"),
+        ("biggest_loss",    "REAL DEFAULT 0"),
+        ("bets_per_minute", "REAL DEFAULT 0"),
+        ("bets_per_second", "REAL DEFAULT 0"),
+        ("peak_bps",        "REAL DEFAULT 0"),
+        ("low_bps",         "REAL DEFAULT 0"),
+        ("peak_bpm",        "REAL DEFAULT 0"),
+        ("low_bpm",         "REAL DEFAULT 0"),
+    ]:
+        try:
+            c.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -361,6 +388,15 @@ class BotState:
 
         # ── performance ──
         self.bets_per_minute = 0.0
+        self.bets_per_second = 0.0
+        self.peak_bps        = 0.0   # highest bets in a single second
+        self.low_bps         = float("inf")  # lowest bets in a completed second
+        self.peak_bpm        = 0.0   # highest bets in a single minute
+        self.low_bpm         = float("inf")  # lowest bets in a completed minute
+        self._bets_this_sec  = 0     # counter for current second
+        self._bets_this_min  = 0     # counter for current minute
+        self._current_sec    = 0     # which second we're in (int timestamp)
+        self._current_min    = 0     # which minute we're in (int timestamp // 60)
         self.bet_timestamps  = deque(maxlen=120)
 
         # ── profit history for sparkline / graph ──
@@ -661,13 +697,40 @@ def betting_loop():
                 "bal":   new_balance,
             })
 
-            # bets-per-minute calculation
+            # bets-per-minute / bets-per-second (session average)
             now = time.time()
-            state.bet_timestamps.append(now)
-            if len(state.bet_timestamps) >= 2:
-                span = state.bet_timestamps[-1] - state.bet_timestamps[0]
-                if span > 0:
-                    state.bets_per_minute = (len(state.bet_timestamps) / span) * 60
+            elapsed = now - state.session_start
+            if elapsed > 0:
+                bps = state.total_bets / elapsed
+                state.bets_per_second = bps
+                state.bets_per_minute = bps * 60
+
+            # track peak/low bets per individual second and minute
+            sec_key = int(now)
+            min_key = int(now) // 60
+            if sec_key != state._current_sec:
+                # new second — record the old second's count
+                if state._current_sec > 0 and state._bets_this_sec > 0:
+                    if state._bets_this_sec > state.peak_bps:
+                        state.peak_bps = state._bets_this_sec
+                    if state._bets_this_sec < state.low_bps:
+                        state.low_bps = state._bets_this_sec
+                state._current_sec = sec_key
+                state._bets_this_sec = 1
+            else:
+                state._bets_this_sec += 1
+
+            if min_key != state._current_min:
+                # new minute — record the old minute's count
+                if state._current_min > 0 and state._bets_this_min > 0:
+                    if state._bets_this_min > state.peak_bpm:
+                        state.peak_bpm = state._bets_this_min
+                    if state._bets_this_min < state.low_bpm:
+                        state.low_bpm = state._bets_this_min
+                state._current_min = min_key
+                state._bets_this_min = 1
+            else:
+                state._bets_this_min += 1
 
             sign  = "+" if raw_profit >= 0 else ""
             emoji = "W" if bet_state == "win" else "L"
@@ -747,17 +810,29 @@ def _db_save_bet(bet_data: dict, profit: float, balance: float):
 def _db_save_session():
     try:
         conn = _db_conn()
+        lo_bal = state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance
         conn.execute("""
             UPDATE sessions SET
                 ended_at=?, total_bets=?, wins=?, losses=?,
                 profit=?, wagered=?, end_balance=?,
-                max_win_streak=?, max_loss_streak=?
+                max_win_streak=?, max_loss_streak=?,
+                highest_balance=?, lowest_balance=?,
+                highest_win=?, biggest_loss=?,
+                bets_per_minute=?, bets_per_second=?,
+                peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
             WHERE id=?
         """, (
             datetime.now().isoformat(),
             state.total_bets, state.wins, state.losses,
             state.profit, state.wagered, state.current_balance,
             state.max_win_streak, state.max_loss_streak,
+            state.highest_balance, lo_bal,
+            state.highest_win, state.biggest_loss,
+            state.bets_per_minute, state.bets_per_second,
+            state.peak_bps,
+            state.low_bps if state.low_bps != float("inf") else 0,
+            state.peak_bpm,
+            state.low_bpm if state.low_bpm != float("inf") else 0,
             state.session_id,
         ))
         conn.commit()
@@ -805,6 +880,7 @@ def _save_state_file():
             "highest_win": state.highest_win,
             "biggest_loss": state.biggest_loss,
             "bets_per_minute": state.bets_per_minute,
+            "bets_per_second": state.bets_per_second,
             "rate_remaining": state.rate_remaining,
             "rate_limit": state.rate_limit,
             "uptime_sec": int(time.time() - state.session_start),
@@ -856,6 +932,14 @@ def _a(color: str, text: str) -> str:
     """Apply ANSI color to text and reset."""
     code = _COLORS.get(color, "")
     return f"{code}{text}{_RST}" if code else text
+
+def _fmt_speed() -> str:
+    """Format peak/low BPS and BPM as a compact range string."""
+    pbps = int(state.peak_bps) if state.peak_bps > 0 else 0
+    lbps = int(state.low_bps) if state.low_bps != float("inf") else 0
+    pbpm = int(state.peak_bpm) if state.peak_bpm > 0 else 0
+    lbpm = int(state.low_bpm) if state.low_bpm != float("inf") else 0
+    return f"{lbps}-{pbps}/s {lbpm}-{pbpm}/m"
 
 def build_dashboard_screen() -> str:
     """Build full-screen dashboard using direct ANSI codes.
@@ -946,8 +1030,10 @@ def build_dashboard_screen() -> str:
            f"  {_a('cyan', state.strategy)}"
            f"  {_a('dim', f'{state.multiplier}x')}"
            f"  {_a('dim', state.rule)}"
+           f"  {_a('dim', 'BPS')} {_a('magenta', f'{state.bets_per_second:.1f}')}"
            f"  {_a('dim', 'BPM')} {_a('magenta', f'{state.bets_per_minute:.0f}')}"
            f"  {_a('dim', 'RL')} {_a(rl_c, f'{rl}/{state.rate_limit}')}"
+           f"  {_a('dim', 'Speed')} {_a('magenta', _fmt_speed())}"
            f"  {_a(sp_c, spark)}")
     add(s4)
 
@@ -1434,7 +1520,13 @@ def _print_summary():
         ("Profit",          f"{state.profit:+.8f} {state.currency.upper()}"),
         ("Final Balance",   f"{state.current_balance:.8f} {state.currency.upper()}"),
         ("Streaks",         f"W+{state.max_win_streak}  L-{state.max_loss_streak}"),
-        ("Avg Bets/min",    f"{state.bets_per_minute:.1f}"),
+        ("Best Win",        f"+{state.highest_win:.8f}"),
+        ("Worst Loss",      f"-{state.biggest_loss:.8f}"),
+        ("Speed",           f"{state.bets_per_second:.1f}/s  {state.bets_per_minute:.0f}/m  "
+                            f"Range: {int(state.low_bps) if state.low_bps != float('inf') else 0}"
+                            f"-{int(state.peak_bps)}/s  "
+                            f"{int(state.low_bpm) if state.low_bpm != float('inf') else 0}"
+                            f"-{int(state.peak_bpm)}/m"),
     ]
     for k, v in pairs:
         sty = "green" if ("profit" in k.lower() and state.profit >= 0) else (
@@ -1551,7 +1643,12 @@ def cmd_stats():
                UPPER(currency) AS cur, strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
-               max_win_streak, max_loss_streak
+               max_win_streak, max_loss_streak,
+               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
         FROM sessions ORDER BY id DESC LIMIT 20
     """).fetchall()
 
@@ -1560,7 +1657,9 @@ def cmd_stats():
     # Print each session as a detailed block
     for r in rows:
         sid, started, ended, cur, strat, mult, base, bets, wins, losses, \
-            profit, wagered, start_bal, end_bal, mws, mls = r
+            profit, wagered, start_bal, end_bal, mws, mls, \
+            hi_bal, lo_bal, hi_win, big_loss, \
+            bpm, bps, s_peak_bps, s_low_bps, s_peak_bpm, s_low_bpm = r
         bets = bets or 0
         wins = wins or 0
         losses = losses or 0
@@ -1572,16 +1671,30 @@ def cmd_stats():
         mls = mls or 0
         mult = mult or 0
         base = base or 0
+        hi_bal = hi_bal or 0
+        lo_bal = lo_bal or 0
+        hi_win = hi_win or 0
+        big_loss = big_loss or 0
+        bpm = bpm or 0
+        bps = bps or 0
+        s_peak_bps = int(s_peak_bps or 0)
+        s_low_bps = int(s_low_bps or 0)
+        s_peak_bpm = int(s_peak_bpm or 0)
+        s_low_bpm = int(s_low_bpm or 0)
         pc = "green" if profit >= 0 else "red"
         ps = "+" if profit >= 0 else ""
         wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+        avg_pnl = profit / bets if bets > 0 else 0
+        avg_c = "green" if avg_pnl >= 0 else "red"
+        avg_s = "+" if avg_pnl >= 0 else ""
 
         console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:16]} → {(ended or 'running')[:16]}[/]")
         console.print(f"    [dim]Currency:[/] {cur or '?'}  [dim]Strategy:[/] {strat or '?'}  [dim]Mult:[/] {mult}x  [dim]Base:[/] {base:.8f}")
         console.print(f"    [dim]Bets:[/] {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
-        console.print(f"    [dim]Profit:[/] [{pc}]{ps}{profit:.8f}[/]  [dim]Wagered:[/] {wagered:.8f}")
-        console.print(f"    [dim]Balance:[/] {start_bal:.8f} → {end_bal:.8f}")
-        console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}")
+        console.print(f"    [dim]Speed:[/] {bps:.1f} avg/s  {bpm:.0f} avg/m  [dim]BPS:[/] {s_low_bps}-{s_peak_bps}/s  [dim]BPM:[/] {s_low_bpm}-{s_peak_bpm}/m")
+        console.print(f"    [dim]Profit:[/] [{pc}]{ps}{profit:.8f}[/]  [dim]Wagered:[/] {wagered:.8f}  [dim]Avg P/L:[/] [{avg_c}]{avg_s}{avg_pnl:.8f}[/]")
+        console.print(f"    [dim]Balance:[/] {start_bal:.8f} → {end_bal:.8f}  [dim]Peak:[/] [green]{hi_bal:.8f}[/]  [dim]Low:[/] [red]{lo_bal:.8f}[/]")
+        console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}  [dim]Best Win:[/] [green]+{hi_win:.8f}[/]  [dim]Worst Loss:[/] [red]-{big_loss:.8f}[/]")
         console.print()
 
     # totals
@@ -1590,28 +1703,42 @@ def cmd_stats():
                COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
                COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
                COALESCE(MAX(profit),0), COALESCE(MIN(profit),0),
-               COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0)
+               COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0),
+               COALESCE(MAX(highest_balance),0), COALESCE(MAX(highest_win),0),
+               COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
+               COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
+               COALESCE(AVG(bets_per_second),0)
         FROM sessions
     """).fetchone()
     conn.close()
 
     sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered, \
-        best_ws, best_ls, best_profit, worst_profit, max_bets, avg_bets = totals
+        best_ws, best_ls, best_profit, worst_profit, max_bets, avg_bets, \
+        all_hi_bal, all_hi_win, all_big_loss, avg_bpm, \
+        all_peak_bps, all_peak_bpm, avg_bps = totals
     pc = "green" if tot_profit >= 0 else "red"
     ps = "+" if tot_profit >= 0 else ""
     wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "—"
     bp_c = "green" if best_profit >= 0 else "red"
     wp_c = "green" if worst_profit >= 0 else "red"
+    avg_pnl = tot_profit / tot_bets if tot_bets > 0 else 0
+    avg_pc = "green" if avg_pnl >= 0 else "red"
+    avg_ps = "+" if avg_pnl >= 0 else ""
 
     console.print(Rule("[bold cyan]All-Time Totals[/]"))
     console.print(f"  [dim]Sessions:[/]      {sessions}")
     console.print(f"  [dim]Total Bets:[/]    {tot_bets}  (W {tot_wins} / L {tot_losses}  WR {wr})")
     console.print(f"  [dim]Wagered:[/]       {tot_wagered:.8f}")
     console.print(f"  [dim]Profit:[/]        [{pc}]{ps}{tot_profit:.8f}[/]")
+    console.print(f"  [dim]Avg P/L:[/]       [{avg_pc}]{avg_ps}{avg_pnl:.8f}[/] per bet")
     console.print(f"  [dim]Best Session:[/]  [{bp_c}]+{best_profit:.8f}[/]")
     console.print(f"  [dim]Worst Session:[/] [{wp_c}]{worst_profit:.8f}[/]")
+    console.print(f"  [dim]Peak Balance:[/]  {all_hi_bal:.8f}")
+    console.print(f"  [dim]Best Win:[/]      [green]+{all_hi_win:.8f}[/]")
+    console.print(f"  [dim]Worst Loss:[/]    [red]-{all_big_loss:.8f}[/]")
     console.print(f"  [dim]Best Streaks:[/]  W+{best_ws}  L-{best_ls}")
-    console.print(f"  [dim]Max Bets/Ses:[/]  {max_bets}  [dim]Avg:[/] {avg_bets:.0f}")
+    console.print(f"  [dim]Speed:[/]         {avg_bps:.1f} avg/s  {avg_bpm:.0f} avg/m  [dim]Peak:[/] {int(all_peak_bps)}/s  {int(all_peak_bpm)}/m")
+    console.print(f"  [dim]Bets/Session:[/]  Max {max_bets}  Avg {avg_bets:.0f}")
     console.print()
 
 def cmd_last_bets(n: int):
