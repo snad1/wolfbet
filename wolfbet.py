@@ -881,8 +881,15 @@ def _save_state_file():
             "biggest_loss": state.biggest_loss,
             "bets_per_minute": state.bets_per_minute,
             "bets_per_second": state.bets_per_second,
+            "peak_bps": state.peak_bps,
+            "low_bps": state.low_bps if state.low_bps != float("inf") else 0,
+            "peak_bpm": state.peak_bpm,
+            "low_bpm": state.low_bpm if state.low_bpm != float("inf") else 0,
+            "highest_balance": state.highest_balance,
+            "lowest_balance": state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance,
             "rate_remaining": state.rate_remaining,
             "rate_limit": state.rate_limit,
+            "rule": state.rule,
             "uptime_sec": int(time.time() - state.session_start),
             "status": state.status,
             "last_error": state.last_error,
@@ -1581,19 +1588,53 @@ def cmd_status():
     wr = (d["wins"] / d["total_bets"] * 100) if d.get("total_bets") else 0
     uptime = str(timedelta(seconds=d.get("uptime_sec", 0)))
 
+    # extract all fields
+    bets = d.get("total_bets", 0)
+    wins = d.get("wins", 0)
+    losses = d.get("losses", 0)
+    hi_bal = d.get("highest_balance", 0)
+    lo_bal = d.get("lowest_balance", 0)
+    hi_win = d.get("highest_win", 0)
+    big_loss = d.get("biggest_loss", 0)
+    bpm = d.get("bets_per_minute", 0)
+    bps = d.get("bets_per_second", 0)
+    pk_bps = int(d.get("peak_bps", 0))
+    lw_bps = int(d.get("low_bps", 0))
+    pk_bpm = int(d.get("peak_bpm", 0))
+    lw_bpm = int(d.get("low_bpm", 0))
+    start_bal = d.get("start_balance", 0)
+    cur_bal = d.get("current_balance", 0)
+    avg_pnl = p / bets if bets > 0 else 0
+    avg_c = "green" if avg_pnl >= 0 else "red"
+    avg_s = "+" if avg_pnl >= 0 else ""
+    cs = d.get("current_streak", 0)
+    if cs > 0:
+        sk_now = f"W+{cs}"
+    elif cs < 0:
+        sk_now = f"L{cs}"
+    else:
+        sk_now = "—"
+
     console.print(Rule(f"[bold cyan]WolfBet Session #{d.get('session_id', '?')}  {status}[/]"))
     rows = [
         ("Uptime",         uptime),
         ("Currency",       d.get("currency", "?").upper()),
-        ("Strategy",       d.get("strategy", "?")),
-        ("Balance",        f"{d.get('current_balance', 0):.8f}"),
+        ("Strategy",       f"{d.get('strategy', '?')}  {d.get('multiplier', '?')}x  {d.get('rule', '?')}"),
+        ("Base / Current", f"{d.get('base_bet', 0):.8f} / {d.get('current_bet', 0):.8f}"),
+        ("Highest Bet",    f"{d.get('highest_bet', 0):.8f}"),
+        ("Balance",        f"{start_bal:.8f} → {cur_bal:.8f}"),
+        ("Peak / Low",     f"[green]{hi_bal:.8f}[/] / [red]{lo_bal:.8f}[/]"),
         ("Profit",         f"[{pc}]{ps}{p:.8f}[/]"),
         ("Wagered",        f"{d.get('wagered', 0):.8f}"),
-        ("Bets",           str(d.get("total_bets", 0))),
-        ("Wins / Losses",  f"{d.get('wins', 0)} / {d.get('losses', 0)}"),
+        ("Avg P/L",        f"[{avg_c}]{avg_s}{avg_pnl:.8f}[/] per bet"),
+        ("Bets",           str(bets)),
+        ("Wins / Losses",  f"[green]{wins}[/] / [red]{losses}[/]"),
         ("Win Rate",       f"{wr:.1f}%"),
-        ("Streaks",        f"W+{d.get('max_win_streak', 0)}  L-{d.get('max_loss_streak', 0)}"),
-        ("Bets/min",       f"{d.get('bets_per_minute', 0):.1f}"),
+        ("Current Streak", sk_now),
+        ("Best Streaks",   f"W+{d.get('max_win_streak', 0)}  L-{d.get('max_loss_streak', 0)}"),
+        ("Best Win",       f"[green]+{hi_win:.8f}[/]"),
+        ("Worst Loss",     f"[red]-{big_loss:.8f}[/]"),
+        ("Speed",          f"{bps:.1f}/s  {bpm:.0f}/m  Range: {lw_bps}-{pk_bps}/s  {lw_bpm}-{pk_bpm}/m"),
         ("Rate Limit",     f"{d.get('rate_remaining', '?')}/{d.get('rate_limit', '?')}"),
         ("Last Status",    d.get("status", "")[:60]),
         ("Updated",        d.get("updated_at", "?")[:19]),
