@@ -1530,14 +1530,17 @@ def cmd_stats():
 
     console.print(Rule("[bold cyan]Session History (last 20)[/]"))
     t = Table(box=box.SIMPLE, expand=True)
-    t.add_column("ID",    width=4, justify="center")
-    t.add_column("Started", width=16)
-    t.add_column("Cur",   width=5, justify="center")
+    t.add_column("ID",       width=4,  justify="center")
+    t.add_column("Started",  width=16)
+    t.add_column("Ended",    width=16)
+    t.add_column("Cur",      width=5,  justify="center")
     t.add_column("Strategy", width=16)
-    t.add_column("Bets",  width=7, justify="right")
-    t.add_column("W/L",   width=11, justify="center")
-    t.add_column("Profit", width=16, justify="right")
-    t.add_column("WR",    width=6, justify="right")
+    t.add_column("Bets",     width=7,  justify="right")
+    t.add_column("W/L",      width=11, justify="center")
+    t.add_column("Profit",   width=16, justify="right")
+    t.add_column("Wagered",  width=14, justify="right")
+    t.add_column("WR",       width=6,  justify="right")
+    t.add_column("Streaks",  width=10, justify="center")
 
     for r in rows:
         sid, started, ended, cur, strat, bets, wins, losses, profit, wagered, mws, mls = r
@@ -1545,25 +1548,32 @@ def cmd_stats():
         wins = wins or 0
         losses = losses or 0
         profit = profit or 0
+        wagered = wagered or 0
+        mws = mws or 0
+        mls = mls or 0
         pc = "green" if profit >= 0 else "red"
         ps = "+" if profit >= 0 else ""
         wr = f"{wins/bets*100:.0f}%" if bets > 0 else "—"
         t.add_row(
-            str(sid), (started or "")[:16], cur or "?", strat or "?",
+            str(sid), (started or "")[:16], (ended or "running")[:16],
+            cur or "?", strat or "?",
             str(bets), f"{wins}/{losses}",
-            Text(f"{ps}{profit:.8f}", style=pc), wr
+            Text(f"{ps}{profit:.8f}", style=pc),
+            f"{wagered:.8f}",
+            wr, f"W{mws}/L{mls}"
         )
     console.print(t)
 
     # totals
     totals = conn.execute("""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
-               COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
+               COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
+               COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0)
         FROM sessions
     """).fetchone()
     conn.close()
 
-    sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered = totals
+    sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered, best_ws, best_ls = totals
     pc = "green" if tot_profit >= 0 else "red"
     ps = "+" if tot_profit >= 0 else ""
     wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "—"
@@ -1574,6 +1584,7 @@ def cmd_stats():
     console.print(f"  [dim]Bets:[/]       {tot_bets}  (W {tot_wins} / L {tot_losses}  WR {wr})")
     console.print(f"  [dim]Wagered:[/]    {tot_wagered:.8f}")
     console.print(f"  [dim]Profit:[/]     [{pc}]{ps}{tot_profit:.8f}[/]")
+    console.print(f"  [dim]Streaks:[/]    Best W+{best_ws}  Worst L-{best_ls}")
     console.print()
 
 def cmd_last_bets(n: int):
@@ -1583,7 +1594,7 @@ def cmd_last_bets(n: int):
         return
     conn = _db_conn()
     rows = conn.execute("""
-        SELECT b.id, b.session_id, substr(b.timestamp,12,8) AS time,
+        SELECT b.id, b.session_id, substr(b.timestamp,1,19) AS dt,
                b.amount, b.result_value, b.state, b.profit, b.balance_after
         FROM bets b ORDER BY b.id DESC LIMIT ?
     """, (n,)).fetchall()
@@ -1595,22 +1606,22 @@ def cmd_last_bets(n: int):
 
     console.print(Rule(f"[bold cyan]Last {len(rows)} Bets[/]"))
     t = Table(box=box.SIMPLE, expand=True)
-    t.add_column("Bet",     width=7, justify="right")
-    t.add_column("Sess",    width=5, justify="center")
-    t.add_column("Time",    width=9)
-    t.add_column("Amount",  width=14, justify="right")
-    t.add_column("Roll",    width=7, justify="right")
-    t.add_column("W/L",     width=4, justify="center")
-    t.add_column("P/L",     width=15, justify="right")
-    t.add_column("Balance", width=15, justify="right")
+    t.add_column("Bet",      width=7,  justify="right")
+    t.add_column("Sess",     width=5,  justify="center")
+    t.add_column("DateTime", width=19)
+    t.add_column("Amount",   width=14, justify="right")
+    t.add_column("Roll",     width=7,  justify="right")
+    t.add_column("W/L",      width=4,  justify="center")
+    t.add_column("P/L",      width=15, justify="right")
+    t.add_column("Balance",  width=15, justify="right")
 
     for r in rows:
-        bid, sid, tm, amt, roll, st, pnl, bal = r
+        bid, sid, dt, amt, roll, st, pnl, bal = r
         rc = "bold green" if st == "win" else "bold red"
         pc = "green" if (pnl or 0) >= 0 else "red"
         ps = "+" if (pnl or 0) >= 0 else ""
         t.add_row(
-            str(bid), str(sid), tm or "?",
+            str(bid), str(sid), dt or "?",
             f"{amt:.8f}" if amt else "?",
             f"{roll:.2f}" if roll else "?",
             Text("W" if st == "win" else "L", style=rc),
