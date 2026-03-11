@@ -112,6 +112,7 @@ usage() {
     echo ""
     echo "  DATA:"
     echo "    wolfctl stats       Show all-time session statistics"
+    echo "    wolfctl session ID  Full stats + streak distribution for a session"
     echo "    wolfctl presets     List saved presets"
     echo "    wolfctl update      Update bot from current directory"
     echo ""
@@ -219,6 +220,16 @@ cmd_stats() {
     "$PYTHON" "$BOT" --stats
 }
 
+cmd_session() {
+    local sid="${1:-}"
+    if [ -z "$sid" ]; then
+        echo "Usage: wolfctl session <ID>"
+        echo "  Get full stats for a specific session (streaks, distribution, bets)"
+        exit 1
+    fi
+    "$PYTHON" "$BOT" --session-bets "$sid"
+}
+
 cmd_presets() {
     "$PYTHON" "$BOT" --list-presets
 }
@@ -246,6 +257,7 @@ case "${1:-}" in
     interactive) cmd_interactive ;;
     tmux)        cmd_tmux ;;
     stats)       cmd_stats ;;
+    session)     cmd_session "${2:-}" ;;
     presets)     cmd_presets ;;
     update)      cmd_update ;;
     *)           usage ;;
@@ -279,6 +291,7 @@ echo "    wolfctl monitor        Attach live TUI to running daemon"
 echo "    wolfctl status         Quick status snapshot"
 echo "    wolfctl logs           Stream live logs"
 echo "    wolfctl stats          View all-time statistics"
+echo "    wolfctl session ID     Full stats + streak distribution"
 echo ""
 echo "  SHORTCUTS:"
 echo "    wolfctl interactive    Start daemon + attach monitor"

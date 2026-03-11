@@ -2174,19 +2174,52 @@ def cmd_last_bets(n: int):
     console.print(t)
     console.print()
 
+def _compute_streak_distribution(conn, session_id: int) -> dict:
+    """Compute streak distribution from bets table.
+    Returns {"win": {streak_len: count, ...}, "loss": {streak_len: count, ...}}"""
+    rows = conn.execute(
+        "SELECT state FROM bets WHERE session_id=? ORDER BY id", (session_id,)
+    ).fetchall()
+    dist = {"win": {}, "loss": {}}
+    if not rows:
+        return dist
+    cur_type = None
+    cur_len = 0
+    for (st,) in rows:
+        kind = "win" if st == "win" else "loss"
+        if kind == cur_type:
+            cur_len += 1
+        else:
+            # Record the streak that just ended
+            if cur_type and cur_len > 0:
+                dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
+            cur_type = kind
+            cur_len = 1
+    # Record the final streak
+    if cur_type and cur_len > 0:
+        dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
+    return dist
+
+
 def cmd_session_bets(session_id: int):
-    """Show bets and summary for a specific session."""
+    """Show full detailed stats and bets for a specific session."""
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
     conn = _db_conn()
 
-    # session info
+    # session info — fetch all columns
     sess = conn.execute("""
-        SELECT id, started_at, ended_at, UPPER(currency), strategy,
-               base_bet, multiplier, total_bets, wins, losses,
-               profit, wagered, start_balance, end_balance,
-               max_win_streak, max_loss_streak
+        SELECT id, substr(started_at,1,19), substr(ended_at,1,19),
+               UPPER(currency), strategy, base_bet, multiplier,
+               total_bets, wins, losses, profit, wagered,
+               start_balance, end_balance,
+               max_win_streak, max_loss_streak,
+               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
         FROM sessions WHERE id = ?
     """, (session_id,)).fetchone()
 
@@ -2196,26 +2229,89 @@ def cmd_session_bets(session_id: int):
         return
 
     sid, started, ended, cur, strat, base, mult, bets, wins, losses, \
-        profit, wagered, start_bal, end_bal, mws, mls = sess
-    profit = profit or 0
-    bets = bets or 0
-    wins = wins or 0
-    losses = losses or 0
+        profit, wagered, start_bal, end_bal, mws, mls, \
+        hi_bal, lo_bal, hi_win, big_loss, \
+        bpm, bps, s_pk_bps, s_lw_bps, s_pk_bpm, s_lw_bpm = sess
+
+    # safe defaults
+    bets = bets or 0; wins = wins or 0; losses = losses or 0
+    profit = profit or 0; wagered = wagered or 0
+    start_bal = start_bal or 0; end_bal = end_bal or 0
+    mws = mws or 0; mls = mls or 0; mult = mult or 0; base = base or 0
+    hi_bal = hi_bal or 0; lo_bal = lo_bal or 0
+    hi_win = hi_win or 0; big_loss = big_loss or 0
+    bpm = bpm or 0; bps = bps or 0
+    s_pk_bps = int(s_pk_bps or 0); s_lw_bps = int(s_lw_bps or 0)
+    s_pk_bpm = int(s_pk_bpm or 0); s_lw_bpm = int(s_lw_bpm or 0)
 
     pc = "green" if profit >= 0 else "red"
     ps = "+" if profit >= 0 else ""
     wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+    avg_pnl = profit / bets if bets > 0 else 0
+    avg_c = "green" if avg_pnl >= 0 else "red"
+    avg_s = "+" if avg_pnl >= 0 else ""
 
-    console.print(Rule(f"[bold cyan]Session #{sid}[/]"))
-    console.print(f"  [dim]Started:[/]    {(started or '?')[:19]}")
-    console.print(f"  [dim]Ended:[/]      {(ended or 'running')[:19]}")
-    console.print(f"  [dim]Currency:[/]   {cur}   [dim]Strategy:[/] {strat}   [dim]Mult:[/] {mult}x")
-    console.print(f"  [dim]Bets:[/]       {bets}  (W {wins} / L {losses}  WR {wr})")
-    console.print(f"  [dim]Profit:[/]     [{pc}]{ps}{profit:.8f}[/]   [dim]Wagered:[/] {wagered:.8f}")
-    console.print(f"  [dim]Balance:[/]    {start_bal:.8f} → {(end_bal or 0):.8f}")
-    console.print(f"  [dim]Streaks:[/]    W+{mws or 0}  L-{mls or 0}")
+    console.print(Rule(f"[bold cyan]Session #{sid} — Full Stats[/]"))
+    console.print(f"  [dim]Started:[/]       {(started or '?')[:19]}")
+    console.print(f"  [dim]Ended:[/]         {(ended or 'running')[:19]}")
+    console.print(f"  [dim]Currency:[/]      {cur}")
+    console.print(f"  [dim]Strategy:[/]      {strat}  {mult}x  Base: {base:.8f}")
+    console.print(f"  [dim]Bets:[/]          {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
+    console.print(f"  [dim]Profit:[/]        [{pc}]{ps}{profit:.8f}[/]")
+    console.print(f"  [dim]Wagered:[/]       {wagered:.8f}")
+    console.print(f"  [dim]Avg P/L:[/]       [{avg_c}]{avg_s}{avg_pnl:.8f}[/] per bet")
+    console.print(f"  [dim]Balance:[/]       {start_bal:.8f} → {end_bal:.8f}")
+    console.print(f"  [dim]Peak / Low:[/]    [green]{hi_bal:.8f}[/] / [red]{lo_bal:.8f}[/]")
+    console.print(f"  [dim]Best Streaks:[/]  W+{mws}  L-{mls}")
+    console.print(f"  [dim]Best Win:[/]      [green]+{hi_win:.8f}[/]")
+    console.print(f"  [dim]Worst Loss:[/]    [red]-{big_loss:.8f}[/]")
+    console.print(f"  [dim]Speed:[/]         {bps:.1f} avg/s  {bpm:.0f} avg/m  Range: {s_lw_bps}-{s_pk_bps}/s  {s_lw_bpm}-{s_pk_bpm}/m")
 
-    # bets for this session
+    # ── Streak Distribution ──────────────────────────
+    console.print()
+    console.print(Rule("[bold cyan]Streak Distribution[/]"))
+
+    dist = _compute_streak_distribution(conn, session_id)
+
+    # Loss streaks
+    loss_dist = dist["loss"]
+    if loss_dist:
+        console.print(f"  [bold red]Loss Streaks[/]  (how many times each streak length occurred)")
+        t_loss = Table(box=box.SIMPLE, show_edge=False, padding=(0, 2))
+        t_loss.add_column("Streak", style="bold red", justify="right")
+        t_loss.add_column("Count", justify="right")
+        t_loss.add_column("", width=30)  # visual bar
+        max_count = max(loss_dist.values()) if loss_dist else 1
+        for length in sorted(loss_dist.keys()):
+            count = loss_dist[length]
+            bar_w = int(count / max_count * 25)
+            bar = "[red]" + "█" * bar_w + "[/]"
+            t_loss.add_row(f"L-{length}", str(count), bar)
+        console.print(t_loss)
+    else:
+        console.print("  [dim]No loss streaks recorded[/]")
+
+    console.print()
+
+    # Win streaks
+    win_dist = dist["win"]
+    if win_dist:
+        console.print(f"  [bold green]Win Streaks[/]  (how many times each streak length occurred)")
+        t_win = Table(box=box.SIMPLE, show_edge=False, padding=(0, 2))
+        t_win.add_column("Streak", style="bold green", justify="right")
+        t_win.add_column("Count", justify="right")
+        t_win.add_column("", width=30)  # visual bar
+        max_count = max(win_dist.values()) if win_dist else 1
+        for length in sorted(win_dist.keys()):
+            count = win_dist[length]
+            bar_w = int(count / max_count * 25)
+            bar = "[green]" + "█" * bar_w + "[/]"
+            t_win.add_row(f"W+{length}", str(count), bar)
+        console.print(t_win)
+    else:
+        console.print("  [dim]No win streaks recorded[/]")
+
+    # ── Recent Bets ──────────────────────────────────
     rows = conn.execute("""
         SELECT id, substr(timestamp,12,8), amount, result_value, state, profit, balance_after
         FROM bets WHERE session_id = ? ORDER BY id DESC LIMIT 50
@@ -2224,7 +2320,7 @@ def cmd_session_bets(session_id: int):
 
     if rows:
         console.print()
-        console.print(f"[dim]  Last {len(rows)} bets:[/]")
+        console.print(Rule(f"[bold cyan]Last {len(rows)} Bets[/]"))
         t = Table(box=box.SIMPLE, expand=True)
         t.add_column("Bet",     width=7, justify="right")
         t.add_column("Time",    width=9)
