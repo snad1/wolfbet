@@ -14,7 +14,7 @@ High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact termi
 | **Editable multipliers** | Customize loss/win multipliers per strategy (no more hardcoded 2x) |
 | **Rule editor** | Edit any part of existing rules, delete, add, clear, or rebuild from scratch |
 | **Named presets** | Save & load strategy configs by name with `--preset` |
-| **Rate-limit aware** | Reads `x-ratelimit-remaining` header; auto-pauses & resumes |
+| **Smart rate recovery** | Exponential probe (2s→4s→8s→32s) instead of hard 60s freeze — resumes as soon as capacity restores |
 | **Smart stop conditions** | Max profit, max loss, max bets, max wins, min balance floor |
 | **Safety cap** | Never bets more than 20% of current balance in one go |
 | **Session database** | SQLite log of every bet and session — survives restarts |
@@ -226,8 +226,12 @@ python3 wolfbet.py --session-bets N  # Full stats + streak distribution for sess
 WolfBet allows **480 requests per minute**. The bot:
 
 - Reads `x-ratelimit-remaining` from every response header
-- When it drops to ≤2, enters **automatic 62-second cooldown**
-- Shows the countdown in the status bar
+- When remaining ≤ 2 (or HTTP 429), enters **exponential probe recovery**:
+  - Waits 2s → probes `GET /user/balances` to check if capacity restored
+  - If remaining > 5 → resumes betting immediately
+  - If still low → doubles wait: 2s → 4s → 8s → 16s → 32s (capped)
+- Resumes as soon as capacity restores — no unnecessary waiting
+- Shows probe status and remaining count in the status bar
 - Reports live **bets/minute** so you can monitor throughput
 
 ---

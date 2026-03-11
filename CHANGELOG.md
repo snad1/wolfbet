@@ -10,6 +10,7 @@
   - Rule management menu: add, edit, delete, clear, rebuild from scratch.
   - Part-by-part rule editor — change any individual field (condition type, mode, value, event, action) without recreating the whole rule.
 - **Customizable strategy multipliers** — Strategies 2, 3, 5, 6, 7 now prompt for loss/win multiplier in the wizard instead of using hardcoded values (2.01x, 2x). Set any value you want (1.5x, 2.01x, 3x, etc.).
+- **Smart rate limit recovery** — Replaced fixed 62-second cooldown with exponential probe system (2s→4s→8s→16s→32s). Probes `GET /user/balances` to check remaining capacity and resumes immediately when capacity restores. Status bar shows probe interval and remaining count.
 
 ### Fixes
 

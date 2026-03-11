@@ -611,7 +611,8 @@ class BotState:
         self.rate_limit      = 480
         self.rate_remaining  = 480
         self.rate_wait       = False
-        self.rate_reset_at   = 0.0
+        self.rate_backoff    = 2.0     # current probe interval (exponential: 2→4→8→16→32)
+        self.rate_reset_at   = 0.0     # legacy (kept for monitor compatibility)
 
         # ── performance ──
         self.bets_per_minute = 0.0
@@ -668,9 +669,9 @@ def _update_rate_limit(resp):
         with state.lock:
             state.rate_limit     = limit
             state.rate_remaining = remaining
-            if remaining <= 2:
-                state.rate_wait     = True
-                state.rate_reset_at = time.time() + 62   # 2-sec buffer
+            if remaining <= 2 and not state.rate_wait:
+                state.rate_wait      = True
+                state.rate_backoff   = 2.0   # start probing at 2s
     except Exception:
         pass
 
@@ -702,11 +703,11 @@ def api_place_bet(amount: float) -> Optional[dict]:
                          data.get("bet", {}).get("state"))
             return data
         elif r.status_code == 429:
-            logger.warning("RATE LIMIT 429 — cooling down 60s")
+            logger.warning("RATE LIMIT 429 — starting exponential probe")
             with state.lock:
-                state.rate_wait     = True
-                state.rate_reset_at = time.time() + 62
-                state.last_error    = "Rate limit hit — cooling down 60s"
+                state.rate_wait    = True
+                state.rate_backoff = 2.0
+                state.last_error   = "Rate limit 429 — probing for recovery…"
         else:
             body = r.text[:500]
             logger.error("HTTP %d  response=%s  payload=%s",
@@ -824,16 +825,36 @@ def betting_loop():
             time.sleep(0.4)
             continue
 
-        # ── rate-limit cooldown ──────────────────────────
+        # ── rate-limit cooldown with exponential probe ──
         if state.rate_wait:
-            remaining = max(0.0, state.rate_reset_at - time.time())
-            state.status = f"Rate limit — cooling down {remaining:.0f}s…"
-            if remaining <= 0:
+            backoff = state.rate_backoff
+            state.status = f"Rate limit — probing in {backoff:.0f}s… (RL {state.rate_remaining}/{state.rate_limit})"
+            time.sleep(backoff)
+
+            # Probe: lightweight GET to check if capacity restored
+            try:
+                r = requests.get(f"{API_BASE}/user/balances", headers=_headers(), timeout=10)
+                _update_rate_limit(r)
+                rl = state.rate_remaining
+                if rl > 5:
+                    # Capacity restored — resume
+                    with state.lock:
+                        state.rate_wait    = False
+                        state.rate_backoff = 2.0
+                    state.status = f"Rate limit cleared — {rl} remaining, resuming…"
+                    logger.info("Rate limit probe OK: %d remaining, resuming", rl)
+                else:
+                    # Still low — increase backoff
+                    with state.lock:
+                        state.rate_backoff = min(backoff * 2, 32.0)
+                    state.status = f"Rate limit — still {rl} remaining, next probe in {state.rate_backoff:.0f}s…"
+                    logger.info("Rate limit probe: %d remaining, backoff → %.0fs", rl, state.rate_backoff)
+            except Exception as e:
+                # Probe failed — increase backoff
                 with state.lock:
-                    state.rate_wait     = False
-                    state.rate_remaining = state.rate_limit
-                state.status = "Resuming after cooldown…"
-            time.sleep(1.0)
+                    state.rate_backoff = min(backoff * 2, 32.0)
+                state.status = f"Rate probe failed — retrying in {state.rate_backoff:.0f}s…"
+                logger.warning("Rate limit probe failed: %s, backoff → %.0fs", e, state.rate_backoff)
             continue
 
         # ── stop-condition check ─────────────────────────
