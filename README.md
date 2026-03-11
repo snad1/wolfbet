@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.4
+# WolfBet AutoBot v2.5
 
 High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact terminal dashboard. Runs on any VPS or local machine — leave it running in tmux and check stats any time.
 
@@ -9,8 +9,10 @@ High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact termi
 | Feature | Details |
 |---|---|
 | **Pure ANSI TUI** | Direct ANSI rendering (no Rich flicker), fits any terminal, refreshes 2x/sec |
-| **7 betting strategies** | Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, Custom, Rule-Based |
-| **Rule-based engine** | Define custom rules: `onEvery1loseIncrease amount by 101%` |
+| **8 betting strategies** | Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, WolfRider, Delay Martingale, Rule-Based |
+| **Rule-based engine** | Build custom IF/THEN rules with interactive wizard — sequence, profit, and bet conditions |
+| **Editable multipliers** | Customize loss/win multipliers per strategy (no more hardcoded 2x) |
+| **Rule editor** | Edit any part of existing rules, delete, add, clear, or rebuild from scratch |
 | **Named presets** | Save & load strategy configs by name with `--preset` |
 | **Rate-limit aware** | Reads `x-ratelimit-remaining` header; auto-pauses & resumes |
 | **Smart stop conditions** | Max profit, max loss, max bets, max wins, min balance floor |
@@ -88,40 +90,71 @@ The dashboard uses pure ANSI rendering (no Rich flicker) — 10 pinned rows + ad
 | # | Name | How it works | Risk |
 |---|---|---|---|
 | 1 | **Flat Bet** | Same amount every time | Very Low |
-| 2 | **Martingale** | Double on loss, reset on win | High |
-| 3 | **Anti-Martingale** | Double on win, reset on loss | Medium |
+| 2 | **Martingale** | Multiply on loss, reset on win (configurable multiplier) | High |
+| 3 | **Anti-Martingale** | Multiply on win, reset on loss (configurable multiplier) | Medium |
 | 4 | **D'Alembert** | +1 unit on loss, -1 on win | Low-Medium |
-| 5 | **Paroli (3-step)** | Double on win up to 3x then reset | Medium |
-| 6 | **Custom** | You set win_mult and loss_mult | Variable |
-| 7 | **Rule-Based** | Define custom rules (see below) | Variable |
+| 5 | **Paroli (3-step)** | Multiply on win up to 3x then reset (configurable multiplier) | Medium |
+| 6 | **WolfRider** | Multiply on loss, reset on win + switch over/under on bet 2/6/9 | High |
+| 7 | **Delay Martingale** | Flat for N consecutive losses, then start multiplying | High |
+| 8 | **Rule-Based** | Build custom IF/THEN conditions & actions (see below) | Variable |
 
+> Strategies 2, 3, 5, 6, 7 now let you customize the loss/win multiplier in the wizard (e.g. 2.01x, 1.5x, 3x).
+>
 > The built-in 20% balance safety cap limits runaway bets, but always set a **Max Loss** stop condition.
 
 ---
 
-## Rule-Based Strategy
+## Rule-Based Strategy (Strategy 8)
 
-Define custom rules using the format: `onEvery<N><trigger><Action> [params]`
+Build custom rules interactively using the wizard. Each rule is an **IF condition → THEN action** pair.
 
-**Triggers:** `win`, `lose`, `bet`
+### Conditions
 
-**Actions:**
-- `Reset amount` — reset bet to base amount
-- `Stop` — stop the bot
-- `Increase amount by X%` — increase bet by X% (e.g., 101% = multiply by 2.01)
-- `Switch over/under` — toggle bet direction
+| Type | Options | Description |
+|---|---|---|
+| **Sequence** | Every N / Every streak of N / Streak above N / Streak below N | Trigger on win/loss/bet counts or streaks |
+| **Profit** | On profit / loss / balance | Compare with `>=`, `>`, `<=`, `<` against a value |
+| **Bet** | On bet amount / number / win chance / payout | Compare with `>=`, `>`, `<=`, `<` against a value |
 
-**Example rules:**
+### Actions
+
+| Action | Description |
+|---|---|
+| Reset bet amount | Reset to base bet |
+| Increase amount by % | Multiply current bet (e.g. 101% = ×2.01) |
+| Decrease amount by % | Reduce current bet by percentage |
+| Add to amount | Add a fixed value to bet |
+| Deduct from amount | Subtract a fixed value from bet |
+| Set amount | Set bet to an exact value |
+| Switch over/under | Toggle bet direction |
+| Stop betting | Stop the bot |
+| Set win chance | Set exact win chance (recalculates multiplier) |
+| Increase/Decrease win chance by % | Adjust win chance relatively |
+| Reset game | Full reset (bet + streak counters) |
+
+### Rule Management
+
+When you have existing rules, the wizard shows:
 ```
-onEvery1winReset amount
-onEvery1loseIncrease amount by 101%
-onEvery100000winStop
-onEvery2betSwitch over/under
-onEvery6betSwitch over/under
-onEvery9betSwitch over/under
+  Current rules (6):
+    1. Every 1 win(s) → Reset bet amount
+    2. Every 1 loss(s) → Increase amount by 101%
+    ...
+
+    [1] Add rule   [2] Edit rule   [3] Delete rule   [4] Clear all   [5] Continue
 ```
 
-This creates a Martingale variant that increases 101% on every loss, resets on every win, stops after 100k wins, and switches direction on bets 2, 6, and 9 (and their multiples).
+**Editing a rule** shows each part as a numbered menu — change just the condition type, mode, value, event, or action without recreating the whole rule. You can also **Rebuild from scratch** from within the editor.
+
+### Example
+
+A Martingale variant with direction switching:
+- Every 1 win → Reset bet amount
+- Every 1 loss → Increase amount by 101%
+- Every 500 wins → Stop betting
+- Every 2 bets → Switch over/under
+- Every 6 bets → Switch over/under
+- Every 9 bets → Switch over/under
 
 ---
 

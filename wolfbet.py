@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.4  — VPS Terminal Dashboard    ║
+║   🐺  WolfBet AutoBot v2.5  — VPS Terminal Dashboard    ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -42,7 +42,7 @@ STATE_PATH   = os.path.expanduser("~/.wolfbet_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.wolfbet_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.wolfbet_presets.json")
 LOG_DIR      = os.path.expanduser("~/.wolfbet_logs")
-VERSION      = "2.4.0"
+VERSION      = "2.5.0"
 
 # ── Daily rotating logger ──
 # Default: WARNING (production). Use --verbose for DEBUG.
@@ -1813,7 +1813,7 @@ def setup_wizard():
     console.print()
     console.print(Align.center(
         Panel(
-            "[bold cyan]WolfBet AutoBot  v2.0[/]\n"
+            "[bold cyan]WolfBet AutoBot  v2.5[/]\n"
             "[dim]High-speed dice auto-bettor with live TUI dashboard[/]",
             box=box.DOUBLE, expand=False, padding=(1, 6), style="blue"
         )

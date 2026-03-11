@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.5.0 (2026-03-11)
+
+### New Features
+
+- **Rule-Based Strategy (Strategy 8)** — Full DarkDice-inspired condition/action engine with interactive wizard.
+  - 3 condition types: Sequence (every N, every streak, streak above/below), Profit (profit/loss/balance with comparisons), Bet (amount/number/winchance/payout with comparisons).
+  - 12 actions: reset/increase/decrease/add/deduct/set amount, switch over/under, stop, set/increase/decrease win chance, reset game.
+  - Rule management menu: add, edit, delete, clear, rebuild from scratch.
+  - Part-by-part rule editor — change any individual field (condition type, mode, value, event, action) without recreating the whole rule.
+- **Customizable strategy multipliers** — Strategies 2, 3, 5, 6, 7 now prompt for loss/win multiplier in the wizard instead of using hardcoded values (2.01x, 2x). Set any value you want (1.5x, 2.01x, 3x, etc.).
+
+### Fixes
+
+- **Multiplier validation** — Entering 0 or values below 1.01 now shows an error and re-prompts instead of crashing with division by zero.
+- **Empty input handling** — `_ask()` with choices now loops and re-prompts when user presses Enter without a default, instead of returning an empty string that causes KeyErrors.
+
 ## v2.4.0 (2026-03-11)
 
 ### New Features
