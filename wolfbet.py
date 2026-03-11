@@ -1561,6 +1561,335 @@ def _print_summary():
     console.print()
 
 # ══════════════════════════════════════════════════════════
+#  --monitor COMMAND  (attach live TUI to running daemon)
+# ══════════════════════════════════════════════════════════
+def _monitor_read_state():
+    """Read daemon state file and return dict, or None if not running."""
+    if not os.path.exists(STATE_PATH):
+        return None
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _monitor_get_pid(d: dict) -> int:
+    """Get daemon PID and verify it's alive."""
+    pid = d.get("pid", 0)
+    if pid:
+        try:
+            os.kill(pid, 0)
+            return pid
+        except OSError:
+            pass
+    return 0
+
+def _monitor_get_recent_bets(session_id: int, limit: int) -> list:
+    """Fetch recent bets from DB for the monitor view."""
+    if not os.path.exists(DB_PATH):
+        return []
+    try:
+        conn = _db_conn()
+        rows = conn.execute("""
+            SELECT id, substr(timestamp,1,19), amount, result_value, state, profit, balance_after
+            FROM bets WHERE session_id=? ORDER BY id DESC LIMIT ?
+        """, (session_id, limit)).fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            result.append({
+                "n": r[0], "time": (r[1] or "")[11:19],
+                "amt": r[2] or 0, "roll": r[3] or 0,
+                "state": r[4] or "lose", "pnl": r[5] or 0,
+                "bal": r[6] or 0,
+            })
+        return result  # newest first
+    except Exception:
+        return []
+
+def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
+    """Build full-screen ANSI dashboard from state dict + bet list."""
+    try:
+        term_size = os.get_terminal_size()
+        term_h = term_size.lines
+        term_w = term_size.columns
+    except OSError:
+        term_h, term_w = 24, 80
+
+    lines = []
+    def add(s: str):
+        lines.append(f"{s}{_CLR_EOL}")
+    def add_blank():
+        lines.append(_CLR_EOL)
+
+    # Extract fields with safe defaults
+    sid       = d.get("session_id", "?")
+    uptime    = str(timedelta(seconds=d.get("uptime_sec", 0)))
+    currency  = d.get("currency", "?").upper()
+    strategy  = d.get("strategy", "?")
+    mult      = d.get("multiplier", 0)
+    rule      = d.get("rule", "over")
+    base_bet  = d.get("base_bet", 0)
+    cur_bet   = d.get("current_bet", 0)
+    hi_bet    = d.get("highest_bet", 0)
+    bal       = d.get("current_balance", 0)
+    start_bal = d.get("start_balance", 0)
+    profit    = d.get("profit", 0)
+    wagered   = d.get("wagered", 0)
+    total     = d.get("total_bets", 0)
+    wins      = d.get("wins", 0)
+    losses    = d.get("losses", 0)
+    cs        = d.get("current_streak", 0)
+    mws       = d.get("max_win_streak", 0)
+    mls       = d.get("max_loss_streak", 0)
+    hi_bal    = d.get("highest_balance", 0) or bal
+    lo_bal    = d.get("lowest_balance", 0) or bal
+    hi_win    = d.get("highest_win", 0)
+    big_loss  = d.get("biggest_loss", 0)
+    bps       = d.get("bets_per_second", 0)
+    bpm       = d.get("bets_per_minute", 0)
+    pk_bps    = int(d.get("peak_bps", 0))
+    lw_bps    = int(d.get("low_bps", 0))
+    pk_bpm    = int(d.get("peak_bpm", 0))
+    lw_bpm    = int(d.get("low_bpm", 0))
+    rl        = d.get("rate_remaining", 0)
+    rl_max    = d.get("rate_limit", 480)
+    paused    = d.get("paused", False)
+    status    = d.get("status", "")
+
+    # ── Row 1: Header ─────────────────────────────────
+    if pid_alive and not paused:
+        st_ind = _a("bold_green", "● LIVE")
+    elif pid_alive and paused:
+        st_ind = _a("bold_yellow", "● PAUSED")
+    else:
+        st_ind = _a("bold_red", "● STOPPED")
+    hdr_vis = 4 + len(f"WolfBet v{VERSION}  #{sid}  {uptime}  ") + len("● STOPPED") + 1
+    fill = max(0, term_w - hdr_vis)
+    add(f"{_a('dim_blue', '─── ')}{_a('bold_cyan', f'WolfBet v{VERSION}')}"
+        f"{_a('white', f'  #{sid}  {uptime}')}  {st_ind} "
+        f"{_a('dim_blue', '─' * fill)}")
+
+    # ── Row 2: Balance bar ────────────────────────────
+    ps = "+" if profit >= 0 else ""
+    pc = "bold_green" if profit >= 0 else "bold_red"
+    wr = (wins / total * 100) if total else 0
+    wr_c = "bold_green" if wr >= 50 else "bold_red"
+    add(f"{_COLORS['bg_blue']}{_BOLD}{_COLORS['white']} BAL {_RST} "
+        f"{_a('bold_white', f'{bal:.8f} {currency}')}"
+        f"  {_a('dim', 'PnL')} {_a(pc, f'{ps}{profit:.8f}')}"
+        f"  {_a('dim', 'WAG')} {_a('yellow', f'{wagered:.8f}')}"
+        f"  {_a('dim', 'WR')} {_a(wr_c, f'{wr:.1f}%')}")
+
+    # ── Row 3: Stats line 1 ──────────────────────────
+    if cs > 0:
+        sk = _a("green", f"W+{cs}")
+    elif cs < 0:
+        sk = _a("red", f"L{cs}")
+    else:
+        sk = _a("dim", "—")
+    add(f" {_a('dim', 'Bets')} {_a('bold_white', str(total))}"
+        f"  {_a('green', 'W')} {_a('bold_green', str(wins))}"
+        f"  {_a('red', 'L')} {_a('bold_red', str(losses))}"
+        f"  {_a('dim', 'Str')} {sk}"
+        f"  {_a('dim', f'Best W+{mws}/L-{mls}')}")
+
+    # ── Row 4: Bet / Strategy / Rate ──────────────────
+    rl_c = "green" if rl > 100 else ("yellow" if rl > 20 else "red")
+    s4 = f" {_a('dim', 'Bet')} {_a('yellow', f'{cur_bet:.8f}')}"
+    s4 += f"  {_a('dim', 'Base')} {_a('bold_green', f'{base_bet:.8f}')}"
+    s4 += (f"  {_a('dim', 'Hi')} {_a('white', f'{hi_bet:.8f}')}"
+           f"  {_a('cyan', strategy)}"
+           f"  {_a('dim', f'{mult}x')}"
+           f"  {_a('dim', rule)}"
+           f"  {_a('dim', 'BPS')} {_a('magenta', f'{bps:.1f}')}"
+           f"  {_a('dim', 'BPM')} {_a('magenta', f'{bpm:.0f}')}"
+           f"  {_a('dim', 'RL')} {_a(rl_c, f'{rl}/{rl_max}')}"
+           f"  {_a('dim', 'Speed')} {_a('magenta', f'{lw_bps}-{pk_bps}/s {lw_bpm}-{pk_bpm}/m')}")
+    add(s4)
+
+    # ── Row 5: Extremes / Performance ────────────────
+    avg_pnl = profit / total if total else 0
+    avg_c = "green" if avg_pnl >= 0 else "red"
+    avg_s = "+" if avg_pnl >= 0 else ""
+    bal_change = bal - start_bal
+    bc_c = "bold_green" if bal_change >= 0 else "bold_red"
+    bc_s = "+" if bal_change >= 0 else ""
+    s5 = (f" {_a('dim', 'Peak')} {_a('green', f'{hi_bal:.8f}')}"
+          f"  {_a('dim', 'Low')} {_a('red', f'{lo_bal:.8f}')}"
+          f"  {_a('dim', 'BestW')} {_a('green', f'+{hi_win:.8f}')}"
+          f"  {_a('dim', 'WorstL')} {_a('red', f'-{big_loss:.8f}')}"
+          f"  {_a('dim', 'Avg')} {_a(avg_c, f'{avg_s}{avg_pnl:.8f}')}"
+          f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
+    add(s5)
+
+    # ── Row 6: Sparkline placeholder (no history in state file) ──
+    add(f" {_a('dim', 'P/L')} {_a('dim', '—')}")
+
+    # ── Row 7: Separator ──────────────────────────────
+    add(_a("dim_blue", "─" * term_w))
+
+    # ── Row 8: Bets table header ──────────────────────
+    add(_a("dim", f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
+
+    # ── Rows 9..N-2: Recent bet rows ─────────────────
+    bets_avail = max(0, term_h - 10)
+    shown = bets[:bets_avail]  # already newest-first from DB
+
+    for b in shown:
+        bn = b["n"]
+        btm = b["time"]
+        bamt = b["amt"]
+        broll = b["roll"]
+        bpnl = b["pnl"]
+        bbal = b["bal"]
+        bwl_c = "bold_green" if b["state"] == "win" else "bold_red"
+        bwl_t = " W " if b["state"] == "win" else " L "
+        bpnl_c = "green" if bpnl >= 0 else "red"
+        bsign = "+" if bpnl >= 0 else ""
+        add(f"{_a('dim', f'{bn:>6}')}"
+            f"  {_a('dim', f'{btm:<9}')}"
+            f" {_a('white', f'{bamt:>14.8f}')}"
+            f"  {_a('white', f'{broll:>7.2f}')}"
+            f"  {_a(bwl_c, bwl_t)}"
+            f"  {_a(bpnl_c, f'{bsign}{bpnl:>14.8f}')}"
+            f"  {_a('white', f'{bbal:>14.8f}')}")
+
+    for _ in range(bets_avail - len(shown)):
+        add_blank()
+
+    # ── Row N-1: Bottom separator ─────────────────────
+    add(_a("dim_blue", "─" * term_w))
+
+    # ── Row N: Status + controls ──────────────────────
+    status_txt = status[:60] if status else "Monitoring…"
+    keys = "[P]ause [R]esume [Q]uit/Detach [S]top daemon"
+    add(f" {_a('bold_white', 'MONITOR')} {_a('white', status_txt)}  {_a('dim', keys)}")
+
+    return "\r\n".join(lines)
+
+
+def cmd_monitor():
+    """Attach a live TUI viewer to a running daemon session."""
+    d = _monitor_read_state()
+    if not d:
+        console.print("[yellow]No running session found. Start with: wolfctl start[/]")
+        return
+    pid = _monitor_get_pid(d)
+    if not pid:
+        console.print("[yellow]Daemon not running (stale state file).[/]")
+        return
+
+    sid = d.get("session_id", 0)
+    console.print(f"[dim]Attaching to session #{sid} (PID {pid})… Press Q to detach.[/]")
+    time.sleep(0.5)
+
+    # Save terminal state
+    _old_term = None
+    try:
+        import termios
+        _old_term = termios.tcgetattr(sys.stdin.fileno())
+    except Exception:
+        pass
+
+    # Enter alt screen
+    sys.stdout.write("\033[?1049h\033[?25l")
+    sys.stdout.flush()
+
+    # Keyboard reader in background thread
+    _monitor_running = [True]  # mutable so thread can see changes
+    _monitor_action = [None]
+
+    def _monitor_keys():
+        while _monitor_running[0]:
+            try:
+                import termios as _t, tty as _tty
+                fd = sys.stdin.fileno()
+                old = _t.tcgetattr(fd)
+                try:
+                    _tty.setraw(fd)
+                    ch = sys.stdin.read(1).lower()
+                finally:
+                    _t.tcsetattr(fd, _t.TCSADRAIN, old)
+                if ch in ("q", "\x03", "\x1c"):  # Q, Ctrl+C, Ctrl+\
+                    _monitor_action[0] = "quit"
+                    _monitor_running[0] = False
+                elif ch == "p":
+                    _monitor_action[0] = "pause"
+                elif ch == "r":
+                    _monitor_action[0] = "resume"
+                elif ch == "s":
+                    _monitor_action[0] = "stop"
+                    _monitor_running[0] = False
+            except Exception:
+                time.sleep(0.1)
+
+    t_keys = threading.Thread(target=_monitor_keys, daemon=True)
+    t_keys.start()
+
+    try:
+        while _monitor_running[0]:
+            # Handle pending actions
+            action = _monitor_action[0]
+            _monitor_action[0] = None
+            if action == "pause" and pid:
+                try:
+                    os.kill(pid, signal.SIGUSR1)
+                except OSError:
+                    pass
+            elif action == "resume" and pid:
+                try:
+                    os.kill(pid, signal.SIGUSR2)
+                except OSError:
+                    pass
+
+            # Read fresh state
+            d = _monitor_read_state()
+            if not d:
+                break
+            pid = _monitor_get_pid(d)
+
+            # Fetch recent bets from DB
+            bet_limit = max(0, (os.get_terminal_size().lines if sys.stdout.isatty() else 24) - 10)
+            recent_bets = _monitor_get_recent_bets(sid, bet_limit)
+
+            # Render
+            sys.stdout.write("\033[H")
+            sys.stdout.write(_build_monitor_screen(d, recent_bets, bool(pid)))
+            sys.stdout.flush()
+            time.sleep(0.5)
+
+        # Handle stop action
+        if _monitor_action[0] == "stop" or (locals().get("action") == "stop"):
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+    finally:
+        _monitor_running[0] = False
+        # Restore terminal
+        sys.stdout.write("\033[?25h\033[?1049l\033[0m")
+        sys.stdout.flush()
+        if _old_term is not None:
+            try:
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, _old_term)
+            except Exception:
+                pass
+        import subprocess
+        try:
+            subprocess.run(["stty", "sane"], stdin=sys.stdin, check=False)
+        except Exception:
+            pass
+
+    if _monitor_action[0] == "stop":
+        console.print("[bold red]Daemon stopped.[/]")
+    else:
+        console.print("[dim]Detached from monitor. Daemon continues running.[/]")
+
+
+# ══════════════════════════════════════════════════════════
 #  --status COMMAND
 # ══════════════════════════════════════════════════════════
 def cmd_status():
@@ -1950,6 +2279,8 @@ def main():
     parser = argparse.ArgumentParser(description="WolfBet AutoBot v" + VERSION)
     parser.add_argument("--resume",  action="store_true", help="Skip wizard, reuse saved config")
     parser.add_argument("--daemon",  action="store_true", help="Run in background (no TUI, implies --resume)")
+    parser.add_argument("--setup-only", action="store_true", help="Run wizard, save config, don't start betting")
+    parser.add_argument("--monitor", action="store_true", help="Attach live TUI to a running daemon session")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--status",  action="store_true", help="Show status of running session")
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
@@ -1990,6 +2321,18 @@ def main():
         return
     if args.session_bets is not None:
         cmd_session_bets(args.session_bets)
+        return
+
+    # ── Setup-only mode ───────────────────────────────────
+    if args.setup_only:
+        init_db()
+        setup_wizard()
+        console.print("[bold green]Config saved.[/] Start with: [cyan]wolfctl start[/] or [cyan]python3 wolfbet.py --daemon[/]")
+        return
+
+    # ── Monitor mode (attach to running daemon) ──────────
+    if args.monitor:
+        cmd_monitor()
         return
 
     init_db()
@@ -2062,6 +2405,18 @@ def main():
 
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+
+    # Remote control signals (from monitor)
+    def _sig_pause(sig, frame):
+        state.paused = True
+        state.status = "PAUSED (remote)"
+    def _sig_resume(sig, frame):
+        state.paused = False
+        state.status = "Resumed (remote)"
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, _sig_pause)
+    if hasattr(signal, "SIGUSR2"):
+        signal.signal(signal.SIGUSR2, _sig_resume)
 
     # ── Betting thread ────────────────────────────────────
     t_bet = threading.Thread(target=betting_loop, daemon=True, name="BettingLoop")

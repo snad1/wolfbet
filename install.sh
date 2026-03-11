@@ -92,16 +92,25 @@ usage() {
     echo ""
     echo "  wolfctl — WolfBet AutoBot Manager"
     echo ""
-    echo "  USAGE:"
-    echo "    wolfctl setup       Run wizard to configure (API key, strategy, etc.)"
-    echo "    wolfctl start       Start bot as background service"
+    echo "  SETUP:"
+    echo "    wolfctl setup       Run wizard to configure (saves config, doesn't start)"
+    echo ""
+    echo "  RUNNING:"
+    echo "    wolfctl start       Start bot as background daemon"
     echo "    wolfctl stop        Stop the bot"
     echo "    wolfctl restart     Restart the bot"
-    echo "    wolfctl status      Show bot status and session stats"
+    echo ""
+    echo "  MONITORING:"
+    echo "    wolfctl monitor     Attach live TUI to running daemon (Q=detach, S=stop)"
+    echo "    wolfctl status      Show bot status snapshot (non-interactive)"
     echo "    wolfctl logs        Stream live logs"
     echo "    wolfctl logs-full   Show last 200 log lines"
-    echo "    wolfctl interactive Run with live TUI dashboard (foreground)"
-    echo "    wolfctl tmux        Run TUI in a tmux session (detachable)"
+    echo ""
+    echo "  SHORTCUTS:"
+    echo "    wolfctl interactive Start daemon + attach monitor in one command"
+    echo "    wolfctl tmux        Run monitor in a detachable tmux session"
+    echo ""
+    echo "  DATA:"
     echo "    wolfctl stats       Show all-time session statistics"
     echo "    wolfctl presets     List saved presets"
     echo "    wolfctl update      Update bot from current directory"
@@ -110,9 +119,7 @@ usage() {
 
 cmd_setup() {
     echo "Running setup wizard…"
-    "$PYTHON" "$BOT"
-    echo ""
-    echo "Config saved. Start the bot with: wolfctl start"
+    "$PYTHON" "$BOT" --setup-only
 }
 
 cmd_start() {
@@ -163,27 +170,46 @@ cmd_logs_full() {
     journalctl --user -u "$SERVICE" -n 200 --no-pager
 }
 
+cmd_monitor() {
+    "$PYTHON" "$BOT" --monitor
+}
+
 cmd_interactive() {
     if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
-        echo "No config found. Running setup wizard…"
-        "$PYTHON" "$BOT"
-    else
-        "$PYTHON" "$BOT" --resume
+        echo "No config found. Run 'wolfctl setup' first."
+        exit 1
     fi
+    # Start daemon if not running
+    if ! systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        systemctl --user start "$SERVICE"
+        sleep 1
+        if ! systemctl --user is-active --quiet "$SERVICE"; then
+            echo "Failed to start daemon. Check: wolfctl logs-full"
+            exit 1
+        fi
+        echo "Daemon started."
+    fi
+    # Attach monitor
+    "$PYTHON" "$BOT" --monitor
 }
 
 cmd_tmux() {
     SESSION="wolfbet"
+    # Ensure daemon is running
+    if ! systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
+            echo "No config found. Run 'wolfctl setup' first."
+            exit 1
+        fi
+        systemctl --user start "$SERVICE"
+        sleep 1
+    fi
     if tmux has-session -t "$SESSION" 2>/dev/null; then
         echo "tmux session '$SESSION' already running."
         echo "  Attach:  tmux attach -t $SESSION"
     else
-        if [ -f "$HOME/.wolfbet_autobot.json" ]; then
-            tmux new-session -d -s "$SESSION" "$PYTHON $BOT --resume"
-        else
-            tmux new-session -d -s "$SESSION" "$PYTHON $BOT"
-        fi
-        echo "Started in tmux session '$SESSION'"
+        tmux new-session -d -s "$SESSION" "$PYTHON $BOT --monitor"
+        echo "Started monitor in tmux session '$SESSION'"
         echo "  Attach:  tmux attach -t $SESSION"
         echo "  Detach:  Ctrl+B then D"
     fi
@@ -214,6 +240,7 @@ case "${1:-}" in
     stop)        cmd_stop ;;
     restart)     cmd_restart ;;
     status)      cmd_status ;;
+    monitor)     cmd_monitor ;;
     logs)        cmd_logs ;;
     logs-full)   cmd_logs_full ;;
     interactive) cmd_interactive ;;
@@ -246,15 +273,16 @@ echo "  FIRST TIME SETUP:"
 echo "    wolfctl setup          Configure API key, strategy, etc."
 echo ""
 echo "  DAILY USE:"
-echo "    wolfctl start          Start bot in background"
+echo "    wolfctl start          Start bot as background daemon"
 echo "    wolfctl stop           Stop the bot"
-echo "    wolfctl status         Check session status"
+echo "    wolfctl monitor        Attach live TUI to running daemon"
+echo "    wolfctl status         Quick status snapshot"
 echo "    wolfctl logs           Stream live logs"
 echo "    wolfctl stats          View all-time statistics"
 echo ""
-echo "  INTERACTIVE (with live dashboard):"
-echo "    wolfctl interactive    Run in foreground with TUI"
-echo "    wolfctl tmux           Run TUI in detachable tmux session"
+echo "  SHORTCUTS:"
+echo "    wolfctl interactive    Start daemon + attach monitor"
+echo "    wolfctl tmux           Monitor in detachable tmux session"
 echo ""
 echo "  The bot runs as a systemd user service — it will:"
 echo "    - Auto-restart on crashes (after 10s)"
