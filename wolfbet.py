@@ -69,6 +69,7 @@ STRATEGIES  = {
     "5": ("Paroli (3-step)", "Double on win up to 3x then reset — safer streak play"),
     "6": ("WolfRider",      "2.01x on loss, reset on win + switch over/under on bet 2/6/9"),
     "7": ("Delay Martingale", "Flat for N losses then double — delays escalation"),
+    "8": ("Rule-Based",       "Build custom conditions & actions — full control"),
 }
 
 # ══════════════════════════════════════════════════════════
@@ -175,7 +176,7 @@ def load_config() -> bool:
             state.next_profit_milestone = state.profit_threshold
         # parse rules if present
         if state.custom_rules_text:
-            state.custom_rules = parse_rules(state.custom_rules_text)
+            state.custom_rules = _load_rules_from_text(state.custom_rules_text)
         return True
     except Exception:
         return False
@@ -221,7 +222,7 @@ def load_preset(name: str) -> bool:
     if state.profit_threshold:
         state.next_profit_milestone = state.profit_threshold
     if state.custom_rules_text:
-        state.custom_rules = parse_rules(state.custom_rules_text)
+        state.custom_rules = _load_rules_from_text(state.custom_rules_text)
     return True
 
 def delete_preset(name: str) -> bool:
@@ -236,31 +237,275 @@ def list_presets() -> dict:
     return _load_all_presets()
 
 # ══════════════════════════════════════════════════════════
-#  RULE-BASED STRATEGY ENGINE
+#  RULE-BASED STRATEGY ENGINE  (v2 — DarkDice-inspired)
 # ══════════════════════════════════════════════════════════
-class StrategyRule:
-    """A single rule: onEvery<N><trigger><Action> [params]"""
-    __slots__ = ("every_n", "trigger", "action", "value", "raw")
 
-    def __init__(self, every_n: int, trigger: str, action: str, value: float = 0.0, raw: str = ""):
-        self.every_n = every_n      # trigger every N occurrences
-        self.trigger = trigger      # "win", "lose", "bet"
-        self.action  = action       # "reset", "stop", "increase", "switch"
-        self.value   = value        # for increase: percentage (101 means *2.01)
-        self.raw     = raw          # original text
+# ── Condition types ──
+COND_TYPES = {
+    "1": "sequence",   # streak / count based
+    "2": "profit",     # profit / loss / balance based
+    "3": "bet",        # bet property based
+}
+
+# ── Sequence sub-options ──
+SEQ_MODES = {
+    "1": ("every",         "Every N"),
+    "2": ("every_streak",  "Every streak of N"),
+    "3": ("streak_above",  "Streak above N"),
+    "4": ("streak_below",  "Streak below N"),
+}
+SEQ_TRIGGERS = {"1": "win", "2": "loss", "3": "bet"}
+
+# ── Profit sub-options ──
+PROFIT_FIELDS = {"1": "profit", "2": "loss", "3": "balance"}
+
+# ── Bet sub-options ──
+BET_FIELDS = {"1": "amount", "2": "number", "3": "winchance", "4": "payout"}
+
+# ── Comparison operators (for profit and bet conditions) ──
+CMP_OPS = {
+    "1": ("gte", ">="),
+    "2": ("gt",  ">"),
+    "3": ("lte", "<="),
+    "4": ("lt",  "<"),
+}
+
+# ── Actions ──
+RULE_ACTIONS = {
+    "1":  ("reset_amount",    "Reset bet amount"),
+    "2":  ("increase_amount", "Increase amount by %"),
+    "3":  ("decrease_amount", "Decrease amount by %"),
+    "4":  ("add_amount",      "Add to amount"),
+    "5":  ("deduct_amount",   "Deduct from amount"),
+    "6":  ("set_amount",      "Set amount"),
+    "7":  ("switch",          "Switch over/under"),
+    "8":  ("stop",            "Stop betting"),
+    "9":  ("set_winchance",   "Set win chance"),
+    "10": ("increase_wc",     "Increase win chance by %"),
+    "11": ("decrease_wc",     "Decrease win chance by %"),
+    "12": ("reset_game",      "Reset game (full reset)"),
+}
+
+
+class StrategyRule:
+    """A single condition → action rule."""
+    __slots__ = ("cond_type", "cond_field", "cond_mode", "cond_value",
+                 "cond_trigger", "action", "action_value", "description")
+
+    def __init__(self, cond_type="", cond_field="", cond_mode="", cond_value=0.0,
+                 cond_trigger="", action="", action_value=0.0, description=""):
+        self.cond_type    = cond_type     # "sequence", "profit", "bet"
+        self.cond_field   = cond_field    # sequence: ""; profit: "profit"/"loss"/"balance"; bet: "amount"/"number"/"winchance"/"payout"
+        self.cond_mode    = cond_mode     # sequence: "every"/"every_streak"/"streak_above"/"streak_below"; profit/bet: "gte"/"gt"/"lte"/"lt"
+        self.cond_value   = cond_value    # threshold value (N for sequence, amount for profit/bet)
+        self.cond_trigger = cond_trigger  # "win"/"loss"/"bet" (only for sequence type)
+        self.action       = action        # action key from RULE_ACTIONS
+        self.action_value = action_value  # parameter for the action (percentage or absolute)
+        self.description  = description   # human-readable summary
 
     def __repr__(self):
-        return f"Rule({self.raw})"
+        return f"Rule({self.description})"
 
-def parse_rules(text: str) -> List[StrategyRule]:
-    """Parse rule text like:
-    onEvery1winReset amount
-    onEvery100000winStop
-    onEvery1loseIncrease amount by 101%
-    onEvery2betSwitch over/under
-    """
+    def to_dict(self) -> dict:
+        return {k: getattr(self, k) for k in self.__slots__}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StrategyRule":
+        return cls(**{k: d.get(k, "") for k in cls.__slots__})
+
+
+def _describe_rule(r: StrategyRule) -> str:
+    """Build a human-readable description for a rule."""
+    # Condition part
+    if r.cond_type == "sequence":
+        mode_label = dict(every="Every", every_streak="Every streak of",
+                          streak_above="Streak above", streak_below="Streak below").get(r.cond_mode, r.cond_mode)
+        cond = f"{mode_label} {int(r.cond_value)} {r.cond_trigger}(s)"
+    elif r.cond_type == "profit":
+        op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
+        cond = f"On {r.cond_field} {op_sym} {r.cond_value}"
+    elif r.cond_type == "bet":
+        op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
+        cond = f"On bet {r.cond_field} {op_sym} {r.cond_value}"
+    else:
+        cond = "?"
+
+    # Action part
+    act_labels = {k: v[1] for k, v in RULE_ACTIONS.items()}
+    act_name = act_labels.get(
+        next((k for k, v in RULE_ACTIONS.items() if v[0] == r.action), ""), r.action
+    )
+    if r.action_value and "%" in act_name:
+        act = f"{act_name.replace(' %', '')} {r.action_value}%"
+    elif r.action_value:
+        act = f"{act_name} {r.action_value}"
+    else:
+        act = act_name
+
+    return f"{cond} → {act}"
+
+
+def _cmp(actual: float, mode: str, threshold: float) -> bool:
+    """Compare using operator mode."""
+    if mode == "gte": return actual >= threshold
+    if mode == "gt":  return actual > threshold
+    if mode == "lte": return actual <= threshold
+    if mode == "lt":  return actual < threshold
+    return False
+
+
+def _apply_action(rule: StrategyRule):
+    """Execute a rule's action on the bot state."""
+    a = rule.action
+    v = rule.action_value
+
+    if a == "reset_amount":
+        state.current_bet = state.base_bet
+    elif a == "increase_amount":
+        state.current_bet *= (1 + v / 100)
+    elif a == "decrease_amount":
+        state.current_bet *= (1 - v / 100)
+        state.current_bet = max(state.current_bet, state.base_bet)
+    elif a == "add_amount":
+        state.current_bet += v
+    elif a == "deduct_amount":
+        state.current_bet = max(state.base_bet, state.current_bet - v)
+    elif a == "set_amount":
+        state.current_bet = max(state.base_bet, v)
+    elif a == "switch":
+        state.rule = "under" if state.rule == "over" else "over"
+        win_chance = 99.0 / state.multiplier
+        if state.rule == "over":
+            state.bet_value = round(100.0 - win_chance - 0.01, 2)
+        else:
+            state.bet_value = round(win_chance, 2)
+        logger.debug("RULE SWITCH → %s  bet_value=%s", state.rule, state.bet_value)
+    elif a == "stop":
+        state.running = False
+        state.status = f"Rule stop: {rule.description}"
+        logger.warning("RULE STOP triggered: %s", rule.description)
+    elif a == "set_winchance":
+        # v is the new win chance percentage → recalculate multiplier and bet_value
+        wc = max(0.01, min(98.99, v))
+        state.multiplier = round(99.0 / wc, 4)
+        if state.rule == "over":
+            state.bet_value = round(100.0 - wc - 0.01, 2)
+        else:
+            state.bet_value = round(wc, 2)
+        logger.debug("RULE SET WC → %.2f%%  mult=%.4f  bv=%.2f", wc, state.multiplier, state.bet_value)
+    elif a == "increase_wc":
+        wc = 99.0 / state.multiplier
+        wc = min(98.99, wc * (1 + v / 100))
+        state.multiplier = round(99.0 / wc, 4)
+        if state.rule == "over":
+            state.bet_value = round(100.0 - wc - 0.01, 2)
+        else:
+            state.bet_value = round(wc, 2)
+    elif a == "decrease_wc":
+        wc = 99.0 / state.multiplier
+        wc = max(0.01, wc * (1 - v / 100))
+        state.multiplier = round(99.0 / wc, 4)
+        if state.rule == "over":
+            state.bet_value = round(100.0 - wc - 0.01, 2)
+        else:
+            state.bet_value = round(wc, 2)
+    elif a == "reset_game":
+        state.current_bet = state.base_bet
+        state.current_streak = 0
+        logger.info("RULE RESET GAME triggered: %s", rule.description)
+
+
+def apply_rules(bet_state: str):
+    """Evaluate and apply all rule-based strategy rules after a bet result.
+    bet_state is 'win' or 'loss'."""
+    for rule in state.custom_rules:
+        triggered = False
+
+        if rule.cond_type == "sequence":
+            # Determine the relevant count/streak
+            streak = state.current_streak  # + = win streak, – = loss streak
+            trig = rule.cond_trigger
+            n = rule.cond_value
+
+            if rule.cond_mode == "every":
+                # Every N wins/losses/bets
+                if trig == "win" and bet_state == "win":
+                    triggered = (state.wins > 0 and state.wins % int(n) == 0)
+                elif trig == "loss" and bet_state == "loss":
+                    triggered = (state.losses > 0 and state.losses % int(n) == 0)
+                elif trig == "bet":
+                    triggered = (state.total_bets > 0 and state.total_bets % int(n) == 0)
+
+            elif rule.cond_mode == "every_streak":
+                # Every streak of exactly N (fires when streak hits N)
+                if trig == "win" and bet_state == "win":
+                    triggered = (streak == int(n))
+                elif trig == "loss" and bet_state == "loss":
+                    triggered = (abs(streak) == int(n))
+
+            elif rule.cond_mode == "streak_above":
+                # Current streak is above N
+                if trig == "win" and bet_state == "win":
+                    triggered = (streak > int(n))
+                elif trig == "loss" and bet_state == "loss":
+                    triggered = (abs(streak) > int(n))
+
+            elif rule.cond_mode == "streak_below":
+                # Current streak is below N (just started)
+                if trig == "win" and bet_state == "win":
+                    triggered = (streak < int(n))
+                elif trig == "loss" and bet_state == "loss":
+                    triggered = (abs(streak) < int(n))
+
+        elif rule.cond_type == "profit":
+            field = rule.cond_field
+            if field == "profit" and state.profit > 0:
+                triggered = _cmp(state.profit, rule.cond_mode, rule.cond_value)
+            elif field == "loss" and state.profit < 0:
+                triggered = _cmp(abs(state.profit), rule.cond_mode, rule.cond_value)
+            elif field == "balance":
+                triggered = _cmp(state.current_balance, rule.cond_mode, rule.cond_value)
+
+        elif rule.cond_type == "bet":
+            field = rule.cond_field
+            if field == "amount":
+                triggered = _cmp(state.current_bet, rule.cond_mode, rule.cond_value)
+            elif field == "number":
+                triggered = _cmp(state.total_bets, rule.cond_mode, rule.cond_value)
+            elif field == "winchance":
+                wc = 99.0 / state.multiplier
+                triggered = _cmp(wc, rule.cond_mode, rule.cond_value)
+            elif field == "payout":
+                triggered = _cmp(state.multiplier, rule.cond_mode, rule.cond_value)
+
+        if triggered:
+            logger.debug("RULE FIRED: %s", rule.description)
+            _apply_action(rule)
+
+
+def _load_rules_from_text(text: str) -> List[StrategyRule]:
+    """Load rules from saved config. Supports new JSON format and legacy text format."""
+    text = text.strip()
+    if not text:
+        return []
+
+    # Try JSON format first (new v2 rules)
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+            rules = []
+            for d in data:
+                r = StrategyRule.from_dict(d)
+                if not r.description:
+                    r.description = _describe_rule(r)
+                rules.append(r)
+            return rules
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Legacy text format: onEvery<N><trigger><Action> [params]
     rules = []
-    for line in text.strip().splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -269,7 +514,7 @@ def parse_rules(text: str) -> List[StrategyRule]:
             line, re.IGNORECASE
         )
         if not m:
-            logger.warning("Could not parse rule: %s", line)
+            logger.warning("Could not parse legacy rule: %s", line)
             continue
         n       = int(m.group(1))
         trigger = m.group(2).lower()
@@ -282,41 +527,19 @@ def parse_rules(text: str) -> List[StrategyRule]:
             if pct:
                 value = float(pct.group(1))
 
-        rules.append(StrategyRule(n, trigger, action, value, raw=line))
+        # Map legacy to new format
+        action_map = {"reset": "reset_amount", "stop": "stop",
+                      "increase": "increase_amount", "switch": "switch"}
+        r = StrategyRule(
+            cond_type="sequence", cond_mode="every", cond_value=float(n),
+            cond_trigger=trigger if trigger != "lose" else "loss",
+            action=action_map.get(action, action), action_value=value,
+        )
+        r.description = _describe_rule(r)
+        rules.append(r)
 
     return rules
 
-def apply_rules(bet_state: str):
-    """Apply rule-based strategy rules after a bet result.
-    bet_state is 'win' or 'loss'."""
-    for rule in state.custom_rules:
-        # determine which counter to check
-        if rule.trigger == "win" and bet_state == "win":
-            count = state.wins
-        elif rule.trigger == "lose" and bet_state == "loss":
-            count = state.losses
-        elif rule.trigger == "bet":
-            count = state.total_bets
-        else:
-            continue
-
-        if count > 0 and count % rule.every_n == 0:
-            if rule.action == "reset":
-                state.current_bet = state.base_bet
-            elif rule.action == "stop":
-                state.running = False
-                state.status = f"Rule stop: every {rule.every_n} {rule.trigger}(s)"
-                logger.warning("RULE STOP triggered: %s", rule.raw)
-            elif rule.action == "increase":
-                state.current_bet *= (1 + rule.value / 100)
-            elif rule.action == "switch":
-                state.rule = "under" if state.rule == "over" else "over"
-                win_chance = 99.0 / state.multiplier
-                if state.rule == "over":
-                    state.bet_value = round(100.0 - win_chance - 0.01, 2)
-                else:
-                    state.bet_value = round(win_chance, 2)
-                logger.debug("RULE SWITCH → %s  bet_value=%s", state.rule, state.bet_value)
 
 # ══════════════════════════════════════════════════════════
 #  BOT STATE — single shared object
@@ -507,45 +730,49 @@ def compute_next_bet(last_result: str) -> float:
     key  = state.strategy_key
     base = state.base_bet
     cur  = state.current_bet
+    lm   = state.loss_mult   # on-loss multiplier (e.g. 2.0, 2.01, 1.5)
+    wm   = state.win_mult    # on-win multiplier  (e.g. 2.0, 1.0)
 
     if key == "1":   # Flat
         return base
 
-    elif key == "2": # Martingale
-        return (cur * 2.01) if last_result == "loss" else base
+    elif key == "2": # Martingale — multiply on loss, reset on win
+        return (cur * lm) if last_result == "loss" else base
 
-    elif key == "3": # Anti-Martingale
-        return (cur * 2) if last_result == "win" else base
+    elif key == "3": # Anti-Martingale — multiply on win, reset on loss
+        return (cur * wm) if last_result == "win" else base
 
-    elif key == "4": # D'Alembert
+    elif key == "4": # D'Alembert — add 1 unit on loss, remove 1 on win
         if last_result == "loss":
             state.dalembert_unit += 1
         elif last_result == "win" and state.dalembert_unit > 0:
             state.dalembert_unit -= 1
         return base * (1 + state.dalembert_unit)
 
-    elif key == "5": # Paroli
+    elif key == "5": # Paroli — multiply on win up to 3x, then reset
         if last_result == "win":
             state.paroli_count += 1
             if state.paroli_count >= 3:
                 state.paroli_count = 0
                 return base
-            return cur * 2
+            return cur * wm
         else:
             state.paroli_count = 0
             return base
 
-    elif key == "6": # WolfRider — 2.01x on loss, reset on win (switching handled separately)
-        return base if last_result == "win" else (cur * 2.01)
+    elif key == "6": # WolfRider — multiply on loss, reset on win (switching handled separately)
+        return base if last_result == "win" else (cur * lm)
 
-    elif key == "7": # Delay Martingale — flat for N consecutive losses, then double
+    elif key == "7": # Delay Martingale — flat for N losses, then multiply
         if last_result == "win":
             return base
-        # count consecutive losses from current_streak (negative = loss streak)
         consec_losses = abs(min(state.current_streak, 0))
         if consec_losses <= state.delay_martin_threshold:
-            return base  # still in delay period, flat bet
-        return cur * 2.01   # past threshold, double
+            return base
+        return cur * lm
+
+    elif key == "8": # Rule-Based — rules manage the bet amount directly
+        return cur   # don't change; apply_rules() handles adjustments
 
     return base
 
@@ -753,6 +980,10 @@ def betting_loop():
         # ── WolfRider: switch over/under after bet ──
         if state.strategy_key == "6":
             wolfrider_switch()
+
+        # ── Rule-Based: apply custom rules after bet ──
+        if state.strategy_key == "8" and state.custom_rules:
+            apply_rules(bet_state)
 
         # calculate next bet amount with safety cap (20% of balance)
         raw_next  = compute_next_bet(bet_state)
@@ -1217,6 +1448,12 @@ def _ask(prompt_text: str, default: str = "", choices: list = None) -> str:
         if raw.lower() == "back":
             return _BACK
         if not raw:
+            if default:
+                return default
+            if choices:
+                console.print(f"    [red]Choose from:[/] {', '.join(choices)}")
+                console.print(f"  [bold cyan]>[/] {prompt_text}{hint}", end="")
+                continue
             return default
         if choices and raw.lower() not in [c.lower() for c in choices]:
             console.print(f"    [red]Choose from:[/] {', '.join(choices)}")
@@ -1243,6 +1480,333 @@ def _ask_optional(prompt_text: str, current) -> str:
     if not raw:
         return str(current) if current is not None else ""
     return raw
+
+
+def _build_one_rule():
+    """Interactive builder for a single rule. Returns StrategyRule, _BACK, or None (done)."""
+    console.print("  [bold cyan]── New Rule ──[/]")
+    console.print("    [dim]Condition type:[/]")
+    for k, name in COND_TYPES.items():
+        label = {"sequence": "Sequence (streaks/counts)", "profit": "Profit / Loss / Balance",
+                 "bet": "Bet properties"}.get(name, name)
+        console.print(f"      [bold yellow][{k}][/] {label}")
+
+    ct = _ask("  Condition type", choices=list(COND_TYPES.keys()))
+    if ct is _BACK:
+        return _BACK
+    cond_type = COND_TYPES[ct]
+
+    cond_field = ""
+    cond_mode = ""
+    cond_value = 0.0
+    cond_trigger = ""
+
+    if cond_type == "sequence":
+        # Ask for mode
+        console.print("    [dim]When should this fire?[/]")
+        for k, (_, label) in SEQ_MODES.items():
+            console.print(f"      [bold yellow][{k}][/] {label}")
+        sm = _ask("  Sequence mode", choices=list(SEQ_MODES.keys()))
+        if sm is _BACK:
+            return _BACK
+        cond_mode = SEQ_MODES[sm][0]
+
+        # Ask for value N
+        nv = _ask("  N value (number)", default="1")
+        if nv is _BACK:
+            return _BACK
+        try:
+            cond_value = float(nv)
+        except ValueError:
+            console.print("    [red]Invalid number[/]")
+            return None
+
+        # Ask for trigger (win/loss/bet)
+        console.print("    [dim]On which event?[/]")
+        for k, t in SEQ_TRIGGERS.items():
+            console.print(f"      [bold yellow][{k}][/] {t}")
+        st = _ask("  Event", choices=list(SEQ_TRIGGERS.keys()))
+        if st is _BACK:
+            return _BACK
+        cond_trigger = SEQ_TRIGGERS[st]
+
+    elif cond_type == "profit":
+        # Ask for field
+        console.print("    [dim]Check what?[/]")
+        for k, name in PROFIT_FIELDS.items():
+            console.print(f"      [bold yellow][{k}][/] {name}")
+        pf = _ask("  Field", choices=list(PROFIT_FIELDS.keys()))
+        if pf is _BACK:
+            return _BACK
+        cond_field = PROFIT_FIELDS[pf]
+
+        # Ask for operator
+        console.print("    [dim]Comparison:[/]")
+        for k, (_, sym) in CMP_OPS.items():
+            console.print(f"      [bold yellow][{k}][/] {sym}")
+        op = _ask("  Operator", choices=list(CMP_OPS.keys()))
+        if op is _BACK:
+            return _BACK
+        cond_mode = CMP_OPS[op][0]
+
+        # Ask for value
+        vl = _ask(f"  Value ({state.currency.upper()})", default="0")
+        if vl is _BACK:
+            return _BACK
+        try:
+            cond_value = float(vl)
+        except ValueError:
+            console.print("    [red]Invalid number[/]")
+            return None
+
+    elif cond_type == "bet":
+        # Ask for field
+        console.print("    [dim]Check what?[/]")
+        for k, name in BET_FIELDS.items():
+            console.print(f"      [bold yellow][{k}][/] {name}")
+        bf = _ask("  Field", choices=list(BET_FIELDS.keys()))
+        if bf is _BACK:
+            return _BACK
+        cond_field = BET_FIELDS[bf]
+
+        # Ask for operator
+        console.print("    [dim]Comparison:[/]")
+        for k, (_, sym) in CMP_OPS.items():
+            console.print(f"      [bold yellow][{k}][/] {sym}")
+        op = _ask("  Operator", choices=list(CMP_OPS.keys()))
+        if op is _BACK:
+            return _BACK
+        cond_mode = CMP_OPS[op][0]
+
+        # Ask for value
+        unit = "%" if cond_field == "winchance" else ("x" if cond_field == "payout" else "")
+        vl = _ask(f"  Value{(' (' + unit + ')') if unit else ''}", default="0")
+        if vl is _BACK:
+            return _BACK
+        try:
+            cond_value = float(vl)
+        except ValueError:
+            console.print("    [red]Invalid number[/]")
+            return None
+
+    # ── Ask for action ──
+    console.print("    [dim]Then do what?[/]")
+    for k, (_, label) in RULE_ACTIONS.items():
+        console.print(f"      [bold yellow][{k:>2}][/] {label}")
+    ak = _ask("  Action", choices=list(RULE_ACTIONS.keys()))
+    if ak is _BACK:
+        return _BACK
+    action = RULE_ACTIONS[ak][0]
+
+    # Ask for action value if needed
+    action_value = 0.0
+    needs_value = action in ("increase_amount", "decrease_amount", "add_amount",
+                             "deduct_amount", "set_amount", "set_winchance",
+                             "increase_wc", "decrease_wc")
+    if needs_value:
+        if action in ("increase_amount", "decrease_amount", "increase_wc", "decrease_wc"):
+            unit_hint = "%"
+        elif action == "set_winchance":
+            unit_hint = "% win chance"
+        else:
+            unit_hint = state.currency.upper()
+        av = _ask(f"  Value ({unit_hint})", default="0")
+        if av is _BACK:
+            return _BACK
+        try:
+            action_value = float(av)
+        except ValueError:
+            console.print("    [red]Invalid number[/]")
+            return None
+
+    rule = StrategyRule(
+        cond_type=cond_type, cond_field=cond_field, cond_mode=cond_mode,
+        cond_value=cond_value, cond_trigger=cond_trigger,
+        action=action, action_value=action_value,
+    )
+    rule.description = _describe_rule(rule)
+    return rule
+
+
+def _edit_one_rule(old: StrategyRule):
+    """Edit an existing rule part-by-part. Returns updated StrategyRule, _BACK, or None."""
+    # Work on a mutable copy
+    r = StrategyRule.from_dict(old.to_dict())
+    act_label = next((v[1] for v in RULE_ACTIONS.values() if v[0] == r.action), r.action)
+
+    while True:
+        # Show current rule parts as a numbered menu
+        console.print()
+        console.print(f"    [bold]{r.description}[/]")
+        console.print()
+
+        parts = []
+        if r.cond_type == "sequence":
+            mode_label = dict(every="Every N", every_streak="Every streak of N",
+                              streak_above="Streak above N", streak_below="Streak below N").get(r.cond_mode, r.cond_mode)
+            parts.append(("Condition",  r.cond_type.title()))
+            parts.append(("Mode",       mode_label))
+            parts.append(("N value",    str(int(r.cond_value))))
+            parts.append(("Event",      r.cond_trigger))
+        elif r.cond_type == "profit":
+            op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
+            parts.append(("Condition",  r.cond_type.title()))
+            parts.append(("Field",      r.cond_field))
+            parts.append(("Operator",   op_sym))
+            parts.append(("Value",      str(r.cond_value)))
+        elif r.cond_type == "bet":
+            op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
+            parts.append(("Condition",  r.cond_type.title()))
+            parts.append(("Field",      r.cond_field))
+            parts.append(("Operator",   op_sym))
+            parts.append(("Value",      str(r.cond_value)))
+
+        act_label = next((v[1] for v in RULE_ACTIONS.values() if v[0] == r.action), r.action)
+        parts.append(("Action",     act_label))
+        if r.action_value:
+            parts.append(("Action value", str(r.action_value)))
+
+        for i, (label, val) in enumerate(parts, 1):
+            console.print(f"      [bold yellow][{i}][/] {label:14s} [cyan]{val}[/]")
+        save_n = len(parts) + 1
+        replace_n = save_n + 1
+        console.print(f"      [bold yellow][{save_n}][/] [green]Save changes[/]")
+        console.print(f"      [bold yellow][{replace_n}][/] [yellow]Rebuild from scratch[/]")
+
+        valid = [str(i) for i in range(1, replace_n + 1)]
+        pick = _ask("    Edit which part?", default=str(save_n), choices=valid)
+        if pick is _BACK:
+            return _BACK
+        pick = int(pick)
+
+        if pick == save_n:
+            r.description = _describe_rule(r)
+            return r
+
+        if pick == replace_n:
+            console.print("    [dim]Building replacement rule…[/]")
+            replacement = _build_one_rule()
+            if replacement is _BACK:
+                continue
+            return replacement
+
+        label = parts[pick - 1][0]
+
+        # ── Edit the selected part ──
+        if label == "Condition":
+            console.print("      [dim]Change condition type:[/]")
+            for k, name in COND_TYPES.items():
+                tag = {"sequence": "Sequence", "profit": "Profit / Loss / Balance",
+                       "bet": "Bet properties"}.get(name, name)
+                console.print(f"        [bold yellow][{k}][/] {tag}")
+            cur_key = next((k for k, v in COND_TYPES.items() if v == r.cond_type), "1")
+            ct = _ask("      Type", default=cur_key, choices=list(COND_TYPES.keys()))
+            if ct is _BACK:
+                continue
+            new_type = COND_TYPES[ct]
+            if new_type != r.cond_type:
+                # Type changed — reset related fields to defaults
+                r.cond_type = new_type
+                if new_type == "sequence":
+                    r.cond_field = ""
+                    r.cond_mode = "every"
+                    r.cond_value = 1.0
+                    r.cond_trigger = "win"
+                elif new_type == "profit":
+                    r.cond_field = "profit"
+                    r.cond_mode = "gte"
+                    r.cond_value = 0.0
+                    r.cond_trigger = ""
+                elif new_type == "bet":
+                    r.cond_field = "amount"
+                    r.cond_mode = "gte"
+                    r.cond_value = 0.0
+                    r.cond_trigger = ""
+
+        elif label == "Mode":
+            console.print("      [dim]Sequence mode:[/]")
+            for k, (_, ml) in SEQ_MODES.items():
+                console.print(f"        [bold yellow][{k}][/] {ml}")
+            cur_key = next((k for k, v in SEQ_MODES.items() if v[0] == r.cond_mode), "1")
+            sm = _ask("      Mode", default=cur_key, choices=list(SEQ_MODES.keys()))
+            if sm is _BACK:
+                continue
+            r.cond_mode = SEQ_MODES[sm][0]
+
+        elif label == "N value":
+            nv = _ask("      N value", default=str(int(r.cond_value)))
+            if nv is _BACK:
+                continue
+            try:
+                r.cond_value = float(nv)
+            except ValueError:
+                console.print("      [red]Invalid number[/]")
+
+        elif label == "Event":
+            console.print("        [bold yellow][1][/] win  [bold yellow][2][/] loss  [bold yellow][3][/] bet")
+            cur_key = {"win": "1", "loss": "2", "bet": "3"}.get(r.cond_trigger, "1")
+            st = _ask("      Event", default=cur_key, choices=["1", "2", "3"])
+            if st is _BACK:
+                continue
+            r.cond_trigger = SEQ_TRIGGERS[st]
+
+        elif label == "Field":
+            if r.cond_type == "profit":
+                console.print("        [bold yellow][1][/] profit  [bold yellow][2][/] loss  [bold yellow][3][/] balance")
+                cur_key = next((k for k, v in PROFIT_FIELDS.items() if v == r.cond_field), "1")
+                pf = _ask("      Field", default=cur_key, choices=list(PROFIT_FIELDS.keys()))
+                if pf is _BACK:
+                    continue
+                r.cond_field = PROFIT_FIELDS[pf]
+            elif r.cond_type == "bet":
+                for k, name in BET_FIELDS.items():
+                    console.print(f"        [bold yellow][{k}][/] {name}")
+                cur_key = next((k for k, v in BET_FIELDS.items() if v == r.cond_field), "1")
+                bf = _ask("      Field", default=cur_key, choices=list(BET_FIELDS.keys()))
+                if bf is _BACK:
+                    continue
+                r.cond_field = BET_FIELDS[bf]
+
+        elif label == "Operator":
+            for k, (_, sym) in CMP_OPS.items():
+                console.print(f"        [bold yellow][{k}][/] {sym}")
+            cur_key = next((k for k, v in CMP_OPS.items() if v[0] == r.cond_mode), "1")
+            op = _ask("      Operator", default=cur_key, choices=list(CMP_OPS.keys()))
+            if op is _BACK:
+                continue
+            r.cond_mode = CMP_OPS[op][0]
+
+        elif label == "Value":
+            vl = _ask("      Value", default=str(r.cond_value))
+            if vl is _BACK:
+                continue
+            try:
+                r.cond_value = float(vl)
+            except ValueError:
+                console.print("      [red]Invalid number[/]")
+
+        elif label == "Action":
+            console.print("      [dim]Change action:[/]")
+            for k, (_, al) in RULE_ACTIONS.items():
+                console.print(f"        [bold yellow][{k:>2}][/] {al}")
+            cur_key = next((k for k, v in RULE_ACTIONS.items() if v[0] == r.action), "1")
+            ak = _ask("      Action", default=cur_key, choices=list(RULE_ACTIONS.keys()))
+            if ak is _BACK:
+                continue
+            new_action = RULE_ACTIONS[ak][0]
+            if new_action != r.action:
+                r.action = new_action
+                r.action_value = 0.0  # reset value when action changes
+
+        elif label == "Action value":
+            av = _ask("      Action value", default=str(r.action_value))
+            if av is _BACK:
+                continue
+            try:
+                r.action_value = float(av)
+            except ValueError:
+                console.print("      [red]Invalid number[/]")
+
 
 def setup_wizard():
     console.clear()
@@ -1350,10 +1914,20 @@ def setup_wizard():
             console.print(f"    [yellow]{mult:5.2f}x[/]  →  ~{chance:.0f}% win")
         console.print()
 
-        v = _ask("Multiplier", default=str(state.multiplier))
-        if v is _BACK:
-            return False
-        state.multiplier = float(v)
+        while True:
+            v = _ask("Multiplier", default=str(state.multiplier))
+            if v is _BACK:
+                return False
+            try:
+                m = float(v)
+            except ValueError:
+                console.print("    [red]Enter a valid number[/]")
+                continue
+            if m < 1.01:
+                console.print("    [red]Multiplier must be at least 1.01[/]")
+                continue
+            state.multiplier = m
+            break
         win_chance = 99.0 / state.multiplier
         if state.rule == "over":
             state.bet_value = round(100.0 - win_chance - 0.01, 2)
@@ -1380,11 +1954,34 @@ def setup_wizard():
         state.strategy_key = v
         state.strategy     = STRATEGIES[v][0]
 
-        if v == "6":
+        # ── Strategy parameter editing ──
+        if v in ("2", "3", "5", "6", "7"):
             console.print()
+            # Set sensible defaults based on strategy if coming from a different one
+            if v in ("2", "6", "7"):  # loss-based strategies
+                console.print(f"  [dim]On loss: multiply bet by[/] [yellow]{state.loss_mult}x[/]")
+                lm = _ask("  Loss multiplier", default=str(state.loss_mult))
+                if lm is _BACK:
+                    return False
+                try:
+                    state.loss_mult = float(lm)
+                except ValueError:
+                    pass
+            if v in ("3", "5"):  # win-based strategies
+                console.print(f"  [dim]On win: multiply bet by[/] [yellow]{state.win_mult}x[/]")
+                wm = _ask("  Win multiplier", default=str(state.win_mult))
+                if wm is _BACK:
+                    return False
+                try:
+                    state.win_mult = float(wm)
+                except ValueError:
+                    pass
+            console.print()
+
+        if v == "6":
             console.print("  [bold cyan]WolfRider[/] — your dedicated strategy:")
-            console.print("    [green]• On win:[/]  reset to base bet")
-            console.print("    [green]• On loss:[/] increase by 2.01x")
+            console.print(f"    [green]• On win:[/]  reset to base bet")
+            console.print(f"    [green]• On loss:[/] multiply by {state.loss_mult}x")
             console.print("    [green]• Switch over/under[/] on every 2nd, 6th, and 9th bet")
             console.print()
 
@@ -1398,6 +1995,99 @@ def setup_wizard():
                 return False
             state.delay_martin_threshold = int(d)
             console.print(f"    [green]→ Flat for {state.delay_martin_threshold} losses, then Martingale[/]\n")
+
+        elif v == "8":
+            console.print()
+            console.print("  [bold cyan]Rule-Based Strategy[/] — build custom conditions & actions")
+            console.print("  [dim]Each rule: IF <condition> THEN <action>[/]")
+            console.print()
+
+            # Rule management loop
+            while True:
+                if state.custom_rules:
+                    console.print(f"  [yellow]Current rules ({len(state.custom_rules)}):[/]")
+                    for i, r in enumerate(state.custom_rules, 1):
+                        console.print(f"    [dim]{i}.[/] {r.description}")
+                    console.print()
+                    console.print("    [bold yellow][1][/] Add rule   [bold yellow][2][/] Edit rule   [bold yellow][3][/] Delete rule   [bold yellow][4][/] Clear all   [bold yellow][5][/] Continue")
+                    v2 = _ask("  Select", default="5", choices=["1", "2", "3", "4", "5"])
+                    if v2 is _BACK:
+                        return False
+
+                    if v2 == "5":
+                        break
+
+                    elif v2 == "1":
+                        rule = _build_one_rule()
+                        if rule is _BACK:
+                            continue
+                        if rule is not None:
+                            state.custom_rules.append(rule)
+                            console.print(f"    [green]✓ Rule {len(state.custom_rules)}:[/] {rule.description}\n")
+
+                    elif v2 == "2":
+                        if len(state.custom_rules) == 1:
+                            idx = 0
+                        else:
+                            en = _ask(f"  Rule # to edit (1-{len(state.custom_rules)})")
+                            if en is _BACK:
+                                continue
+                            try:
+                                idx = int(en) - 1
+                                if not (0 <= idx < len(state.custom_rules)):
+                                    console.print("    [red]Invalid rule number[/]")
+                                    continue
+                            except ValueError:
+                                console.print("    [red]Enter a number[/]")
+                                continue
+                        old = state.custom_rules[idx]
+                        console.print(f"    [dim]Editing:[/] {old.description}")
+                        replacement = _edit_one_rule(old)
+                        if replacement is _BACK:
+                            continue
+                        if replacement is not None:
+                            state.custom_rules[idx] = replacement
+                            console.print(f"    [green]✓ Updated:[/] {replacement.description}\n")
+
+                    elif v2 == "3":
+                        if len(state.custom_rules) == 1:
+                            idx = 0
+                        else:
+                            dn = _ask(f"  Rule # to delete (1-{len(state.custom_rules)})")
+                            if dn is _BACK:
+                                continue
+                            try:
+                                idx = int(dn) - 1
+                                if not (0 <= idx < len(state.custom_rules)):
+                                    console.print("    [red]Invalid rule number[/]")
+                                    continue
+                            except ValueError:
+                                console.print("    [red]Enter a number[/]")
+                                continue
+                        removed = state.custom_rules.pop(idx)
+                        console.print(f"    [red]Deleted:[/] {removed.description}\n")
+
+                    elif v2 == "4":
+                        state.custom_rules = []
+                        console.print("    [yellow]All rules cleared.[/]\n")
+
+                else:
+                    # No existing rules — go straight to builder
+                    console.print("  [dim]No rules yet. Let's build some.[/]\n")
+                    rule = _build_one_rule()
+                    if rule is _BACK:
+                        return False
+                    if rule is not None:
+                        state.custom_rules.append(rule)
+                        console.print(f"    [green]✓ Rule {len(state.custom_rules)}:[/] {rule.description}\n")
+                    else:
+                        break
+
+            if state.custom_rules:
+                state.custom_rules_text = json.dumps([r.to_dict() for r in state.custom_rules])
+                console.print(f"  [bold green]→ {len(state.custom_rules)} rule(s) configured[/]\n")
+            else:
+                console.print("  [yellow]No rules configured — will use Flat bet.[/]\n")
 
         console.print()
         return True
@@ -1483,6 +2173,8 @@ def setup_wizard():
             rows.append(("Switching",   "over/under on bet 2, 6, 9 multiples"))
         if state.strategy_key == "7":
             rows.append(("Delay",       f"flat for {state.delay_martin_threshold} losses"))
+        if state.strategy_key == "8" and state.custom_rules:
+            rows.append(("Rules",       f"{len(state.custom_rules)} custom rule(s)"))
         rows += [
             ("Max profit",      str(state.max_profit) if state.max_profit else "—"),
             ("Max loss",        str(state.max_loss)   if state.max_loss   else "—"),
@@ -1494,6 +2186,12 @@ def setup_wizard():
         ]
         for k, val in rows:
             console.print(f"  [dim]{k:18s}[/] [yellow]{val}[/]")
+
+        # Show rule details for strategy 8
+        if state.strategy_key == "8" and state.custom_rules:
+            console.print()
+            for i, r in enumerate(state.custom_rules, 1):
+                console.print(f"    [dim]{i}.[/] [green]{r.description}[/]")
 
         console.print()
         console.print("[bold red]  WARNING: Real money will be wagered. Bet responsibly.[/]")
