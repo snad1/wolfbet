@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.0
+# WolfBet AutoBot v2.4
 
 High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact terminal dashboard. Runs on any VPS or local machine — leave it running in tmux and check stats any time.
 
@@ -8,7 +8,7 @@ High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact termi
 
 | Feature | Details |
 |---|---|
-| **Ultra-compact TUI** | Borderless dashboard, fits any terminal size, refreshes 2x/sec |
+| **Pure ANSI TUI** | Direct ANSI rendering (no Rich flicker), fits any terminal, refreshes 2x/sec |
 | **7 betting strategies** | Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, Custom, Rule-Based |
 | **Rule-based engine** | Define custom rules: `onEvery1loseIncrease amount by 101%` |
 | **Named presets** | Save & load strategy configs by name with `--preset` |
@@ -17,7 +17,10 @@ High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact termi
 | **Safety cap** | Never bets more than 20% of current balance in one go |
 | **Session database** | SQLite log of every bet and session — survives restarts |
 | **Config persistence** | Save/load config with `--resume`, smart wizard with defaults |
+| **Monitor mode** | `--monitor` to attach a live TUI to a running daemon — pause/resume/stop remotely |
 | **Daemon mode** | `--daemon` for background running, `--status` to check, `--stop` to halt |
+| **Performance tracking** | BPS, BPM, peak/low speed ranges, peak/low balance, best win, worst loss, avg P/L |
+| **Streak distribution** | Per-session bar charts showing win/loss streak frequency |
 | **Daily log rotation** | Logs at `~/.wolfbet_logs/wolfbet.log`, rotates at midnight, 30-day retention |
 | **Interactive keyboard** | `P` pause, `R` resume, `H` history, `Q` quit — all from dashboard |
 
@@ -61,13 +64,15 @@ python3 wolfbet.py
 
 ## Dashboard
 
-The dashboard is borderless and ultra-compact — 7 fixed rows + adaptive recent bets. Fits even in small terminals.
+The dashboard uses pure ANSI rendering (no Rich flicker) — 10 pinned rows + adaptive recent bets. Fits any terminal.
 
-```
-─── WolfBet v2.0  #3  00:12:34  ● LIVE ──────────────────────────
+```text
+─── WolfBet v2.4  #3  00:12:34  ● LIVE ──────────────────────────
  BAL  0.00845321 USDT  PnL +0.00012500  WAG 0.00832100  WR 51.2%
  Bets 2042  W 1046  L 996  Str W+4  Best W+11/L-8
- Bet 0.00010000  Hi 0.00640000  Martingale  BPM 312  RL 211/480
+ Bet 0.00010000  Hi 0.00640000  Martingale  2.0x  BPS 5.2  BPM 312  RL 211/480  Speed 4-7/s 240-420/m
+ Peak 0.00860000  Low 0.00800000  BestW +0.00009800  WorstL -0.00640000  Avg +0.00000006  Bal +0.00012500
+ P/L ▃▅▇▆▄▅▇█▆▅▃▄▆▇
 ──────────────────────────────────────────────────────────────────
      #  Time      Amount          Roll  W/L   P/L              Balance
   2042  14:22:01  0.00010000     61.20   W   +0.00009800     0.00845321
@@ -154,13 +159,18 @@ Configure during setup wizard:
 ## CLI Options
 
 ```bash
-python3 wolfbet.py              # Interactive wizard + TUI dashboard
-python3 wolfbet.py --resume     # Skip wizard, reuse saved config
-python3 wolfbet.py --preset X   # Load preset X and start
-python3 wolfbet.py --daemon     # Run in background (no TUI)
-python3 wolfbet.py --status     # Check running session status
-python3 wolfbet.py --stop       # Stop a running daemon
+python3 wolfbet.py                 # Interactive wizard + TUI dashboard
+python3 wolfbet.py --resume        # Skip wizard, reuse saved config
+python3 wolfbet.py --preset X      # Load preset X and start
+python3 wolfbet.py --daemon        # Run in background (no TUI, implies --resume)
+python3 wolfbet.py --monitor       # Attach live TUI to running daemon
+python3 wolfbet.py --status        # Check running session status (one-shot)
+python3 wolfbet.py --stop          # Stop a running daemon
+python3 wolfbet.py --setup-only    # Run wizard, save config, don't start
 python3 wolfbet.py --list-presets  # Show saved presets
+python3 wolfbet.py --stats         # Show all session history + totals
+python3 wolfbet.py --last-bets N   # Show last N bets across sessions
+python3 wolfbet.py --session-bets N  # Full stats + streak distribution for session N
 ```
 
 ---

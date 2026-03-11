@@ -1,5 +1,55 @@
 # Changelog
 
+## v2.4.0 (2026-03-11)
+
+### New Features
+
+- **Monitor mode** (`--monitor`) — Attach a live TUI viewer to a running daemon session. Press `P`/`R` to pause/resume remotely (via SIGUSR1/SIGUSR2), `S` to stop the daemon, `Q` to detach without stopping.
+- **Streak distribution** — `--session-bets N` now shows a full streak distribution chart (bar graph of win/loss streak lengths and their frequency).
+- **`--setup-only` flag** — Run the wizard and save config without starting the bot.
+
+### Fixes
+
+- **Balance tracking** — Use `userBalance` (not `user_balance`) from the API response for accurate balance updates.
+- **Profit calculation** — Use the API's `profit` field directly (positive on win, negative on loss) instead of manual calculation.
+
+## v2.3.0 (2026-03-11)
+
+### Enhancements
+
+- **`--resume` + `--daemon` combined** — `--daemon` now implies `--resume`, no longer mutually exclusive.
+- **`--status` enriched** — Shows all stats matching the dashboard: strategy details, multiplier, rule, base/current bet, highest bet, peak/low balance, best win, worst loss, avg P/L, speed ranges, current streak.
+- **BPM accuracy** — Uses actual bets counted in the current minute instead of extrapolating from BPS.
+- **wolfctl stats** — Uses `python3 wolfbet.py --stats` internally instead of hardcoded SQL.
+
+## v2.2.0 (2026-03-10)
+
+### New Features
+
+- **Row 5 stats** — Dashboard now shows peak/low balance, best win, worst loss, avg P/L, and balance change.
+- **BPS + speed range tracking** — Tracks bets-per-second (session average), peak/low BPS and BPM per individual second/minute.
+- **Dedicated sparkline row** — P/L sparkline graph moved to its own row for better readability.
+- **Richer `--stats`** — Session history now shows per-session detail blocks with all tracked metrics. All-time totals include best/worst session, peak balance, speed stats, bets/session averages.
+- **Full datetime on bets** — `--last-bets` shows full datetime (19 chars) instead of just time.
+
+### Changes
+
+- Session dates now include seconds (substr 19 instead of 16).
+- Start balance shown in session summary; speed range displays `0-0/m` when no data.
+- DB schema extended with 10 new session columns (highest_balance, lowest_balance, highest_win, biggest_loss, bets_per_minute, bets_per_second, peak_bps, low_bps, peak_bpm, low_bpm) with automatic migration for existing databases.
+
+## v2.1.0 (2026-03-10)
+
+### Breaking Changes
+
+- **Pure ANSI dashboard** — Completely replaced Rich `Table`/`Live` rendering with direct ANSI escape codes. The TUI no longer uses Rich for the main dashboard, eliminating terminal corruption issues and flickering. Rich is still used for wizard prompts and CLI output (--stats, --status, etc.).
+
+### Changes
+
+- Dashboard uses alternate screen buffer (`\033[?1049h`) with proper terminal state save/restore.
+- Terminal cleanup on exit: restores saved termios settings, runs `stty sane`, and issues a full terminal reset (RIS).
+- Fixed dashboard rendering corruption that occurred with Rich's Live refresh.
+
 ## v2.0.0 (2026-03-10)
 
 ### New Features

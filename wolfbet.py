@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.0  — VPS Terminal Dashboard    ║
+║   🐺  WolfBet AutoBot v2.4  — VPS Terminal Dashboard    ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -11,6 +11,10 @@ from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
 from logging.handlers import TimedRotatingFileHandler
+try:
+    import readline  # enables arrow keys, history, and line editing in input()
+except ImportError:
+    pass  # Windows fallback — input() still works, just no line editing
 
 try:
     import requests
@@ -38,7 +42,7 @@ STATE_PATH   = os.path.expanduser("~/.wolfbet_autobot_live.json")
 PID_PATH     = os.path.expanduser("~/.wolfbet_autobot.pid")
 PRESET_PATH  = os.path.expanduser("~/.wolfbet_presets.json")
 LOG_DIR      = os.path.expanduser("~/.wolfbet_logs")
-VERSION      = "2.0.0"
+VERSION      = "2.4.0"
 
 # ── Daily rotating logger ──
 # Default: WARNING (production). Use --verbose for DEBUG.
