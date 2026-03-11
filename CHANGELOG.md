@@ -12,6 +12,10 @@
 - **Customizable strategy multipliers** — Strategies 2, 3, 5, 6, 7 now prompt for loss/win multiplier in the wizard instead of using hardcoded values (2.01x, 2x). Set any value you want (1.5x, 2.01x, 3x, etc.).
 - **Smart rate limit recovery** — Replaced fixed 62-second cooldown with exponential probe system (2s→4s→8s→16s→32s). Probes `GET /user/balances` to check remaining capacity and resumes immediately when capacity restores. Status bar shows probe interval and remaining count.
 
+### Enhancements
+
+- **Detailed `--status`** — Now shows stop conditions (max profit, max loss, max bets, max wins, min balance), strategy multipliers (loss/win mult), bet delay, profit increment config, and full rule list for strategy 8. State file enriched with all config fields.
+
 ### Fixes
 
 - **Multiplier validation** — Entering 0 or values below 1.01 now shows an error and re-prompts instead of crashing with division by zero.

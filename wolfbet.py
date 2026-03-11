@@ -1148,6 +1148,22 @@ def _save_state_file():
             "rate_remaining": state.rate_remaining,
             "rate_limit": state.rate_limit,
             "rule": state.rule,
+            "bet_value": state.bet_value,
+            "bet_delay": state.bet_delay,
+            "loss_mult": state.loss_mult,
+            "win_mult": state.win_mult,
+            "strategy_key": state.strategy_key,
+            # stop conditions
+            "max_profit": state.max_profit,
+            "max_loss": state.max_loss,
+            "max_bets": state.max_bets,
+            "max_wins": state.max_wins,
+            "stop_on_balance": state.stop_on_balance,
+            "profit_increment": state.profit_increment,
+            "profit_threshold": state.profit_threshold,
+            # rule-based info
+            "rule_count": len(state.custom_rules) if state.strategy_key == "8" else 0,
+            "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "8" else [],
             "uptime_sec": int(time.time() - state.session_start),
             "status": state.status,
             "last_error": state.last_error,
@@ -2670,12 +2686,29 @@ def cmd_status():
         sk_now = "—"
 
     console.print(Rule(f"[bold cyan]WolfBet Session #{d.get('session_id', '?')}  {status}[/]"))
+
+    # ── Session Info ──
+    strat_str = f"{d.get('strategy', '?')}  {d.get('multiplier', '?')}x  {d.get('rule', '?')}"
+    sk = d.get("strategy_key", "")
+    if sk in ("2", "6", "7"):
+        strat_str += f"  [dim](loss mult: {d.get('loss_mult', '?')}x)[/]"
+    elif sk in ("3", "5"):
+        strat_str += f"  [dim](win mult: {d.get('win_mult', '?')}x)[/]"
+
     rows = [
         ("Uptime",         uptime),
         ("Currency",       d.get("currency", "?").upper()),
-        ("Strategy",       f"{d.get('strategy', '?')}  {d.get('multiplier', '?')}x  {d.get('rule', '?')}"),
+        ("Strategy",       strat_str),
         ("Base / Current", f"{d.get('base_bet', 0):.8f} / {d.get('current_bet', 0):.8f}"),
         ("Highest Bet",    f"{d.get('highest_bet', 0):.8f}"),
+    ]
+
+    # Bet delay if set
+    delay = d.get("bet_delay", 0)
+    if delay:
+        rows.append(("Bet Delay",     f"{delay}s"))
+
+    rows += [
         ("Balance",        f"{start_bal:.8f} → {cur_bal:.8f}"),
         ("Peak / Low",     f"[green]{hi_bal:.8f}[/] / [red]{lo_bal:.8f}[/]"),
         ("Profit",         f"[{pc}]{ps}{p:.8f}[/]"),
@@ -2690,13 +2723,54 @@ def cmd_status():
         ("Worst Loss",     f"[red]-{big_loss:.8f}[/]"),
         ("Speed",          f"{bps:.1f}/s  {bpm:.0f}/m  Range: {lw_bps}-{pk_bps}/s  {lw_bpm}-{pk_bpm}/m"),
         ("Rate Limit",     f"{d.get('rate_remaining', '?')}/{d.get('rate_limit', '?')}"),
-        ("Last Status",    d.get("status", "")[:60]),
+    ]
+
+    # ── Stop Conditions ──
+    stop_parts = []
+    mp = d.get("max_profit")
+    if mp is not None:
+        stop_parts.append(f"Profit ≥ {mp}")
+    ml = d.get("max_loss")
+    if ml is not None:
+        stop_parts.append(f"Loss ≥ {ml}")
+    mb = d.get("max_bets")
+    if mb is not None:
+        stop_parts.append(f"Bets ≥ {mb}")
+    mw = d.get("max_wins")
+    if mw is not None:
+        stop_parts.append(f"Wins ≥ {mw}")
+    sb = d.get("stop_on_balance")
+    if sb is not None:
+        stop_parts.append(f"Balance ≤ {sb}")
+    if stop_parts:
+        rows.append(("Stop Conditions", " | ".join(stop_parts)))
+    else:
+        rows.append(("Stop Conditions", "[dim]None set[/]"))
+
+    # Profit increment
+    pi = d.get("profit_increment")
+    pt = d.get("profit_threshold")
+    if pi and pt:
+        rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
+
+    rows += [
+        ("Last Status",    d.get("status", "")[:80]),
         ("Updated",        d.get("updated_at", "?")[:19]),
     ]
+
     for k, v in rows:
         console.print(f"  [dim]{k:18s}[/] {v}")
     if d.get("last_error"):
         console.print(f"  [dim]{'Last Error':18s}[/] [red]{d['last_error'][:60]}[/]")
+
+    # ── Rule-Based rules ──
+    rc = d.get("rule_count", 0)
+    if rc > 0:
+        console.print()
+        console.print(f"  [yellow]Rules ({rc}):[/]")
+        for i, desc in enumerate(d.get("rule_descriptions", []), 1):
+            console.print(f"    [dim]{i}.[/] {desc}")
+
     console.print()
 
 # ══════════════════════════════════════════════════════════
