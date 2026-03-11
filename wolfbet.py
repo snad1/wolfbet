@@ -697,13 +697,13 @@ def betting_loop():
                 "bal":   new_balance,
             })
 
-            # bets-per-minute / bets-per-second (session average)
+            # bets-per-second (session average) and bets-per-minute (actual)
             now = time.time()
             elapsed = now - state.session_start
             if elapsed > 0:
-                bps = state.total_bets / elapsed
-                state.bets_per_second = bps
-                state.bets_per_minute = bps * 60
+                state.bets_per_second = state.total_bets / elapsed
+                # BPM = actual bets in the current minute (real count, not extrapolated)
+                state.bets_per_minute = state._bets_this_min
 
             # track peak/low bets per individual second and minute
             sec_key = int(now)
@@ -828,7 +828,9 @@ def _db_save_session():
             state.max_win_streak, state.max_loss_streak,
             state.highest_balance, lo_bal,
             state.highest_win, state.biggest_loss,
-            state.bets_per_minute, state.bets_per_second,
+            # Save session-average BPM for history
+            min(state.bets_per_second * 60, state.rate_limit) if state.bets_per_second else state.bets_per_minute,
+            state.bets_per_second,
             state.peak_bps,
             state.low_bps if state.low_bps != float("inf") else 0,
             state.peak_bpm,
