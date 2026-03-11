@@ -633,14 +633,14 @@ def betting_loop():
             continue
 
         bet_data     = result.get("bet", {})
-        balance_data = result.get("user_balance", {})
+        balance_data = result.get("userBalance", {})
         bet_state    = bet_data.get("state", "loss")
         result_value = float(bet_data.get("result_value", 0))
         amount_used  = float(bet_data.get("amount", state.current_bet))
         new_balance  = float(balance_data.get("amount", state.current_balance))
 
-        # raw profit from API when win; negative amount when loss
-        raw_profit = float(bet_data.get("profit", 0)) if bet_state == "win" else -amount_used
+        # Use API's profit directly — it's positive on win, negative on loss
+        raw_profit = float(bet_data.get("profit", 0))
 
         with state.lock:
             # reset backoff on success
