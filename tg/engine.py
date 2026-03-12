@@ -31,6 +31,7 @@ class BettingEngine:
         self.currency       = config.get("currency") or "usdt"
         self.rule           = config.get("rule") or "over"
         self.multiplier     = float(config.get("multiplier") or 2.01)
+        self.initial_multiplier = self.multiplier
         self.bet_value      = float(config.get("bet_value") or 50.49)
         self.base_bet       = float(config.get("base_bet") or 0.0001)
         self.current_bet    = self.base_bet
@@ -334,6 +335,7 @@ class BettingEngine:
             mutations = apply_action(
                 rule, self.current_bet, self.base_bet,
                 self.rule, self.multiplier, self.current_streak,
+                initial_multiplier=self.initial_multiplier,
             )
             for k, v in mutations.items():
                 setattr(self, k, v)

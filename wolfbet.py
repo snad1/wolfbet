@@ -223,6 +223,7 @@ def _apply_action(rule: StrategyRule):
     mutations = _core_apply_action(
         rule, state.current_bet, state.base_bet,
         state.rule, state.multiplier, state.current_streak,
+        initial_multiplier=state.initial_multiplier,
     )
     for k, v in mutations.items():
         if k == "stop_reason":
@@ -266,6 +267,7 @@ class BotState:
         self.game           = "dice"
         self.rule           = "over"
         self.multiplier     = 2.01
+        self.initial_multiplier = 2.01
         self.bet_value      = 50.49
         self.base_bet       = 0.0001
         self.current_bet    = 0.0001
@@ -2957,6 +2959,7 @@ def main():
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
+    state.initial_multiplier = state.multiplier
     state.running       = True
 
     # write PID file
