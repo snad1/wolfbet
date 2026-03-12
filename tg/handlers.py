@@ -174,57 +174,60 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     config = load_user_config(user_id)
 
-    strategy_key = config.get("strategy_key", "2")
-    strategy = config.get("strategy", STRATEGY_NAMES.get(strategy_key, "Martingale"))
-    multiplier = config.get("multiplier", 2.01)
-    wc = round(99.0 / multiplier, 2)
+    try:
+        strategy_key = config.get("strategy_key", "2")
+        strategy = config.get("strategy", STRATEGY_NAMES.get(strategy_key, "Martingale"))
+        multiplier = float(config.get("multiplier", 2.01))
+        wc = round(99.0 / multiplier, 2) if multiplier > 0 else 0
 
-    lines = [
-        "*Current Configuration:*",
-        f"Currency: `{config.get('currency', 'usdt').upper()}`",
-        f"Strategy: `{strategy}`",
-        f"Rule: `{config.get('rule', 'over')}`",
-        f"Multiplier: `{multiplier}x` ({wc}% win chance)",
-        f"Base bet: `{config.get('base_bet', 0.0001):.8f}`",
-        f"Loss mult: `{config.get('loss_mult', 2.0)}x`",
-        f"Win mult: `{config.get('win_mult', 1.0)}x`",
-        f"Bet delay: `{config.get('bet_delay', 0)}s`",
-    ]
+        lines = [
+            "*Current Configuration:*",
+            f"Currency: `{config.get('currency', 'usdt').upper()}`",
+            f"Strategy: `{strategy}`",
+            f"Rule: `{config.get('rule', 'over')}`",
+            f"Multiplier: `{multiplier}x` ({wc}% win chance)",
+            f"Base bet: `{float(config.get('base_bet', 0.0001)):.8f}`",
+            f"Loss mult: `{float(config.get('loss_mult', 2.0))}x`",
+            f"Win mult: `{float(config.get('win_mult', 1.0))}x`",
+            f"Bet delay: `{float(config.get('bet_delay', 0))}s`",
+        ]
 
-    stops = []
-    if config.get("max_profit"): stops.append(f"Max profit: {config['max_profit']}")
-    if config.get("max_loss"):   stops.append(f"Max loss: {config['max_loss']}")
-    if config.get("max_bets"):   stops.append(f"Max bets: {config['max_bets']}")
-    if config.get("max_wins"):   stops.append(f"Max wins: {config['max_wins']}")
-    if config.get("stop_on_balance"): stops.append(f"Min balance: {config['stop_on_balance']}")
-    if stops:
-        lines.append(f"Stop: `{', '.join(stops)}`")
-    else:
-        lines.append("Stop conditions: _none_")
+        stops = []
+        if config.get("max_profit"): stops.append(f"Max profit: {config['max_profit']}")
+        if config.get("max_loss"):   stops.append(f"Max loss: {config['max_loss']}")
+        if config.get("max_bets"):   stops.append(f"Max bets: {config['max_bets']}")
+        if config.get("max_wins"):   stops.append(f"Max wins: {config['max_wins']}")
+        if config.get("stop_on_balance"): stops.append(f"Min balance: {config['stop_on_balance']}")
+        if stops:
+            lines.append(f"Stop: `{', '.join(stops)}`")
+        else:
+            lines.append("Stop conditions: _none_")
 
-    # profit increment
-    pi = config.get("profit_increment")
-    pt = config.get("profit_threshold")
-    if pi and pt:
-        lines.append(f"Profit increment: `+{pi:.8f} every {pt} profit`")
+        # profit increment
+        pi = config.get("profit_increment")
+        pt = config.get("profit_threshold")
+        if pi and pt:
+            lines.append(f"Profit increment: `+{float(pi):.8f} every {pt} profit`")
 
-    # milestones
-    ms = []
-    mb = config.get("milestone_bets", 100)
-    if mb: ms.append(f"{mb} bets")
-    mw = config.get("milestone_wins", 0)
-    if mw: ms.append(f"{mw} wins")
-    ml = config.get("milestone_losses", 0)
-    if ml: ms.append(f"{ml} losses")
-    mp = config.get("milestone_profit", 0)
-    if mp: ms.append(f"{mp} profit")
-    lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
+        # milestones
+        ms = []
+        mb = config.get("milestone_bets", 100)
+        if mb: ms.append(f"{mb} bets")
+        mw = config.get("milestone_wins", 0)
+        if mw: ms.append(f"{mw} wins")
+        ml = config.get("milestone_losses", 0)
+        if ml: ms.append(f"{ml} losses")
+        mp = config.get("milestone_profit", 0)
+        if mp: ms.append(f"{mp} profit")
+        lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
 
-    api_set = "Yes" if config.get("api_key") else "No"
-    lines.append(f"API key: `{api_set}`")
-    lines.append(f"Tier: `{get_user_tier(user_id)}`")
+        api_set = "Yes" if config.get("api_key") else "No"
+        lines.append(f"API key: `{api_set}`")
+        lines.append(f"Tier: `{get_user_tier(user_id)}`")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
 
 
 # ── /set ─────────────────────────────────────────────────
