@@ -191,6 +191,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Loss mult: `{float(config.get('loss_mult') or 2.0)}x`",
             f"Win mult: `{float(config.get('win_mult') or 1.0)}x`",
             f"Bet delay: `{float(config.get('bet_delay') or 0)}s`",
+            f"Delay threshold: `{int(config.get('delay_martin_threshold') or 3)}`",
         ]
 
         stops = []
