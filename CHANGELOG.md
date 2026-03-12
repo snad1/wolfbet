@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.9.0 (2026-03-12)
+
+### Telegram Bot v1.4.0
+
+- **Profit-based bet increment** — Auto-raise base bet as profit grows. Set with `/set profitthreshold <X>` and `/set profitincrement <Y>` (aliases: `pt`, `pi`). Base bet increases by Y every time profit crosses another X increment.
+- **Configurable milestone notifications** — `/set milestonebets`, `milestonewins`, `milestonelosses`, `milestoneprofit` (aliases: `msbets`, `mswins`, `mslosses`, `msprofit`). Set to 0 to disable.
+- **Milestone reasons** — Notifications now show what triggered them (e.g. "50 bets", "25 wins", "profit +0.00100000").
+- **Status shows base bet** — `/status` and `/monitor` now display current base bet separately from current bet.
+- **`/config` enhanced** — Shows profit increment config and milestone settings.
+
 ## v2.8.0 (2026-03-12)
 
 ### Telegram Bot v1.3.0
