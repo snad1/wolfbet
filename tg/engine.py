@@ -22,20 +22,20 @@ class BettingEngine:
         self.db_path = db_path
         self.lock    = threading.Lock()
 
-        # ── config ──
+        # ── config (use `or` to handle None from presets) ──
         self.api_key        = api_key
-        self.currency       = config.get("currency", "usdt")
-        self.rule           = config.get("rule", "over")
-        self.multiplier     = config.get("multiplier", 2.01)
-        self.bet_value      = config.get("bet_value", 50.49)
-        self.base_bet       = config.get("base_bet", 0.0001)
+        self.currency       = config.get("currency") or "usdt"
+        self.rule           = config.get("rule") or "over"
+        self.multiplier     = float(config.get("multiplier") or 2.01)
+        self.bet_value      = float(config.get("bet_value") or 50.49)
+        self.base_bet       = float(config.get("base_bet") or 0.0001)
         self.current_bet    = self.base_bet
-        self.strategy       = config.get("strategy", "Martingale")
-        self.strategy_key   = config.get("strategy_key", "2")
-        self.win_mult       = config.get("win_mult", 1.0)
-        self.loss_mult      = config.get("loss_mult", 2.0)
-        self.bet_delay      = config.get("bet_delay", 0)
-        self.delay_martin_threshold = config.get("delay_martin_threshold", 3)
+        self.strategy       = config.get("strategy") or "Martingale"
+        self.strategy_key   = config.get("strategy_key") or "2"
+        self.win_mult       = float(config.get("win_mult") or 1.0)
+        self.loss_mult      = float(config.get("loss_mult") or 2.0)
+        self.bet_delay      = float(config.get("bet_delay") or 0)
+        self.delay_martin_threshold = int(config.get("delay_martin_threshold") or 3)
 
         # ── rules ──
         self.custom_rules: List[StrategyRule] = []

@@ -345,11 +345,15 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Apply tier rate limit
     tier = get_user_tier(user_id)
     min_delay = TIERS.get(tier, 1.0)
-    config_delay = config.get("bet_delay", 0)
+    config_delay = float(config.get("bet_delay") or 0)
     config["bet_delay"] = max(config_delay, min_delay)
 
     db_path = user_db_path(user_id)
-    engine = BettingEngine(user_id, db_path, config["api_key"], config)
+    try:
+        engine = BettingEngine(user_id, db_path, config["api_key"], config)
+    except Exception as e:
+        await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
+        return
 
     # Set up async callbacks from betting thread
     loop = asyncio.get_event_loop()
