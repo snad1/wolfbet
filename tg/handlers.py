@@ -175,21 +175,21 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = load_user_config(user_id)
 
     try:
-        strategy_key = config.get("strategy_key", "2")
-        strategy = config.get("strategy", STRATEGY_NAMES.get(strategy_key, "Martingale"))
-        multiplier = float(config.get("multiplier", 2.01))
+        strategy_key = config.get("strategy_key") or "2"
+        strategy = config.get("strategy") or STRATEGY_NAMES.get(strategy_key, "Martingale")
+        multiplier = float(config.get("multiplier") or 2.01)
         wc = round(99.0 / multiplier, 2) if multiplier > 0 else 0
 
         lines = [
             "*Current Configuration:*",
-            f"Currency: `{config.get('currency', 'usdt').upper()}`",
+            f"Currency: `{(config.get('currency') or 'usdt').upper()}`",
             f"Strategy: `{strategy}`",
-            f"Rule: `{config.get('rule', 'over')}`",
+            f"Rule: `{config.get('rule') or 'over'}`",
             f"Multiplier: `{multiplier}x` ({wc}% win chance)",
-            f"Base bet: `{float(config.get('base_bet', 0.0001)):.8f}`",
-            f"Loss mult: `{float(config.get('loss_mult', 2.0))}x`",
-            f"Win mult: `{float(config.get('win_mult', 1.0))}x`",
-            f"Bet delay: `{float(config.get('bet_delay', 0))}s`",
+            f"Base bet: `{float(config.get('base_bet') or 0.0001):.8f}`",
+            f"Loss mult: `{float(config.get('loss_mult') or 2.0)}x`",
+            f"Win mult: `{float(config.get('win_mult') or 1.0)}x`",
+            f"Bet delay: `{float(config.get('bet_delay') or 0)}s`",
         ]
 
         stops = []
