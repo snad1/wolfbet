@@ -105,10 +105,10 @@ class BettingEngine:
         self.next_profit_milestone = float(self.profit_threshold) if self.profit_threshold else 0.0
 
         # ── milestone config ──
-        self.milestone_bets   = config.get("milestone_bets", 100)
-        self.milestone_wins   = config.get("milestone_wins", 0)    # 0 = off
-        self.milestone_losses = config.get("milestone_losses", 0)  # 0 = off
-        self.milestone_profit = config.get("milestone_profit", 0)  # 0 = off
+        self.milestone_bets   = int(config.get("milestone_bets") or 100)
+        self.milestone_wins   = int(config.get("milestone_wins") or 0)
+        self.milestone_losses = int(config.get("milestone_losses") or 0)
+        self.milestone_profit = float(config.get("milestone_profit") or 0)
         self._last_profit_milestone = 0.0  # track last profit threshold crossed
 
         # ── callbacks ──
