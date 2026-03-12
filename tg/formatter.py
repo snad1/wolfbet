@@ -3,59 +3,349 @@
 from datetime import datetime
 
 
+# ── Emoji helpers (Telegram has no ANSI colors) ──────────
+def _pnl_emoji(v: float) -> str:
+    return "\U0001f7e2" if v >= 0 else "\U0001f534"  # green/red circle
+
+
+def _streak_emoji(s: int) -> str:
+    if s > 0:
+        return "\U0001f525"  # fire for win streak
+    elif s < 0:
+        return "\u2744\ufe0f"  # snowflake for loss streak
+    return "\u2796"  # minus
+
+
+def _bar(value: float, total: float, width: int = 10) -> str:
+    """Simple text progress bar."""
+    if total <= 0:
+        return "\u2591" * width
+    filled = int(value / total * width)
+    return "\u2588" * filled + "\u2591" * (width - filled)
+
+
+# ── /status ──────────────────────────────────────────────
 def format_status(s: dict) -> str:
-    """Format engine status dict into a Telegram-friendly Markdown message."""
-    ps = "+" if s["profit"] >= 0 else ""
-    streak_s = f"+{s['streak']}" if s["streak"] >= 0 else str(s["streak"])
+    """Format engine status dict into a detailed Telegram message."""
+    p = s["profit"]
+    ps = "+" if p >= 0 else ""
+    pe = _pnl_emoji(p)
+    streak = s["streak"]
+    se = _streak_emoji(streak)
+    streak_s = f"+{streak}" if streak >= 0 else str(streak)
+
+    # avg P/L per bet
+    avg = p / s["bets"] if s["bets"] > 0 else 0
+    avg_s = "+" if avg >= 0 else ""
+    avg_e = _pnl_emoji(avg)
+
+    # balance change
+    bal_change = s["balance"] - s["start_balance"]
+    bc_s = "+" if bal_change >= 0 else ""
+    bc_e = _pnl_emoji(bal_change)
+
+    state = "\U0001f7e2 LIVE" if not s["paused"] else "\U0001f7e1 PAUSED"
+
     return (
-        f"*Session #{s['session_id']}* — {s['uptime']}\n"
-        f"{'PAUSED' if s['paused'] else 'LIVE'}\n\n"
-        f"Balance: `{s['balance']:.8f} {s['currency']}`\n"
-        f"P/L: `{ps}{s['profit']:.8f}`\n"
-        f"Wagered: `{s['wagered']:.8f}`\n\n"
-        f"Bets: `{s['bets']}`  W: `{s['wins']}`  L: `{s['losses']}`  WR: `{s['win_rate']}`\n"
-        f"Streak: `{streak_s}`  Best: `W+{s['max_win_streak']}` / `L-{s['max_loss_streak']}`\n\n"
-        f"Strategy: `{s['strategy']}` {s['multiplier']}x\n"
-        f"Bet: `{s['current_bet']:.8f}`  Hi: `{s['highest_bet']:.8f}`\n"
-        f"Peak: `{s['highest_balance']:.8f}`  Low: `{s['lowest_balance']:.8f}`\n"
-        f"BPS: `{s['bps']:.1f}`\n\n"
+        f"*Session #{s['session_id']}* \u2014 {s['uptime']}\n"
+        f"{state}\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\U0001f4b0 *Balance*\n"
+        f"  Current: `{s['balance']:.8f} {s['currency']}`\n"
+        f"  {pe} P/L: `{ps}{p:.8f}`\n"
+        f"  Wagered: `{s['wagered']:.8f}`\n"
+        f"  {bc_e} Change: `{bc_s}{bal_change:.8f}`\n"
+        f"\n"
+        f"\U0001f4ca *Stats*\n"
+        f"  Bets: `{s['bets']}`  W: `{s['wins']}`  L: `{s['losses']}`\n"
+        f"  Win Rate: `{s['win_rate']}`\n"
+        f"  {avg_e} Avg P/L: `{avg_s}{avg:.8f}`\n"
+        f"\n"
+        f"\U0001f4c8 *Extremes*\n"
+        f"  Peak Bal: `{s['highest_balance']:.8f}`\n"
+        f"  Low Bal: `{s['lowest_balance']:.8f}`\n"
+        f"  Best Win: `+{s['highest_win']:.8f}`\n"
+        f"  Worst Loss: `-{s['biggest_loss']:.8f}`\n"
+        f"\n"
+        f"{se} *Streaks*\n"
+        f"  Current: `{streak_s}`\n"
+        f"  Best: `W+{s['max_win_streak']}` / `L-{s['max_loss_streak']}`\n"
+        f"\n"
+        f"\u2699\ufe0f *Config*\n"
+        f"  Strategy: `{s['strategy']}` {s['multiplier']}x\n"
+        f"  Bet: `{s['current_bet']:.8f}`  Hi: `{s['highest_bet']:.8f}`\n"
+        f"  Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm\n"
+        f"\n"
         f"`{s['status']}`"
     )
 
 
+# ── Session stopped ──────────────────────────────────────
 def format_stop(s: dict, reason: str) -> str:
-    """Format session-ended summary."""
-    ps = "+" if s["profit"] >= 0 else ""
+    """Format session-ended summary with full details."""
+    p = s["profit"]
+    ps = "+" if p >= 0 else ""
+    pe = _pnl_emoji(p)
+
+    avg = p / s["bets"] if s["bets"] > 0 else 0
+    avg_s = "+" if avg >= 0 else ""
+
+    bal_change = s["balance"] - s["start_balance"]
+    bc_s = "+" if bal_change >= 0 else ""
+
     return (
-        f"Session #{s['session_id']} ended.\n"
-        f"Reason: `{reason}`\n\n"
-        f"Bets: `{s['bets']}`  W: `{s['wins']}`  L: `{s['losses']}`\n"
-        f"Profit: `{ps}{s['profit']:.8f} {s['currency']}`\n"
-        f"Balance: `{s['balance']:.8f}`\n"
-        f"Uptime: `{s['uptime']}`"
+        f"\U0001f6d1 *Session #{s['session_id']} ended*\n"
+        f"Reason: _{reason}_\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\U0001f4b0 *Balance*\n"
+        f"  `{s['start_balance']:.8f}` \u2192 `{s['balance']:.8f}`\n"
+        f"  {pe} P/L: `{ps}{p:.8f} {s['currency']}`\n"
+        f"  Change: `{bc_s}{bal_change:.8f}`\n"
+        f"  Wagered: `{s['wagered']:.8f}`\n"
+        f"\n"
+        f"\U0001f4ca *Stats*\n"
+        f"  Bets: `{s['bets']}`  W: `{s['wins']}`  L: `{s['losses']}`\n"
+        f"  Win Rate: `{s['win_rate']}`\n"
+        f"  Avg P/L: `{avg_s}{avg:.8f}`\n"
+        f"\n"
+        f"\U0001f4c8 *Extremes*\n"
+        f"  Peak: `{s['highest_balance']:.8f}`  Low: `{s['lowest_balance']:.8f}`\n"
+        f"  Best Win: `+{s['highest_win']:.8f}`\n"
+        f"  Worst Loss: `-{s['biggest_loss']:.8f}`\n"
+        f"  Streaks: `W+{s['max_win_streak']}` / `L-{s['max_loss_streak']}`\n"
+        f"\n"
+        f"\u23f1 Uptime: `{s['uptime']}`\n"
+        f"Speed: `{s['bps']:.1f}` bps / `{s['bpm']:.0f}` bpm"
     )
 
 
+# ── Milestone (every 100 bets) ───────────────────────────
 def format_milestone(data: dict) -> str:
     """Format milestone notification (every 100 bets)."""
-    ps = "+" if data["profit"] >= 0 else ""
+    p = data["profit"]
+    ps = "+" if p >= 0 else ""
+    pe = _pnl_emoji(p)
     return (
-        f"*{data['bets']} bets* | P/L: `{ps}{data['profit']:.8f}` | "
-        f"Bal: `{data['balance']:.8f}` | WR: `{data['win_rate']}` | {data['uptime']}"
+        f"\U0001f3af *{data['bets']} bets*\n"
+        f"  {pe} P/L: `{ps}{p:.8f}`\n"
+        f"  Bal: `{data['balance']:.8f} {data['currency']}`\n"
+        f"  WR: `{data['win_rate']}` | {data['uptime']}"
     )
 
 
+# ── Single session row for /stats list ───────────────────
 def format_session_row(row) -> str:
-    """Format a single session row for the stats view."""
-    sid, started, ended, strat, bets, wins, losses, profit, wagered, sb, eb, mws, mls = row
-    bets = bets or 0; wins = wins or 0; losses = losses or 0; profit = profit or 0
+    """Format a session row — expects the full 26-column query result."""
+    (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+     profit, wagered, start_bal, end_bal, mws, mls,
+     hi_bal, lo_bal, hi_win, big_loss,
+     bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = row
+
+    bets = bets or 0; wins = wins or 0; losses = losses or 0
+    profit = profit or 0; wagered = wagered or 0
+    start_bal = start_bal or 0; end_bal = end_bal or 0
+    mws = mws or 0; mls = mls or 0
+    mult = mult or 0; base = base or 0
+    hi_bal = hi_bal or 0; lo_bal = lo_bal or 0
+    hi_win = hi_win or 0; big_loss = big_loss or 0
+    bpm = bpm or 0; bps = bps or 0
+
     ps = "+" if profit >= 0 else ""
-    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+    pe = _pnl_emoji(profit)
+    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "\u2014"
+    avg = profit / bets if bets > 0 else 0
+    avg_s = "+" if avg >= 0 else ""
     uptime = _calc_uptime(started, ended)
+
     return (
-        f"*#{sid}* {strat} | {bets} bets | WR {wr}\n"
-        f"  P/L: `{ps}{profit:.8f}` | {uptime}\n"
+        f"{pe} *#{sid}* `{(strat or '?')}`  {(mult or 0)}x  {(cur or '?')}\n"
+        f"  {(started or '?')[:16]} \u2192 {(ended or 'running')[:16]}\n"
+        f"  Bets: `{bets}` W: `{wins}` L: `{losses}` WR: `{wr}`\n"
+        f"  P/L: `{ps}{profit:.8f}`  Wag: `{wagered:.8f}`\n"
+        f"  Bal: `{start_bal:.8f}` \u2192 `{end_bal:.8f}`\n"
+        f"  Peak: `{hi_bal:.8f}` Low: `{lo_bal:.8f}`\n"
+        f"  Streaks: `W+{mws}` / `L-{mls}`\n"
+        f"  Best: `+{hi_win:.8f}` Worst: `-{big_loss:.8f}`\n"
+        f"  Avg: `{avg_s}{avg:.8f}` | Speed: `{bps:.1f}`/s\n"
+        f"  \u23f1 {uptime}\n"
     )
+
+
+# ── Detailed session view for /session <id> ──────────────
+def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
+    """Format a full session detail view (like CLI's session detail)."""
+    (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+     profit, wagered, start_bal, end_bal, mws, mls,
+     hi_bal, lo_bal, hi_win, big_loss,
+     bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = sess
+
+    bets = bets or 0; wins = wins or 0; losses = losses or 0
+    profit = profit or 0; wagered = wagered or 0
+    start_bal = start_bal or 0; end_bal = end_bal or 0
+    mws = mws or 0; mls = mls or 0
+    mult = mult or 0; base = base or 0
+    hi_bal = hi_bal or 0; lo_bal = lo_bal or 0
+    hi_win = hi_win or 0; big_loss = big_loss or 0
+    bpm = bpm or 0; bps = bps or 0
+    pk_bps = int(pk_bps or 0); lw_bps = int(lw_bps or 0)
+    pk_bpm = int(pk_bpm or 0); lw_bpm = int(lw_bpm or 0)
+
+    ps = "+" if profit >= 0 else ""
+    pe = _pnl_emoji(profit)
+    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "\u2014"
+    avg = profit / bets if bets > 0 else 0
+    avg_s = "+" if avg >= 0 else ""
+    avg_e = _pnl_emoji(avg)
+    uptime = _calc_uptime(started, ended)
+
+    bal_change = end_bal - start_bal
+    bc_s = "+" if bal_change >= 0 else ""
+    bc_e = _pnl_emoji(bal_change)
+
+    lines = [
+        f"\U0001f4cb *Session #{sid} \u2014 Full Report*",
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        f"\u23f1 *Time*",
+        f"  Started: `{(started or '?')[:19]}`",
+        f"  Ended: `{(ended or 'running')[:19]}`",
+        f"  Uptime: `{uptime}`",
+        f"",
+        f"\u2699\ufe0f *Config*",
+        f"  Currency: `{cur or '?'}`",
+        f"  Strategy: `{strat or '?'}`  Mult: `{mult}x`",
+        f"  Base bet: `{base:.8f}`",
+        f"",
+        f"\U0001f4ca *Performance*",
+        f"  Bets: `{bets}`  W: `{wins}`  L: `{losses}`",
+        f"  Win Rate: `{wr}`  {_bar(wins, bets, 12)}",
+        f"  {pe} P/L: `{ps}{profit:.8f}`",
+        f"  Wagered: `{wagered:.8f}`",
+        f"  {avg_e} Avg P/L: `{avg_s}{avg:.8f}` /bet",
+        f"",
+        f"\U0001f4b0 *Balance*",
+        f"  `{start_bal:.8f}` \u2192 `{end_bal:.8f}`",
+        f"  {bc_e} Change: `{bc_s}{bal_change:.8f}`",
+        f"  \U0001f4c8 Peak: `{hi_bal:.8f}`",
+        f"  \U0001f4c9 Low: `{lo_bal:.8f}`",
+        f"",
+        f"\U0001f3c6 *Extremes*",
+        f"  Best Win: `+{hi_win:.8f}`",
+        f"  Worst Loss: `-{big_loss:.8f}`",
+        f"  Win Streak: `W+{mws}`",
+        f"  Loss Streak: `L-{mls}`",
+        f"",
+        f"\u26a1 *Speed*",
+        f"  Avg: `{bps:.1f}`/s  `{bpm:.0f}`/m",
+        f"  BPS range: `{lw_bps}` \u2013 `{pk_bps}`/s",
+        f"  BPM range: `{lw_bpm}` \u2013 `{pk_bpm}`/m",
+    ]
+
+    # streak distribution
+    if streak_dist:
+        lines.append("")
+        lines.append(f"\U0001f4ca *Streak Distribution*")
+
+        loss_d = streak_dist.get("loss", {})
+        if loss_d:
+            lines.append(f"  \U0001f534 *Loss Streaks:*")
+            max_c = max(loss_d.values()) if loss_d else 1
+            for length in sorted(loss_d.keys()):
+                count = loss_d[length]
+                bar = "\u2588" * int(count / max_c * 8)
+                lines.append(f"    L-{length}: `{count}` {bar}")
+
+        win_d = streak_dist.get("win", {})
+        if win_d:
+            lines.append(f"  \U0001f7e2 *Win Streaks:*")
+            max_c = max(win_d.values()) if win_d else 1
+            for length in sorted(win_d.keys()):
+                count = win_d[length]
+                bar = "\u2588" * int(count / max_c * 8)
+                lines.append(f"    W+{length}: `{count}` {bar}")
+
+    # recent bets
+    if recent_bets:
+        lines.append("")
+        lines.append(f"\U0001f4dd *Last {len(recent_bets)} Bets*")
+        lines.append("```")
+        lines.append(f"{'Time':<9} {'Amt':>12} {'Roll':>7} {'W/L':^3} {'P/L':>13} {'Bal':>13}")
+        for tm, amt, rv, st, pnl, bal in recent_bets:
+            t = tm[11:19] if tm else "?"
+            w = "W" if st == "win" else "L"
+            p_s = "+" if (pnl or 0) >= 0 else ""
+            lines.append(
+                f"{t:<9} {amt:>12.8f} {rv:>7.2f}  {w}  {p_s}{pnl:>12.8f} {bal:>12.8f}"
+            )
+        lines.append("```")
+
+    return "\n".join(lines)
+
+
+# ── All-time totals for /stats ───────────────────────────
+def format_all_time(totals) -> str:
+    """Format all-time totals block."""
+    (sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered,
+     best_ws, best_ls, best_profit, worst_profit, max_bets, avg_bets,
+     all_hi_bal, all_hi_win, all_big_loss, avg_bpm, all_pk_bps, all_pk_bpm,
+     avg_bps) = totals
+
+    tot_profit = tot_profit or 0
+    tot_wagered = tot_wagered or 0
+    ps = "+" if tot_profit >= 0 else ""
+    pe = _pnl_emoji(tot_profit)
+    wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "\u2014"
+    avg = tot_profit / tot_bets if tot_bets > 0 else 0
+    avg_s = "+" if avg >= 0 else ""
+    bp_s = "+" if (best_profit or 0) >= 0 else ""
+    wp_s = "+" if (worst_profit or 0) >= 0 else ""
+
+    return (
+        f"\U0001f4ca *All-Time Totals ({sessions} sessions)*\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"  Bets: `{tot_bets}`  W: `{tot_wins}`  L: `{tot_losses}`\n"
+        f"  Win Rate: `{wr}`  {_bar(tot_wins, tot_bets, 12)}\n"
+        f"  {pe} Profit: `{ps}{tot_profit:.8f}`\n"
+        f"  Wagered: `{tot_wagered:.8f}`\n"
+        f"  Avg P/L: `{avg_s}{avg:.8f}` /bet\n"
+        f"\n"
+        f"  Best Session: `{bp_s}{best_profit:.8f}`\n"
+        f"  Worst Session: `{wp_s}{worst_profit:.8f}`\n"
+        f"  Peak Balance: `{all_hi_bal:.8f}`\n"
+        f"  Best Win: `+{all_hi_win:.8f}`\n"
+        f"  Worst Loss: `-{all_big_loss:.8f}`\n"
+        f"  Best Streaks: `W+{best_ws}` / `L-{best_ls}`\n"
+        f"\n"
+        f"  Speed: `{avg_bps:.1f}` avg/s  Peak: `{int(all_pk_bps)}`/s `{int(all_pk_bpm)}`/m\n"
+        f"  Bets/Session: max `{max_bets}` avg `{avg_bets:.0f}`"
+    )
+
+
+# ── /lastbets formatted ─────────────────────────────────
+def format_lastbets(rows: list) -> str:
+    """Format last N bets with visual indicators."""
+    lines = [f"\U0001f4dd *Last {len(rows)} Bets*\n```"]
+    lines.append(f"{'Time':<9} {'Amt':>12} {'Roll':>7} {'W/L':^3} {'P/L':>13} {'Bal':>13}")
+    lines.append("\u2500" * 62)
+    for ts, amt, rv, st, pnl, bal in rows:
+        t = ts[11:19] if ts else "?"
+        w = "W" if st == "win" else "L"
+        p_s = "+" if (pnl or 0) >= 0 else ""
+        lines.append(
+            f"{t:<9} {amt:>12.8f} {rv:>7.2f}  {w}  {p_s}{pnl:>12.8f} {bal:>12.8f}"
+        )
+    lines.append("```")
+
+    # summary line
+    total = len(rows)
+    wins = sum(1 for _, _, _, st, _, _ in rows if st == "win")
+    losses = total - wins
+    total_pnl = sum(pnl or 0 for _, _, _, _, pnl, _ in rows)
+    pnl_s = "+" if total_pnl >= 0 else ""
+    pnl_e = _pnl_emoji(total_pnl)
+    wr = f"{wins/total*100:.1f}%" if total > 0 else "\u2014"
+
+    lines.append(f"\n{pnl_e} W: `{wins}` L: `{losses}` WR: `{wr}` P/L: `{pnl_s}{total_pnl:.8f}`")
+    return "\n".join(lines)
 
 
 def _calc_uptime(started: str, ended: str) -> str:
@@ -67,7 +357,7 @@ def _calc_uptime(started: str, ended: str) -> str:
             d = int((t1 - t0).total_seconds())
             h, rem = divmod(max(d, 0), 3600)
             m, s = divmod(rem, 60)
-            return f"{h}h{m}m{s}s"
+            return f"{h}h {m}m {s}s"
     except Exception:
         pass
-    return "—"
+    return "\u2014"

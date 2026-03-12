@@ -15,6 +15,7 @@ from .handlers import (
     cmd_status, cmd_stats, cmd_lastbets,
     cmd_rules, cmd_addrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
+    cmd_session,
     callback_handler,
 )
 
@@ -46,6 +47,7 @@ def main():
             BotCommand("status",      "Live status with refresh button"),
             BotCommand("stats",       "Session history"),
             BotCommand("lastbets",    "Recent bets"),
+            BotCommand("session",     "Detailed session report"),
             BotCommand("rules",       "List current rules"),
             BotCommand("addrule",     "Add a rule (JSON)"),
             BotCommand("clearrules",  "Clear all rules"),
@@ -77,6 +79,7 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("lastbets", cmd_lastbets))
+    app.add_handler(CommandHandler("session", cmd_session))
     app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("addrule", cmd_addrule))
     app.add_handler(CommandHandler("clearrules", cmd_clearrules))

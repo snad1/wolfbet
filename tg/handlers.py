@@ -20,7 +20,10 @@ from core.strategy import (
     describe_rule, load_rules_from_text,
 )
 from .engine import BettingEngine
-from .formatter import format_status, format_stop, format_milestone, format_session_row
+from .formatter import (
+    format_status, format_stop, format_milestone, format_session_row,
+    format_session_detail, format_all_time, format_lastbets,
+)
 
 
 # ── Active engines (one per user) ────────────────────────
@@ -49,7 +52,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop — Stop session\n"
         "/pause / /resume\n"
         "/status — Live status\n"
-        "/stats — Session history\n\n"
+        "/stats — Session history\n"
+        "/session — Session detail\n\n"
         "/strategies — List all strategies\n"
         "/help — Full command reference",
         parse_mode="Markdown",
@@ -88,6 +92,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/resume — Resume betting\n"
         "/status — Live status (with refresh button)\n"
         "/stats — Session history\n"
+        "/session — Detailed session report\n"
         "/lastbets — Recent bets\n\n"
         "*Rules*\n"
         "/rules — List current rules\n"
@@ -443,14 +448,28 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(db_path)
     rows = conn.execute("""
         SELECT id, substr(started_at,1,19), substr(ended_at,1,19),
-               strategy, total_bets, wins, losses, profit, wagered,
-               start_balance, end_balance, max_win_streak, max_loss_streak
+               UPPER(currency), strategy, multiplier, base_bet,
+               total_bets, wins, losses, profit, wagered,
+               start_balance, end_balance,
+               max_win_streak, max_loss_streak,
+               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
         FROM sessions ORDER BY id DESC LIMIT 10
     """).fetchall()
 
     totals = conn.execute("""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
-               COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
+               COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
+               COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
+               COALESCE(MAX(profit),0), COALESCE(MIN(profit),0),
+               COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0),
+               COALESCE(MAX(highest_balance),0), COALESCE(MAX(highest_win),0),
+               COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
+               COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
+               COALESCE(AVG(bets_per_second),0)
         FROM sessions
     """).fetchone()
     conn.close()
@@ -459,21 +478,24 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No sessions found.")
         return
 
-    lines = ["*Session History:*\n"]
+    # Send each session as a separate block (avoid Telegram message length limit)
+    lines = ["\U0001f4ca *Session History (last 10)*\n"]
     for row in rows:
         lines.append(format_session_row(row))
 
-    sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered = totals
-    ps = "+" if tot_profit >= 0 else ""
-    twr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "—"
-    lines.append(
-        f"\n*All-time ({sessions} sessions):*\n"
-        f"Bets: `{tot_bets}`  W: `{tot_wins}`  L: `{tot_losses}`  WR: `{twr}`\n"
-        f"Profit: `{ps}{tot_profit:.8f}`\n"
-        f"Wagered: `{tot_wagered:.8f}`"
-    )
+    # All-time totals
+    lines.append(format_all_time(totals))
+    lines.append(f"\n_View session detail:_ /session <id>")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    text = "\n".join(lines)
+    # Telegram limit is 4096 chars — split if needed
+    if len(text) <= 4096:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        # Send sessions first, then totals
+        mid = text.rfind("\U0001f4ca *All-Time")
+        await update.message.reply_text(text[:mid], parse_mode="Markdown")
+        await update.message.reply_text(text[mid:], parse_mode="Markdown")
 
 
 # ── /lastbets ────────────────────────────────────────────
@@ -498,14 +520,7 @@ async def cmd_lastbets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No bets found.")
         return
 
-    lines = [f"*Last {len(rows)} bets:*\n```"]
-    for ts, amt, rv, st, pnl, bal in rows:
-        t = ts[11:19] if ts else "?"
-        w = "W" if st == "win" else "L"
-        ps = "+" if pnl >= 0 else ""
-        lines.append(f"{t} {amt:.8f} {rv:>7.2f} {w} {ps}{pnl:.8f} {bal:.8f}")
-    lines.append("```")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text(format_lastbets(rows), parse_mode="Markdown")
 
 
 # ── /rules ───────────────────────────────────────────────
@@ -617,3 +632,85 @@ async def cmd_loadpreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_config(user_id, config)
     await update.message.reply_text(
         f"Preset `{name}` loaded. Check with /config", parse_mode="Markdown")
+
+
+# ── /session <id> ───────────────────────────────────────
+async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /session <id>\nSee /stats for session IDs.",
+            parse_mode="Markdown")
+        return
+
+    try:
+        session_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Session ID must be a number.")
+        return
+
+    db_path = user_db_path(user_id)
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No data.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    sess = conn.execute("""
+        SELECT id, substr(started_at,1,19), substr(ended_at,1,19),
+               UPPER(currency), strategy, multiplier, base_bet,
+               total_bets, wins, losses, profit, wagered,
+               start_balance, end_balance,
+               max_win_streak, max_loss_streak,
+               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+        FROM sessions WHERE id = ?
+    """, (session_id,)).fetchone()
+
+    if not sess:
+        conn.close()
+        await update.message.reply_text(f"Session #{session_id} not found.")
+        return
+
+    # streak distribution
+    bet_rows = conn.execute(
+        "SELECT state FROM bets WHERE session_id=? ORDER BY id",
+        (session_id,)
+    ).fetchall()
+
+    dist = {"win": {}, "loss": {}}
+    cur_type = None
+    cur_len = 0
+    for (st,) in bet_rows:
+        kind = "win" if st == "win" else "loss"
+        if kind == cur_type:
+            cur_len += 1
+        else:
+            if cur_type and cur_len > 0:
+                dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
+            cur_type = kind
+            cur_len = 1
+    if cur_type and cur_len > 0:
+        dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
+
+    # recent bets
+    recent = conn.execute("""
+        SELECT timestamp, amount, result_value, state, profit, balance_after
+        FROM bets WHERE session_id = ? ORDER BY id DESC LIMIT 20
+    """, (session_id,)).fetchall()
+    conn.close()
+
+    text = format_session_detail(sess, dist, recent)
+    if len(text) <= 4096:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        # split: detail first, then bets
+        marker = "\U0001f4dd *Last"
+        idx = text.find(marker)
+        if idx > 0:
+            await update.message.reply_text(text[:idx], parse_mode="Markdown")
+            await update.message.reply_text(text[idx:], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(text[:4096], parse_mode="Markdown")
