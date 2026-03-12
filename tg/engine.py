@@ -126,6 +126,10 @@ class BettingEngine:
         self._last_session_save = 0.0          # last time session was saved
         self._db_connection: Optional[sqlite3.Connection] = None  # persistent connection
 
+        # ── persistent HTTP session (reuses TCP/TLS connections) ──
+        self._http = requests.Session()
+        self._http.headers.update(self._headers())
+
         # ── thread ──
         self._thread: Optional[threading.Thread] = None
 
@@ -149,7 +153,7 @@ class BettingEngine:
             pass
 
     def api_get_balances(self) -> list:
-        r = requests.get(f"{API_BASE}/user/balances", headers=self._headers(), timeout=12)
+        r = self._http.get(f"{API_BASE}/user/balances", timeout=12)
         self._update_rate_limit(r)
         r.raise_for_status()
         return r.json().get("balances", [])
@@ -164,8 +168,8 @@ class BettingEngine:
             "bet_value": f"{self.bet_value}",
         }
         try:
-            r = requests.post(f"{API_BASE}/bet/place", headers=self._headers(),
-                              json=payload, timeout=15)
+            r = self._http.post(f"{API_BASE}/bet/place",
+                                json=payload, timeout=15)
             self._update_rate_limit(r)
             if r.status_code == 200:
                 return r.json()
@@ -504,7 +508,7 @@ class BettingEngine:
                 self.status = f"Rate limit — probing in {backoff:.0f}s…"
                 time.sleep(backoff)
                 try:
-                    r = requests.get(f"{API_BASE}/user/balances", headers=self._headers(), timeout=10)
+                    r = self._http.get(f"{API_BASE}/user/balances", timeout=10)
                     self._update_rate_limit(r)
                     if self.rate_remaining > 5:
                         self.rate_wait = False
@@ -649,6 +653,7 @@ class BettingEngine:
         if self.session_id:
             self._db_save_session(final=True)
         self._close_conn()
+        self._http.close()
         logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
         if self.on_stop:
             try:
