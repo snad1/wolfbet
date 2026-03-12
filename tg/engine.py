@@ -14,8 +14,8 @@ from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
 
 # ── Batching / periodic save constants ──────────────────
-BET_BATCH_SIZE     = 100     # flush bets to DB every N bets
-SESSION_SAVE_SECS  = 60      # save session stats every N seconds
+BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
+SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
 
 
 class BettingEngine:
@@ -220,7 +220,7 @@ class BettingEngine:
             self._flush_bets()
 
     def _flush_bets(self):
-        """Flush all queued bets to DB in a single transaction."""
+        """Flush all queued bets to DB and save session stats in one go."""
         if not self._bet_queue:
             return
         try:
@@ -234,6 +234,8 @@ class BettingEngine:
             self._bet_queue.clear()
         except Exception as e:
             logger.error("User %d: DB flush_bets failed: %s", self.user_id, e)
+        # always save session stats when flushing bets — keeps both in sync
+        self._db_save_session()
 
     def _db_save_session(self, final: bool = False):
         """Save session stats. If final=True, also set ended_at."""
