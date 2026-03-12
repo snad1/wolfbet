@@ -418,11 +418,27 @@ async def _reply(update: Update, text: str, **kwargs):
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     engine = active_engines.get(user_id)
-    if not engine or not engine.running:
-        await _reply(update, "No session running.")
+    if engine and engine.running:
+        engine.stop_reason = "Stopped by user"
+        engine.stop()
         return
-    engine.stop_reason = "Stopped by user"
-    engine.stop()
+    # Clean up zombie sessions (no active engine but DB says running)
+    db_path = user_db_path(user_id)
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL")
+        zombies = cur.fetchone()[0]
+        if zombies:
+            conn.execute(
+                "UPDATE sessions SET ended_at = datetime('now') "
+                "WHERE ended_at IS NULL")
+            conn.commit()
+            conn.close()
+            await _reply(update, f"Cleaned up {zombies} stale session(s).")
+            return
+        conn.close()
+    await _reply(update, "No session running.")
 
 
 # ── /pause ───────────────────────────────────────────────
