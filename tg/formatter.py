@@ -351,15 +351,15 @@ def format_lastbets(rows: list) -> str:
 def _calc_uptime(started: str, ended: str) -> str:
     """Calculate uptime string from started/ended timestamps."""
     try:
-        s = started[:19].replace("T", " ") if started else None
-        e = ended[:19].replace("T", " ") if ended else None
-        t0 = datetime.strptime(s, "%Y-%m-%d %H:%M:%S") if s else None
-        t1 = datetime.strptime(e, "%Y-%m-%d %H:%M:%S") if e else datetime.now()
+        s0 = started[:19].replace("T", " ") if started else None
+        s1 = ended[:19].replace("T", " ") if ended else None
+        t0 = datetime.strptime(s0, "%Y-%m-%d %H:%M:%S") if s0 else None
+        t1 = datetime.strptime(s1, "%Y-%m-%d %H:%M:%S") if s1 else datetime.now()
         if t0:
-            d = int((t1 - t0).total_seconds())
-            h, rem = divmod(max(d, 0), 3600)
-            m, s = divmod(rem, 60)
-            return f"{h}h {m}m {s}s"
+            delta = int((t1 - t0).total_seconds())
+            h, rem = divmod(max(delta, 0), 3600)
+            m, sec = divmod(rem, 60)
+            return f"{h}h {m}m {sec}s"
     except Exception:
         pass
     return "\u2014"
