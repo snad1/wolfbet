@@ -196,7 +196,9 @@ class BettingEngine:
             self._db_connection = None
 
     def _db_start_session(self) -> int:
-        conn = self._get_conn()
+        # Use a temporary connection — start() runs in the main thread,
+        # but the persistent connection must be created in the betting thread.
+        conn = db_connect(self.db_path)
         c = conn.cursor()
         c.execute("""
             INSERT INTO sessions (started_at, currency, strategy, base_bet, multiplier, start_balance)
@@ -205,6 +207,7 @@ class BettingEngine:
               self.base_bet, self.multiplier, self.start_balance))
         conn.commit()
         sid = c.lastrowid
+        conn.close()
         return sid
 
     def _queue_bet(self, bet_data: dict, profit: float, balance: float):
