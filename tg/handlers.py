@@ -110,7 +110,7 @@ async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         await update.effective_chat.send_message(
-            "Usage: `/setkey <your_wolfbet_api_key>`", parse_mode="Markdown")
+            "Usage: /setkey <your\\_wolfbet\\_api\\_key>", parse_mode="Markdown")
         return
 
     user_id = update.effective_user.id
@@ -121,7 +121,7 @@ async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_chat.send_message(
         "API key saved. Your message was deleted for security.\n"
-        "Test with `/balance`", parse_mode="Markdown")
+        "Test with /balance", parse_mode="Markdown")
 
 
 # ── /balance ─────────────────────────────────────────────
@@ -131,7 +131,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     api_key = config.get("api_key")
     if not api_key:
         await update.message.reply_text(
-            "Set your API key first: `/setkey <token>`", parse_mode="Markdown")
+            "Set your API key first: /setkey <token>", parse_mode="Markdown")
         return
 
     await update.message.reply_text("Fetching balances…")
@@ -198,7 +198,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if len(context.args) < 2:
         await update.message.reply_text(
-            "Usage: `/set <param> <value>`\nSee `/help` for parameters.",
+            "Usage: /set <param> <value>\nSee /help for parameters.",
             parse_mode="Markdown")
         return
 
@@ -217,7 +217,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     key = value
                 else:
                     await update.message.reply_text(
-                        "Unknown strategy. Use `/strategies` to see options.",
+                        "Unknown strategy. Use /strategies to see options.",
                         parse_mode="Markdown")
                     return
             config["strategy_key"] = key
@@ -259,7 +259,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["delay_martin_threshold"] = int(value)
         else:
             await update.message.reply_text(
-                f"Unknown parameter: `{param}`\nSee `/help`", parse_mode="Markdown")
+                f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
             return
 
         save_user_config(user_id, config)
@@ -274,7 +274,7 @@ async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["*Available Strategies:*\n"]
     for k, (name, desc) in STRATEGIES.items():
         lines.append(f"`{k}` *{name}* — {desc}")
-    lines.append("\nSet with: `/set strategy <name>`")
+    lines.append("\nSet with: /set strategy <name>")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -284,13 +284,13 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id in active_engines and active_engines[user_id].running:
         await update.message.reply_text(
-            "Session already running. `/stop` first.", parse_mode="Markdown")
+            "Session already running. /stop first.", parse_mode="Markdown")
         return
 
     config = load_user_config(user_id)
     if not config.get("api_key"):
         await update.message.reply_text(
-            "Set your API key first: `/setkey <token>`", parse_mode="Markdown")
+            "Set your API key first: /setkey <token>", parse_mode="Markdown")
         return
 
     # Apply tier rate limit
@@ -333,7 +333,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Multiplier: `{engine.multiplier}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
         f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`\n\n"
-        f"Use `/status` to check progress.",
+        f"Use /status to check progress.",
         parse_mode="Markdown",
     )
 
@@ -372,7 +372,7 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     engine.pause()
     await update.message.reply_text(
-        "Session paused. `/resume` to continue.", parse_mode="Markdown")
+        "Session paused. /resume to continue.", parse_mode="Markdown")
 
 
 # ── /resume ──────────────────────────────────────────────
@@ -392,7 +392,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = active_engines.get(user_id)
     if not engine or not engine.running:
         await update.message.reply_text(
-            "No session running. Start one with `/bet`", parse_mode="Markdown")
+            "No session running. Start one with /bet", parse_mode="Markdown")
         return
 
     text = format_status(engine.get_status())
@@ -517,7 +517,7 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not rules:
         await update.message.reply_text(
-            "No rules configured.\nAdd with `/addrule <json>`", parse_mode="Markdown")
+            "No rules configured.\nAdd with /addrule <json>", parse_mode="Markdown")
         return
 
     lines = ["*Current Rules:*\n"]
@@ -531,9 +531,9 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
         await update.message.reply_text(
-            "Usage: `/addrule <json>`\n\n"
+            "Usage: /addrule <json>\n\n"
             "Example:\n"
-            '`/addrule {"cond_type":"sequence","cond_mode":"every","cond_value":1,"cond_trigger":"loss","action":"increase_amount","action_value":101}`',
+            '/addrule `{"cond_type":"sequence","cond_mode":"every","cond_value":1,"cond_trigger":"loss","action":"increase_amount","action_value":101}`',
             parse_mode="Markdown",
         )
         return
@@ -585,7 +585,7 @@ async def cmd_savepreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
         await update.message.reply_text(
-            "Usage: `/savepreset <name>`", parse_mode="Markdown")
+            "Usage: /savepreset <name>", parse_mode="Markdown")
         return
     name = context.args[0]
     config = load_user_config(user_id)
@@ -601,7 +601,7 @@ async def cmd_loadpreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
         await update.message.reply_text(
-            "Usage: `/loadpreset <name>`", parse_mode="Markdown")
+            "Usage: /loadpreset <name>", parse_mode="Markdown")
         return
     name = context.args[0]
 
@@ -616,4 +616,4 @@ async def cmd_loadpreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         config[k] = v
     save_user_config(user_id, config)
     await update.message.reply_text(
-        f"Preset `{name}` loaded. Check with `/config`", parse_mode="Markdown")
+        f"Preset `{name}` loaded. Check with /config", parse_mode="Markdown")
