@@ -406,11 +406,20 @@ async def _notify_milestone(chat_id: int, data: dict, app):
 
 
 # ── /stop ────────────────────────────────────────────────
+async def _reply(update: Update, text: str, **kwargs):
+    """Reply via message or callback query, whichever is available."""
+    if update.message:
+        await update.message.reply_text(text, **kwargs)
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(text, **kwargs)
+
+
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     engine = active_engines.get(user_id)
     if not engine or not engine.running:
-        await update.message.reply_text("No session running.")
+        await _reply(update, "No session running.")
         return
     engine.stop_reason = "Stopped by user"
     engine.stop()
@@ -421,11 +430,10 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     engine = active_engines.get(user_id)
     if not engine or not engine.running:
-        await update.message.reply_text("No session running.")
+        await _reply(update, "No session running.")
         return
     engine.pause()
-    await update.message.reply_text(
-        "Session paused. /resume to continue.", parse_mode="Markdown")
+    await _reply(update, "Session paused. /resume to continue.", parse_mode="Markdown")
 
 
 # ── /resume ──────────────────────────────────────────────
@@ -433,10 +441,10 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     engine = active_engines.get(user_id)
     if not engine or not engine.running:
-        await update.message.reply_text("No session running.")
+        await _reply(update, "No session running.")
         return
     engine.resume()
-    await update.message.reply_text("Session resumed.")
+    await _reply(update, "Session resumed.")
 
 
 # ── /status ──────────────────────────────────────────────
