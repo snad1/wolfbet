@@ -314,6 +314,11 @@ cmd_presets() {
 }
 
 cmd_update() {
+    # Pull latest from git if inside a repo
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "Pulling latest from git…"
+        git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
+    fi
     echo "Updating bot files…"
     if [ ! -f "wolfbet.py" ]; then
         echo "No wolfbet.py in current directory."
