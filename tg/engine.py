@@ -1,5 +1,6 @@
 """BettingEngine — per-user betting instance running in its own thread."""
 
+import json
 import time
 import sqlite3
 import threading
@@ -196,16 +197,44 @@ class BettingEngine:
                 pass
             self._db_connection = None
 
+    def _build_config_snapshot(self) -> str:
+        """Build a JSON snapshot of session config for history."""
+        snap = {
+            "strategy_key": self.strategy_key,
+            "loss_mult": self.loss_mult,
+            "win_mult": self.win_mult,
+            "bet_delay": self.bet_delay,
+            "rule": self.rule,
+        }
+        if self.strategy_key == "7":  # Delay Martingale
+            snap["delay_threshold"] = self.delay_threshold
+        stops = {}
+        if self.max_profit is not None: stops["max_profit"] = self.max_profit
+        if self.max_loss is not None:   stops["max_loss"] = self.max_loss
+        if self.max_bets is not None:   stops["max_bets"] = self.max_bets
+        if self.max_wins is not None:   stops["max_wins"] = self.max_wins
+        if self.stop_on_balance is not None: stops["min_balance"] = self.stop_on_balance
+        if stops:
+            snap["stops"] = stops
+        if self.profit_threshold and self.profit_increment:
+            snap["profit_threshold"] = self.profit_threshold
+            snap["profit_increment"] = self.profit_increment
+        if self.custom_rules:
+            snap["rules"] = [r.to_dict() for r in self.custom_rules]
+        return json.dumps(snap)
+
     def _db_start_session(self) -> int:
         # Use a temporary connection — start() runs in the main thread,
         # but the persistent connection must be created in the betting thread.
+        snapshot = self._build_config_snapshot()
         conn = db_connect(self.db_path)
         c = conn.cursor()
         c.execute("""
-            INSERT INTO sessions (started_at, currency, strategy, base_bet, multiplier, start_balance)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO sessions (started_at, currency, strategy, base_bet, multiplier,
+                                  start_balance, config_snapshot)
+            VALUES (?,?,?,?,?,?,?)
         """, (datetime.now().isoformat(), self.currency, self.strategy,
-              self.base_bet, self.multiplier, self.start_balance))
+              self.base_bet, self.multiplier, self.start_balance, snapshot))
         conn.commit()
         sid = c.lastrowid
         conn.close()
