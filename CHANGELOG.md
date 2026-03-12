@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.7.0 (2026-03-12)
+
+### Telegram Bot v1.2.0
+
+- **Detailed `/status`** — Now shows balance change, avg P/L per bet, peak/low balance, best win/worst loss, speed (bps/bpm), emoji indicators (green/red circles, fire for win streaks, snowflake for loss streaks).
+- **Detailed `/stop` summary** — Full session report: start-to-end balance, P/L, wagered, win rate, extremes, streaks, speed, uptime.
+- **Detailed `/stats`** — Fetches all 26 columns per session (currency, multiplier, base bet, speed ranges, balance extremes). All-time totals with best/worst session, peak balance, speed stats, bets/session averages.
+- **New `/session <id>` command** — Full session report with streak distribution (how many times each streak length occurred), last 20 bets table, speed ranges, balance progression, and all extremes.
+- **Enhanced `/lastbets`** — Aligned table with column headers, separator, and summary line (W/L/WR/P&L).
+- **Milestone notifications** — Every 100 bets now shows formatted block with emoji.
+- **Uptime fix** — Fixed timestamp parsing for ISO format with `T` separator.
+
 ## v2.6.0 (2026-03-12)
 
 ### Architecture
