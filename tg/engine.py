@@ -235,35 +235,62 @@ class BettingEngine:
         except Exception as e:
             logger.error("User %d: DB flush_bets failed: %s", self.user_id, e)
 
-    def _db_save_session(self):
+    def _db_save_session(self, final: bool = False):
+        """Save session stats. If final=True, also set ended_at."""
         try:
             conn = self._get_conn()
             lo_bal = self.lowest_balance if self.lowest_balance != float("inf") else self.current_balance
-            conn.execute("""
-                UPDATE sessions SET
-                    ended_at=?, total_bets=?, wins=?, losses=?,
-                    profit=?, wagered=?, end_balance=?,
-                    max_win_streak=?, max_loss_streak=?,
-                    highest_balance=?, lowest_balance=?,
-                    highest_win=?, biggest_loss=?,
-                    bets_per_minute=?, bets_per_second=?,
-                    peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
-                WHERE id=?
-            """, (
-                datetime.now().isoformat(),
-                self.total_bets, self.wins, self.losses,
-                self.profit, self.wagered, self.current_balance,
-                self.max_win_streak, self.max_loss_streak,
-                self.highest_balance, lo_bal,
-                self.highest_win, self.biggest_loss,
-                min(self.bets_per_second * 60, self.rate_limit) if self.bets_per_second else self.bets_per_minute,
-                self.bets_per_second,
-                self.peak_bps,
-                self.low_bps if self.low_bps != float("inf") else 0,
-                self.peak_bpm,
-                self.low_bpm if self.low_bpm != float("inf") else 0,
-                self.session_id,
-            ))
+            if final:
+                conn.execute("""
+                    UPDATE sessions SET
+                        ended_at=?, total_bets=?, wins=?, losses=?,
+                        profit=?, wagered=?, end_balance=?,
+                        max_win_streak=?, max_loss_streak=?,
+                        highest_balance=?, lowest_balance=?,
+                        highest_win=?, biggest_loss=?,
+                        bets_per_minute=?, bets_per_second=?,
+                        peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
+                    WHERE id=?
+                """, (
+                    datetime.now().isoformat(),
+                    self.total_bets, self.wins, self.losses,
+                    self.profit, self.wagered, self.current_balance,
+                    self.max_win_streak, self.max_loss_streak,
+                    self.highest_balance, lo_bal,
+                    self.highest_win, self.biggest_loss,
+                    min(self.bets_per_second * 60, self.rate_limit) if self.bets_per_second else self.bets_per_minute,
+                    self.bets_per_second,
+                    self.peak_bps,
+                    self.low_bps if self.low_bps != float("inf") else 0,
+                    self.peak_bpm,
+                    self.low_bpm if self.low_bpm != float("inf") else 0,
+                    self.session_id,
+                ))
+            else:
+                conn.execute("""
+                    UPDATE sessions SET
+                        total_bets=?, wins=?, losses=?,
+                        profit=?, wagered=?, end_balance=?,
+                        max_win_streak=?, max_loss_streak=?,
+                        highest_balance=?, lowest_balance=?,
+                        highest_win=?, biggest_loss=?,
+                        bets_per_minute=?, bets_per_second=?,
+                        peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
+                    WHERE id=?
+                """, (
+                    self.total_bets, self.wins, self.losses,
+                    self.profit, self.wagered, self.current_balance,
+                    self.max_win_streak, self.max_loss_streak,
+                    self.highest_balance, lo_bal,
+                    self.highest_win, self.biggest_loss,
+                    min(self.bets_per_second * 60, self.rate_limit) if self.bets_per_second else self.bets_per_minute,
+                    self.bets_per_second,
+                    self.peak_bps,
+                    self.low_bps if self.low_bps != float("inf") else 0,
+                    self.peak_bpm,
+                    self.low_bpm if self.low_bpm != float("inf") else 0,
+                    self.session_id,
+                ))
             conn.commit()
             self._last_session_save = time.time()
         except Exception as e:
@@ -458,7 +485,7 @@ class BettingEngine:
                 self.stop_reason = reason
                 self.status = f"STOPPED: {reason}"
                 self._flush_bets()
-                self._db_save_session()
+                self._db_save_session(final=True)
                 break
 
             # bet pacing
@@ -583,7 +610,7 @@ class BettingEngine:
         # session ended — flush remaining bets and save final state
         self._flush_bets()
         if self.session_id:
-            self._db_save_session()
+            self._db_save_session(final=True)
         self._close_conn()
         logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
         if self.on_stop:
