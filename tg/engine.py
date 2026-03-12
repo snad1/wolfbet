@@ -472,7 +472,7 @@ class BettingEngine:
                     self.profit_history.append(self.profit)
 
                 self.recent_bets.append({
-                    "n": self.total_bets, "time": datetime.now().strftime("%H:%M:%S"),
+                    "n": self.total_bets, "time": datetime.now().isoformat(),
                     "amt": amount_used, "roll": result_value,
                     "state": bet_state, "pnl": raw_profit, "bal": new_balance,
                 })

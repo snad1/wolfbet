@@ -3,6 +3,14 @@
 from datetime import datetime
 
 
+def _fmt_ts(ts: str, fallback: str = "?") -> str:
+    """Format an ISO timestamp to full display: YYYY-MM-DD HH:MM:SS.μs"""
+    if not ts:
+        return fallback
+    # Replace T separator, keep full precision
+    return ts.replace("T", " ")
+
+
 # ── Emoji helpers (Telegram has no ANSI colors) ──────────
 def _pnl_emoji(v: float) -> str:
     return "\U0001f7e2" if v >= 0 else "\U0001f534"  # green/red circle
@@ -162,7 +170,7 @@ def format_session_row(row) -> str:
 
     return (
         f"{pe} *#{sid}* `{(strat or '?')}`  {(mult or 0)}x  {(cur or '?')}\n"
-        f"  {(started or '?')[:16]} \u2192 {(ended or 'running')[:16]}\n"
+        f"  {_fmt_ts(started)} \u2192 {_fmt_ts(ended, 'running')}\n"
         f"  Bets: `{bets}` W: `{wins}` L: `{losses}` WR: `{wr}`\n"
         f"  P/L: `{ps}{profit:.8f}`  Wag: `{wagered:.8f}`\n"
         f"  Bal: `{start_bal:.8f}` \u2192 `{end_bal:.8f}`\n"
@@ -209,8 +217,8 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
         f"\U0001f4cb *Session #{sid} \u2014 Full Report*",
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         f"\u23f1 *Time*",
-        f"  Started: `{(started or '?')[:19]}`",
-        f"  Ended: `{(ended or 'running')[:19]}`",
+        f"  Started: `{_fmt_ts(started)}`",
+        f"  Ended: `{_fmt_ts(ended, 'running')}`",
         f"  Uptime: `{uptime}`",
         f"",
         f"\u2699\ufe0f *Config*",
@@ -271,13 +279,13 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
         lines.append("")
         lines.append(f"\U0001f4dd *Last {len(recent_bets)} Bets*")
         lines.append("```")
-        lines.append(f"{'Time':<9} {'Amt':>12} {'Roll':>7} {'W/L':^3} {'P/L':>13} {'Bal':>13}")
+        lines.append(f"{'Time':<16} {'Amt':>12} {'Roll':>7} {'W/L':^3} {'P/L':>13} {'Bal':>13}")
         for tm, amt, rv, st, pnl, bal in recent_bets:
-            t = tm[11:19] if tm else "?"
+            t = tm[11:] if tm else "?"
             w = "W" if st == "win" else "L"
             p_s = "+" if (pnl or 0) >= 0 else ""
             lines.append(
-                f"{t:<9} {amt:>12.8f} {rv:>7.2f}  {w}  {p_s}{pnl:>12.8f} {bal:>12.8f}"
+                f"{t:<16} {amt:>12.8f} {rv:>7.2f}  {w}  {p_s}{pnl:>12.8f} {bal:>12.8f}"
             )
         lines.append("```")
 
@@ -327,14 +335,14 @@ def format_all_time(totals) -> str:
 def format_lastbets(rows: list) -> str:
     """Format last N bets with visual indicators."""
     lines = [f"\U0001f4dd *Last {len(rows)} Bets*\n```"]
-    lines.append(f"{'Time':<9} {'Amt':>12} {'Roll':>7} {'W/L':^3} {'P/L':>13} {'Bal':>13}")
+    lines.append(f"{'Time':<16} {'Amt':>12} {'Roll':>7} {'W/L':^3} {'P/L':>13} {'Bal':>13}")
     lines.append("\u2500" * 62)
     for ts, amt, rv, st, pnl, bal in rows:
-        t = ts[11:19] if ts else "?"
+        t = ts[11:] if ts else "?"
         w = "W" if st == "win" else "L"
         p_s = "+" if (pnl or 0) >= 0 else ""
         lines.append(
-            f"{t:<9} {amt:>12.8f} {rv:>7.2f}  {w}  {p_s}{pnl:>12.8f} {bal:>12.8f}"
+            f"{t:<16} {amt:>12.8f} {rv:>7.2f}  {w}  {p_s}{pnl:>12.8f} {bal:>12.8f}"
         )
     lines.append("```")
 
@@ -354,10 +362,8 @@ def format_lastbets(rows: list) -> str:
 def _calc_uptime(started: str, ended: str) -> str:
     """Calculate uptime string from started/ended timestamps."""
     try:
-        s0 = started[:19].replace("T", " ") if started else None
-        s1 = ended[:19].replace("T", " ") if ended else None
-        t0 = datetime.strptime(s0, "%Y-%m-%d %H:%M:%S") if s0 else None
-        t1 = datetime.strptime(s1, "%Y-%m-%d %H:%M:%S") if s1 else datetime.now()
+        t0 = datetime.fromisoformat(started) if started else None
+        t1 = datetime.fromisoformat(ended) if ended else datetime.now()
         if t0:
             delta = int((t1 - t0).total_seconds())
             h, rem = divmod(max(delta, 0), 3600)

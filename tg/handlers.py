@@ -4,6 +4,7 @@ import os
 import json
 import asyncio
 import sqlite3
+from datetime import datetime
 from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -431,8 +432,8 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         zombies = cur.fetchone()[0]
         if zombies:
             conn.execute(
-                "UPDATE sessions SET ended_at = datetime('now') "
-                "WHERE ended_at IS NULL")
+                "UPDATE sessions SET ended_at = ? "
+                "WHERE ended_at IS NULL", (datetime.now().isoformat(),))
             conn.commit()
             conn.close()
             await _reply(update, f"Cleaned up {zombies} stale session(s).")
@@ -640,7 +641,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = sqlite3.connect(db_path)
     rows = conn.execute("""
-        SELECT id, substr(started_at,1,19), substr(ended_at,1,19),
+        SELECT id, started_at, ended_at,
                UPPER(currency), strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
@@ -849,7 +850,7 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = sqlite3.connect(db_path)
     sess = conn.execute("""
-        SELECT id, substr(started_at,1,19), substr(ended_at,1,19),
+        SELECT id, started_at, ended_at,
                UPPER(currency), strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,

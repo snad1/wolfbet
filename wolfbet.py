@@ -596,7 +596,7 @@ def betting_loop():
             # recent bets log
             state.recent_bets.append({
                 "n":     state.total_bets,
-                "time":  datetime.now().strftime("%H:%M:%S"),
+                "time":  datetime.now().isoformat(),
                 "amt":   amount_used,
                 "roll":  result_value,
                 "state": bet_state,
@@ -1066,8 +1066,8 @@ def show_history():
         ps  = "+" if (profit or 0) >= 0 else ""
         t.add_row(
             str(sid),
-            (started or "")[:16],
-            (ended   or "—")[:16],
+            (started or "").replace("T", " "),
+            (ended   or "—").replace("T", " "),
             (cur or "").upper(),
             strat or "—",
             str(bets or 0),
@@ -1996,7 +1996,7 @@ def _monitor_get_recent_bets(session_id: int, limit: int) -> list:
         result = []
         for r in rows:
             result.append({
-                "n": r[0], "time": (r[1] or "")[11:19],
+                "n": r[0], "time": (r[1] or "")[11:],
                 "amt": r[2] or 0, "roll": r[3] or 0,
                 "state": r[4] or "lose", "pnl": r[5] or 0,
                 "bal": r[6] or 0,
@@ -2414,7 +2414,7 @@ def cmd_status():
 
     rows += [
         ("Last Status",    d.get("status", "")[:80]),
-        ("Updated",        d.get("updated_at", "?")[:19]),
+        ("Updated",        d.get("updated_at", "?").replace("T", " ")),
     ]
 
     for k, v in rows:
@@ -2484,7 +2484,7 @@ def cmd_stats():
 
     # session list — fetch all columns
     rows = conn.execute("""
-        SELECT id, substr(started_at,1,19) AS started, substr(ended_at,1,19) AS ended,
+        SELECT id, started_at AS started, ended_at AS ended,
                UPPER(currency) AS cur, strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
@@ -2536,8 +2536,8 @@ def cmd_stats():
         # compute uptime
         uptime_str = ""
         try:
-            t0 = datetime.strptime(started[:19], "%Y-%m-%d %H:%M:%S") if started else None
-            t1 = datetime.strptime(ended[:19], "%Y-%m-%d %H:%M:%S") if ended else datetime.now()
+            t0 = datetime.fromisoformat(started) if started else None
+            t1 = datetime.fromisoformat(ended) if ended else datetime.now()
             if t0:
                 delta = int((t1 - t0).total_seconds())
                 h, rem = divmod(max(delta, 0), 3600)
@@ -2546,7 +2546,7 @@ def cmd_stats():
         except Exception:
             pass
 
-        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?')[:19]} → {(ended or 'running')[:19]}[/]{uptime_str}")
+        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?').replace('T', ' ')} → {(ended or 'running').replace('T', ' ')}[/]{uptime_str}")
         console.print(f"    [dim]Currency:[/] {cur or '?'}  [dim]Strategy:[/] {strat or '?'}  [dim]Mult:[/] {mult}x  [dim]Base:[/] {base:.8f}")
         console.print(f"    [dim]Bets:[/] {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
         console.print(f"    [dim]Speed:[/] {bps:.1f} avg/s  {bpm:.0f} avg/m  [dim]BPS:[/] {s_low_bps}-{s_peak_bps}/s  [dim]BPM:[/] {s_low_bpm}-{s_peak_bpm}/m")
@@ -2679,7 +2679,7 @@ def cmd_session_bets(session_id: int):
 
     # session info — fetch all columns
     sess = conn.execute("""
-        SELECT id, substr(started_at,1,19), substr(ended_at,1,19),
+        SELECT id, started_at, ended_at,
                UPPER(currency), strategy, base_bet, multiplier,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
@@ -2723,8 +2723,8 @@ def cmd_session_bets(session_id: int):
     # compute uptime
     uptime_str = "—"
     try:
-        t0 = datetime.strptime(started[:19], "%Y-%m-%d %H:%M:%S") if started else None
-        t1 = datetime.strptime(ended[:19], "%Y-%m-%d %H:%M:%S") if ended else datetime.now()
+        t0 = datetime.fromisoformat(started) if started else None
+        t1 = datetime.fromisoformat(ended) if ended else datetime.now()
         if t0:
             delta = int((t1 - t0).total_seconds())
             h, rem = divmod(max(delta, 0), 3600)
@@ -2734,8 +2734,8 @@ def cmd_session_bets(session_id: int):
         pass
 
     console.print(Rule(f"[bold cyan]Session #{sid} — Full Stats[/]"))
-    console.print(f"  [dim]Started:[/]       {(started or '?')[:19]}")
-    console.print(f"  [dim]Ended:[/]         {(ended or 'running')[:19]}")
+    console.print(f"  [dim]Started:[/]       {(started or '?').replace('T', ' ')}")
+    console.print(f"  [dim]Ended:[/]         {(ended or 'running').replace('T', ' ')}")
     console.print(f"  [dim]Uptime:[/]        {uptime_str}")
     console.print(f"  [dim]Currency:[/]      {cur}")
     console.print(f"  [dim]Strategy:[/]      {strat}  {mult}x  Base: {base:.8f}")
