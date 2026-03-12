@@ -29,34 +29,7 @@ def main():
     logger.info("WolfBet Telegram Bot v%s starting…", VERSION)
     logger.info("Data dir: %s", DATA_DIR)
 
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Commands
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("setkey", cmd_setkey))
-    app.add_handler(CommandHandler("balance", cmd_balance))
-    app.add_handler(CommandHandler("config", cmd_config))
-    app.add_handler(CommandHandler("set", cmd_set))
-    app.add_handler(CommandHandler("strategies", cmd_strategies))
-    app.add_handler(CommandHandler("bet", cmd_bet))
-    app.add_handler(CommandHandler("stop", cmd_stop))
-    app.add_handler(CommandHandler("pause", cmd_pause))
-    app.add_handler(CommandHandler("resume", cmd_resume))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("lastbets", cmd_lastbets))
-    app.add_handler(CommandHandler("rules", cmd_rules))
-    app.add_handler(CommandHandler("addrule", cmd_addrule))
-    app.add_handler(CommandHandler("clearrules", cmd_clearrules))
-    app.add_handler(CommandHandler("presets", cmd_presets))
-    app.add_handler(CommandHandler("savepreset", cmd_savepreset))
-    app.add_handler(CommandHandler("loadpreset", cmd_loadpreset))
-
-    # Inline button callbacks
-    app.add_handler(CallbackQueryHandler(callback_handler))
-
-    # Auto-register commands with Telegram (shown in / menu)
+    # Register commands with Telegram on startup (shows in / menu)
     async def post_init(application):
         await application.bot.set_my_commands([
             BotCommand("start",       "Show welcome and quick start guide"),
@@ -82,7 +55,37 @@ def main():
         ])
         logger.info("Bot commands registered with Telegram")
 
-    app.post_init = post_init
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
+    # Commands
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("setkey", cmd_setkey))
+    app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("config", cmd_config))
+    app.add_handler(CommandHandler("set", cmd_set))
+    app.add_handler(CommandHandler("strategies", cmd_strategies))
+    app.add_handler(CommandHandler("bet", cmd_bet))
+    app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("pause", cmd_pause))
+    app.add_handler(CommandHandler("resume", cmd_resume))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("lastbets", cmd_lastbets))
+    app.add_handler(CommandHandler("rules", cmd_rules))
+    app.add_handler(CommandHandler("addrule", cmd_addrule))
+    app.add_handler(CommandHandler("clearrules", cmd_clearrules))
+    app.add_handler(CommandHandler("presets", cmd_presets))
+    app.add_handler(CommandHandler("savepreset", cmd_savepreset))
+    app.add_handler(CommandHandler("loadpreset", cmd_loadpreset))
+
+    # Inline button callbacks
+    app.add_handler(CallbackQueryHandler(callback_handler))
 
     logger.info("Bot started. Polling…")
     app.run_polling(drop_pending_updates=True)
