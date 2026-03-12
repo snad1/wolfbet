@@ -13,6 +13,10 @@ from core.database import init_db, db_connect
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
 
+# ── Batching / periodic save constants ──────────────────
+BET_BATCH_SIZE     = 100     # flush bets to DB every N bets
+SESSION_SAVE_SECS  = 60      # save session stats every N seconds
+
 
 class BettingEngine:
     """Self-contained betting engine for one user. Runs in its own thread."""
@@ -115,6 +119,11 @@ class BettingEngine:
         self.on_stop         = None   # called with (reason: str)
         self.on_milestone    = None   # called every N bets/wins/losses/profit
 
+        # ── batching state ──
+        self._bet_queue: list = []             # pending bet rows
+        self._last_session_save = 0.0          # last time session was saved
+        self._db_connection: Optional[sqlite3.Connection] = None  # persistent connection
+
         # ── thread ──
         self._thread: Optional[threading.Thread] = None
 
@@ -171,11 +180,23 @@ class BettingEngine:
         return None
 
     # ── DB ───────────────────────────────────────────────
-    def _db_conn(self):
-        return db_connect(self.db_path)
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return persistent DB connection, creating if needed."""
+        if self._db_connection is None:
+            self._db_connection = db_connect(self.db_path)
+        return self._db_connection
+
+    def _close_conn(self):
+        """Close the persistent connection."""
+        if self._db_connection:
+            try:
+                self._db_connection.close()
+            except Exception:
+                pass
+            self._db_connection = None
 
     def _db_start_session(self) -> int:
-        conn = self._db_conn()
+        conn = self._get_conn()
         c = conn.cursor()
         c.execute("""
             INSERT INTO sessions (started_at, currency, strategy, base_bet, multiplier, start_balance)
@@ -184,31 +205,39 @@ class BettingEngine:
               self.base_bet, self.multiplier, self.start_balance))
         conn.commit()
         sid = c.lastrowid
-        conn.close()
         return sid
 
-    def _db_save_bet(self, bet_data: dict, profit: float, balance: float):
+    def _queue_bet(self, bet_data: dict, profit: float, balance: float):
+        """Queue a bet row for batched insertion."""
+        self._bet_queue.append((
+            self.session_id, datetime.now().isoformat(),
+            float(bet_data.get("amount", 0)), float(bet_data.get("multiplier", 0)),
+            self.rule, float(bet_data.get("bet_value", 0)),
+            float(bet_data.get("result_value", 0)), bet_data.get("state", ""),
+            profit, balance,
+        ))
+        if len(self._bet_queue) >= BET_BATCH_SIZE:
+            self._flush_bets()
+
+    def _flush_bets(self):
+        """Flush all queued bets to DB in a single transaction."""
+        if not self._bet_queue:
+            return
         try:
-            conn = self._db_conn()
-            conn.execute("""
+            conn = self._get_conn()
+            conn.executemany("""
                 INSERT INTO bets (session_id, timestamp, amount, multiplier, rule,
                     bet_value, result_value, state, profit, balance_after)
                 VALUES (?,?,?,?,?,?,?,?,?,?)
-            """, (
-                self.session_id, datetime.now().isoformat(),
-                float(bet_data.get("amount", 0)), float(bet_data.get("multiplier", 0)),
-                self.rule, float(bet_data.get("bet_value", 0)),
-                float(bet_data.get("result_value", 0)), bet_data.get("state", ""),
-                profit, balance,
-            ))
+            """, self._bet_queue)
             conn.commit()
-            conn.close()
+            self._bet_queue.clear()
         except Exception as e:
-            logger.error("User %d: DB save_bet failed: %s", self.user_id, e)
+            logger.error("User %d: DB flush_bets failed: %s", self.user_id, e)
 
     def _db_save_session(self):
         try:
-            conn = self._db_conn()
+            conn = self._get_conn()
             lo_bal = self.lowest_balance if self.lowest_balance != float("inf") else self.current_balance
             conn.execute("""
                 UPDATE sessions SET
@@ -236,9 +265,16 @@ class BettingEngine:
                 self.session_id,
             ))
             conn.commit()
-            conn.close()
+            self._last_session_save = time.time()
         except Exception as e:
             logger.error("User %d: DB save_session failed: %s", self.user_id, e)
+
+    def _periodic_save(self):
+        """Flush bets and save session stats periodically."""
+        now = time.time()
+        if now - self._last_session_save >= SESSION_SAVE_SECS:
+            self._flush_bets()
+            self._db_save_session()
 
     # ── STRATEGY (delegates to core.engine) ────────────────
     def _compute_next_bet(self, last_result: str) -> float:
@@ -330,6 +366,7 @@ class BettingEngine:
         self.highest_balance = bal
         self.lowest_balance  = bal
         self.session_start   = time.time()
+        self._last_session_save = time.time()
         self.session_id      = self._db_start_session()
         self.running         = True
         self.status          = "Starting…"
@@ -420,6 +457,7 @@ class BettingEngine:
                 self.running = False
                 self.stop_reason = reason
                 self.status = f"STOPPED: {reason}"
+                self._flush_bets()
                 self._db_save_session()
                 break
 
@@ -507,7 +545,11 @@ class BettingEngine:
                 self.status = f"{emoji} {'WIN' if bet_state=='win' else 'LOSS'} | Roll: {result_value:.2f} | P/L: {sign}{raw_profit:.8f}"
                 self.last_error = ""
 
-            self._db_save_bet(bet_data, raw_profit, new_balance)
+            # queue bet for batched DB write
+            self._queue_bet(bet_data, raw_profit, new_balance)
+
+            # periodic session save (every 60s)
+            self._periodic_save()
 
             # profit-based base bet increment
             if (self.profit_increment and self.profit_threshold
@@ -538,9 +580,11 @@ class BettingEngine:
                     except Exception:
                         pass
 
-        # session ended
+        # session ended — flush remaining bets and save final state
+        self._flush_bets()
         if self.session_id:
             self._db_save_session()
+        self._close_conn()
         logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
         if self.on_stop:
             try:
