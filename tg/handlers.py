@@ -92,7 +92,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`milestonebets` — Notify every N bets (0=off)\n"
         "`milestonewins` — Notify every N wins (0=off)\n"
         "`milestonelosses` — Notify every N losses (0=off)\n"
-        "`milestoneprofit` — Notify every X profit (0=off)\n\n"
+        "`milestoneprofit` — Notify every X profit (0=off)\n"
+        "`profitthreshold` — Auto-raise base bet every X profit\n"
+        "`profitincrement` — Amount to add to base bet\n\n"
         "*Session*\n"
         "/bet — Start session\n"
         "/stop — Stop session\n"
@@ -200,6 +202,12 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("Stop conditions: _none_")
 
+    # profit increment
+    pi = config.get("profit_increment")
+    pt = config.get("profit_threshold")
+    if pi and pt:
+        lines.append(f"Profit increment: `+{pi:.8f} every {pt} profit`")
+
     # milestones
     ms = []
     mb = config.get("milestone_bets", 100)
@@ -291,6 +299,10 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["milestone_losses"] = int(value)
         elif param in ("milestoneprofit", "msprofit"):
             config["milestone_profit"] = float(value)
+        elif param in ("profitthreshold", "pt"):
+            config["profit_threshold"] = float(value) if value.lower() != "off" else None
+        elif param in ("profitincrement", "pi"):
+            config["profit_increment"] = float(value) if value.lower() != "off" else None
         else:
             await update.message.reply_text(
                 f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")

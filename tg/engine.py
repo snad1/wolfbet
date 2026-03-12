@@ -99,6 +99,11 @@ class BettingEngine:
         self.dalembert_unit  = 0
         self.paroli_count    = 0
 
+        # ── profit-based base bet increment ──
+        self.profit_increment     = config.get("profit_increment")    # amount to add to base_bet
+        self.profit_threshold     = config.get("profit_threshold")    # profit interval that triggers
+        self.next_profit_milestone = float(self.profit_threshold) if self.profit_threshold else 0.0
+
         # ── milestone config ──
         self.milestone_bets   = config.get("milestone_bets", 100)
         self.milestone_wins   = config.get("milestone_wins", 0)    # 0 = off
@@ -373,6 +378,7 @@ class BettingEngine:
             "biggest_loss": self.biggest_loss,
             "bps": self.bets_per_second,
             "bpm": self.bets_per_minute,
+            "base_bet": self.base_bet,
             "strategy": self.strategy,
             "multiplier": self.multiplier,
             "currency": self.currency.upper(),
@@ -502,6 +508,14 @@ class BettingEngine:
                 self.last_error = ""
 
             self._db_save_bet(bet_data, raw_profit, new_balance)
+
+            # profit-based base bet increment
+            if (self.profit_increment and self.profit_threshold
+                    and self.profit >= self.next_profit_milestone):
+                self.base_bet += self.profit_increment
+                self.next_profit_milestone += self.profit_threshold
+                logger.info("User %d: PROFIT INCREMENT base_bet → %.8f (next at %.8f profit)",
+                            self.user_id, self.base_bet, self.next_profit_milestone)
 
             if self.strategy_key == "6":
                 self._wolfrider_switch()
