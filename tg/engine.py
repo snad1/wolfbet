@@ -99,9 +99,16 @@ class BettingEngine:
         self.dalembert_unit  = 0
         self.paroli_count    = 0
 
+        # ── milestone config ──
+        self.milestone_bets   = config.get("milestone_bets", 100)
+        self.milestone_wins   = config.get("milestone_wins", 0)    # 0 = off
+        self.milestone_losses = config.get("milestone_losses", 0)  # 0 = off
+        self.milestone_profit = config.get("milestone_profit", 0)  # 0 = off
+        self._last_profit_milestone = 0.0  # track last profit threshold crossed
+
         # ── callbacks ──
         self.on_stop         = None   # called with (reason: str)
-        self.on_milestone    = None   # called every N bets
+        self.on_milestone    = None   # called every N bets/wins/losses/profit
 
         # ── thread ──
         self._thread: Optional[threading.Thread] = None
@@ -272,6 +279,27 @@ class BettingEngine:
         if self.stop_on_balance is not None and b <= self.stop_on_balance:
             return True, f"Balance floor: {b:.8f}"
         return False, ""
+
+    def _check_milestone(self, last_state: str) -> str:
+        """Check if any milestone threshold was hit. Returns reason or empty string."""
+        # Every N bets
+        if self.milestone_bets > 0 and self.total_bets % self.milestone_bets == 0:
+            return f"{self.total_bets} bets"
+        # Every N wins
+        if self.milestone_wins > 0 and last_state == "win" and self.wins % self.milestone_wins == 0:
+            return f"{self.wins} wins"
+        # Every N losses
+        if self.milestone_losses > 0 and last_state != "win" and self.losses % self.milestone_losses == 0:
+            return f"{self.losses} losses"
+        # Every X profit increment
+        if self.milestone_profit > 0 and self.profit > 0:
+            threshold = self.milestone_profit
+            current_level = int(self.profit / threshold)
+            last_level = int(self._last_profit_milestone / threshold)
+            if current_level > last_level:
+                self._last_profit_milestone = self.profit
+                return f"profit +{self.profit:.8f}"
+        return ""
 
     # ── LIFECYCLE ────────────────────────────────────────
     def start(self) -> bool:
@@ -485,12 +513,16 @@ class BettingEngine:
             self.current_bet = max(self.base_bet, min(raw_next, max_safe))
             last_result = bet_state
 
-            # milestone callback every 100 bets
-            if self.on_milestone and self.total_bets % 100 == 0:
-                try:
-                    self.on_milestone(self.get_status())
-                except Exception:
-                    pass
+            # milestone callbacks
+            if self.on_milestone:
+                reason = self._check_milestone(bet_state)
+                if reason:
+                    try:
+                        s = self.get_status()
+                        s["milestone_reason"] = reason
+                        self.on_milestone(s)
+                    except Exception:
+                        pass
 
         # session ended
         if self.session_id:

@@ -121,14 +121,16 @@ def format_stop(s: dict, reason: str) -> str:
 
 # ── Milestone (every 100 bets) ───────────────────────────
 def format_milestone(data: dict) -> str:
-    """Format milestone notification (every 100 bets)."""
+    """Format milestone notification."""
     p = data["profit"]
     ps = "+" if p >= 0 else ""
     pe = _pnl_emoji(p)
+    reason = data.get("milestone_reason", f"{data['bets']} bets")
     return (
-        f"\U0001f3af *{data['bets']} bets*\n"
+        f"\U0001f3af *Milestone: {reason}*\n"
         f"  {pe} P/L: `{ps}{p:.8f}`\n"
         f"  Bal: `{data['balance']:.8f} {data['currency']}`\n"
+        f"  Bets: `{data['bets']}` W: `{data['wins']}` L: `{data['losses']}`\n"
         f"  WR: `{data['win_rate']}` | {data['uptime']}"
     )
 

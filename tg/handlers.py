@@ -29,6 +29,9 @@ from .formatter import (
 # ── Active engines (one per user) ────────────────────────
 active_engines: Dict[int, BettingEngine] = {}
 
+# ── Active monitors (one per user) ──────────────────────
+active_monitors: Dict[int, asyncio.Task] = {}
+
 
 # ── /start ───────────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,6 +55,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop — Stop session\n"
         "/pause / /resume\n"
         "/status — Live status\n"
+        "/monitor — Auto-updating status\n"
         "/stats — Session history\n"
         "/session — Session detail\n\n"
         "/strategies — List all strategies\n"
@@ -84,13 +88,18 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`maxbets` — stop after N bets\n"
         "`maxwins` — stop after N wins\n"
         "`minbalance` — stop below balance\n"
-        "`delaythreshold` — Delay Martingale threshold\n\n"
+        "`delaythreshold` — Delay Martingale threshold\n"
+        "`milestonebets` — Notify every N bets (0=off)\n"
+        "`milestonewins` — Notify every N wins (0=off)\n"
+        "`milestonelosses` — Notify every N losses (0=off)\n"
+        "`milestoneprofit` — Notify every X profit (0=off)\n\n"
         "*Session*\n"
         "/bet — Start session\n"
         "/stop — Stop session\n"
         "/pause — Pause betting\n"
         "/resume — Resume betting\n"
         "/status — Live status (with refresh button)\n"
+        "/monitor — Auto-updating status (default 5s)\n"
         "/stats — Session history\n"
         "/session — Detailed session report\n"
         "/lastbets — Recent bets\n\n"
@@ -191,6 +200,18 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("Stop conditions: _none_")
 
+    # milestones
+    ms = []
+    mb = config.get("milestone_bets", 100)
+    if mb: ms.append(f"{mb} bets")
+    mw = config.get("milestone_wins", 0)
+    if mw: ms.append(f"{mw} wins")
+    ml = config.get("milestone_losses", 0)
+    if ml: ms.append(f"{ml} losses")
+    mp = config.get("milestone_profit", 0)
+    if mp: ms.append(f"{mp} profit")
+    lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
+
     api_set = "Yes" if config.get("api_key") else "No"
     lines.append(f"API key: `{api_set}`")
     lines.append(f"Tier: `{get_user_tier(user_id)}`")
@@ -262,6 +283,14 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["stop_on_balance"] = float(value) if value.lower() != "off" else None
         elif param == "delaythreshold":
             config["delay_martin_threshold"] = int(value)
+        elif param in ("milestonebets", "msbets"):
+            config["milestone_bets"] = int(value)
+        elif param in ("milestonewins", "mswins"):
+            config["milestone_wins"] = int(value)
+        elif param in ("milestonelosses", "mslosses"):
+            config["milestone_losses"] = int(value)
+        elif param in ("milestoneprofit", "msprofit"):
+            config["milestone_profit"] = float(value)
         else:
             await update.message.reply_text(
                 f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
@@ -408,11 +437,83 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
+# ── /monitor ─────────────────────────────────────────────
+async def cmd_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    engine = active_engines.get(user_id)
+    if not engine or not engine.running:
+        await update.message.reply_text(
+            "No session running. Start one with /bet", parse_mode="Markdown")
+        return
+
+    # Parse interval (default 5s, min 3s, max 60s)
+    interval = 5
+    if context.args:
+        try:
+            interval = max(3, min(60, int(context.args[0])))
+        except ValueError:
+            pass
+
+    # Cancel existing monitor for this user
+    old = active_monitors.pop(user_id, None)
+    if old and not old.done():
+        old.cancel()
+
+    text = format_status(engine.get_status())
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+        InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
+        InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+    ]])
+    msg = await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    # Start auto-refresh task
+    task = asyncio.create_task(
+        _monitor_loop(msg, user_id, interval))
+    active_monitors[user_id] = task
+
+
+async def _monitor_loop(msg, user_id: int, interval: int):
+    """Periodically edit the status message with fresh data."""
+    try:
+        while True:
+            await asyncio.sleep(interval)
+
+            engine = active_engines.get(user_id)
+            if not engine or not engine.running:
+                # Session ended — show final status
+                try:
+                    await msg.edit_text(
+                        "Session ended. Monitor stopped.",
+                        reply_markup=None)
+                except Exception:
+                    pass
+                break
+
+            text = format_status(engine.get_status())
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+                InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
+                InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+            ]])
+            try:
+                await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            except Exception:
+                pass  # message unchanged (same content)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        active_monitors.pop(user_id, None)
+
+
 # ── Inline button callbacks ─────────────────────────────
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+
+    if query.data == "noop":
+        return
 
     if query.data == "refresh_status":
         engine = active_engines.get(user_id)
@@ -429,7 +530,56 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass  # message unchanged
 
+    elif query.data == "stop_monitor":
+        task = active_monitors.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+        # Replace with static status + refresh button
+        engine = active_engines.get(user_id)
+        if engine and engine.running:
+            text = format_status(engine.get_status())
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Refresh", callback_data="refresh_status"),
+                InlineKeyboardButton("Monitor", callback_data="start_monitor_5"),
+                InlineKeyboardButton("Stop", callback_data="stop_session"),
+            ]])
+            try:
+                await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            except Exception:
+                pass
+        else:
+            await query.edit_message_text("Monitor stopped. Session ended.")
+
+    elif query.data.startswith("start_monitor_"):
+        interval = int(query.data.split("_")[-1])
+        engine = active_engines.get(user_id)
+        if not engine or not engine.running:
+            await query.edit_message_text("Session ended.")
+            return
+        # Cancel existing
+        old = active_monitors.pop(user_id, None)
+        if old and not old.done():
+            old.cancel()
+        # Start new monitor on this message
+        text = format_status(engine.get_status())
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"Auto {interval}s", callback_data="noop"),
+            InlineKeyboardButton("Stop Monitor", callback_data="stop_monitor"),
+            InlineKeyboardButton("Stop Session", callback_data="stop_session"),
+        ]])
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            pass
+        task = asyncio.create_task(
+            _monitor_loop(query.message, user_id, interval))
+        active_monitors[user_id] = task
+
     elif query.data == "stop_session":
+        # Also stop monitor if running
+        task = active_monitors.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
         engine = active_engines.get(user_id)
         if engine and engine.running:
             engine.stop_reason = "Stopped by user"

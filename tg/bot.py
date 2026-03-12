@@ -12,7 +12,7 @@ from . import VERSION
 from .handlers import (
     cmd_start, cmd_help, cmd_setkey, cmd_balance, cmd_config,
     cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_pause, cmd_resume,
-    cmd_status, cmd_stats, cmd_lastbets,
+    cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
     cmd_rules, cmd_addrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session,
@@ -45,6 +45,7 @@ def main():
             BotCommand("pause",       "Pause betting"),
             BotCommand("resume",      "Resume betting"),
             BotCommand("status",      "Live status with refresh button"),
+            BotCommand("monitor",     "Auto-updating live status"),
             BotCommand("stats",       "Session history"),
             BotCommand("lastbets",    "Recent bets"),
             BotCommand("session",     "Detailed session report"),
@@ -77,6 +78,7 @@ def main():
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("monitor", cmd_monitor))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("lastbets", cmd_lastbets))
     app.add_handler(CommandHandler("session", cmd_session))

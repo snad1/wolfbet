@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.8.0 (2026-03-12)
+
+### Telegram Bot v1.3.0
+
+- **`/monitor` command** — Auto-updating live status that refreshes every N seconds (default 5s, range 3–60s). Edits the same message in place. Buttons: Stop Monitor (switch to manual refresh), Stop Session. Also launchable via inline "Monitor" button on `/status`.
+- **Monitor auto-stop** — Monitor automatically stops and notifies when the session ends.
+- **`/status` enhanced** — After stopping a monitor, status shows a "Monitor" button to restart auto-refresh.
+
 ## v2.7.0 (2026-03-12)
 
 ### Telegram Bot v1.2.0

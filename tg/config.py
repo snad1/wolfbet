@@ -27,6 +27,7 @@ CONFIG_KEYS = [
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
 ]
 
 
