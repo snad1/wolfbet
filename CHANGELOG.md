@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.6.0 (2026-03-12)
+
+### Architecture
+
+- **Shared `core/` package** — Extracted strategy, database, and engine logic into `core/strategy.py`, `core/database.py`, `core/engine.py`. Both CLI bot and Telegram bot import from the same source of truth.
+- **SOLID/DRY refactoring** — Removed ~350 lines of duplicated code from `wolfbet.py` (StrategyRule, describe_rule, cmp, load_rules_from_text, compute_next_bet, wolfrider_switch, apply_action, apply_rules, init_db, db_conn all now delegate to core/).
+- **Telegram bot** — Full Telegram integration in `tg/` package with 20 commands, per-user isolation, inline keyboards, auto-command registration via `set_my_commands`.
+
+### Security (ISO 27001)
+
+- **Environment variables** — All paths and secrets configurable via env vars (`WOLFBET_API_KEY`, `WOLFBET_DB_PATH`, `WOLFBET_TG_TOKEN`, etc.) with sensible defaults.
+- **Secure file permissions** — Config and state files written with `0o600` (owner read/write only).
+- **API key masking** — Keys masked in all log output (`key[:8]...key[-4:]`).
+- **Audit logging** — Config saves logged with masked key.
+
+### New Features
+
+- **Telegram bot commands** — `/start`, `/help`, `/setkey`, `/balance`, `/config`, `/set`, `/strategies`, `/bet`, `/stop`, `/pause`, `/resume`, `/status`, `/stats`, `/lastbets`, `/rules`, `/addrule`, `/clearrules`, `/presets`, `/savepreset`, `/loadpreset`.
+- **Auto command registration** — Bot registers all 20 commands with Telegram on startup via `post_init` hook.
+- **wolfctl tg** — `wolfctl tg start/stop/restart/status/logs/env` for Telegram bot management.
+- **wolfctl start-all / stop-all / status-all** — Manage both CLI and Telegram bots together.
+- **Unified installer** — `install.sh` v3.1 sets up CLI bot, Telegram bot, core/, venv, systemd services, and wolfctl in one step.
+
+### Changes
+
+- Version bump to 2.6.0.
+- Removed "VPS", "Ubuntu", "Terminal Dashboard" identifiers from all files.
+- `EnvironmentFile` added to CLI bot systemd service for env var support.
+- `requirements.txt` now includes `python-telegram-bot>=20.0`.
+
 ## v2.5.0 (2026-03-11)
 
 ### New Features

@@ -1,6 +1,32 @@
-# WolfBet AutoBot v2.5
+# WolfBet AutoBot v2.6
 
-High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact terminal dashboard. Runs on any VPS or local machine — leave it running in tmux and check stats any time.
+High-speed auto-betting engine for WolfBet Dice with a live dashboard + Telegram bot. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
+
+---
+
+## Architecture
+
+```text
+wolfbet/
+├── wolfbet.py          CLI bot (TUI dashboard, wizard, monitor)
+├── core/               Shared package (single source of truth)
+│   ├── strategy.py     Strategies, rule engine, StrategyRule class
+│   ├── database.py     DB schema, migrations, WAL connections
+│   └── engine.py       Strategy computation, rule evaluation
+├── tg/                 Telegram bot package
+│   ├── bot.py          Entry point, command registration
+│   ├── handlers.py     All /command handlers
+│   ├── engine.py       Per-user BettingEngine (uses core/)
+│   ├── database.py     Per-user DB/config paths
+│   ├── formatter.py    Telegram message formatting
+│   ├── config.py       Env-based configuration
+│   └── strategy.py     Re-exports from core/
+├── install.sh          Server installer (systemd, wolfctl, venv)
+├── .env.example        Environment variable template
+└── requirements.txt    Python dependencies
+```
+
+Both the CLI bot and Telegram bot import shared logic from `core/` — change once, applies everywhere.
 
 ---
 
@@ -8,264 +34,175 @@ High-speed auto-betting engine for WolfBet Dice with a live, ultra-compact termi
 
 | Feature | Details |
 |---|---|
-| **Pure ANSI TUI** | Direct ANSI rendering (no Rich flicker), fits any terminal, refreshes 2x/sec |
+| **Pure ANSI TUI** | Direct ANSI rendering, fits any terminal, refreshes 2x/sec |
+| **Telegram bot** | Full control via Telegram — start/stop/pause/status/config |
 | **8 betting strategies** | Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, WolfRider, Delay Martingale, Rule-Based |
-| **Rule-based engine** | Build custom IF/THEN rules with interactive wizard — sequence, profit, and bet conditions |
-| **Editable multipliers** | Customize loss/win multipliers per strategy (no more hardcoded 2x) |
-| **Rule editor** | Edit any part of existing rules, delete, add, clear, or rebuild from scratch |
-| **Named presets** | Save & load strategy configs by name with `--preset` |
-| **Smart rate recovery** | Exponential probe (2s→4s→8s→32s) instead of hard 60s freeze — resumes as soon as capacity restores |
-| **Smart stop conditions** | Max profit, max loss, max bets, max wins, min balance floor |
-| **Safety cap** | Never bets more than 20% of current balance in one go |
+| **5 rule condition modes** | Every N, Every streak of N, First streak of N, Streak above/below N |
+| **12 rule actions** | Reset/increase/decrease/set amount, switch, stop, set/adjust win chance, reset game |
+| **Named presets** | Save & load strategy configs by name |
+| **Env-based config** | API key, paths, Telegram token — all via environment variables |
+| **Secure file handling** | Config files written with 0600 permissions, API keys masked in logs |
+| **Smart rate recovery** | Exponential probe (2s→4s→8s→32s) instead of hard 60s freeze |
 | **Session database** | SQLite log of every bet and session — survives restarts |
-| **Config persistence** | Save/load config with `--resume`, smart wizard with defaults |
-| **Monitor mode** | `--monitor` to attach a live TUI to a running daemon — pause/resume/stop remotely |
-| **Daemon mode** | `--daemon` for background running, `--status` to check, `--stop` to halt |
-| **Performance tracking** | BPS, BPM, peak/low speed ranges, peak/low balance, best win, worst loss, avg P/L |
+| **Daemon + monitor** | `--daemon` for background, `--monitor` to attach live TUI |
+| **Performance tracking** | BPS, BPM, peak/low speed, peak/low balance, best win, worst loss |
 | **Streak distribution** | Per-session bar charts showing win/loss streak frequency |
-| **Daily log rotation** | Logs at `~/.wolfbet_logs/wolfbet.log`, rotates at midnight, 30-day retention |
-| **Interactive keyboard** | `P` pause, `R` resume, `H` history, `Q` quit — all from dashboard |
+| **Daily log rotation** | Logs at `~/.wolfbet_logs/`, rotates at midnight, 30-day retention |
 
 ---
 
 ## Quick Start
 
-### Mac / Local
+### Local
 
 ```bash
-# 1. Setup
 python3 -m venv .venv && source .venv/bin/activate
-pip install requests rich
+pip install -r requirements.txt
 
-# 2. Run (wizard guides you through config)
+# Run wizard (guides you through config)
 python3 wolfbet.py
 
-# 3. Get your API key from:
-#    https://wolfbet.com/user/settings?tab=api
-
-# 4. Resume with saved config
-python3 wolfbet.py --resume
+# Get your API key from: https://wolfbet.com/user/settings?tab=api
 ```
 
-### VPS
+### Remote Server
 
 ```bash
-# Upload and install
-scp wolfbet.py requirements.txt install.sh user@your-vps:~/
-ssh user@your-vps
-chmod +x install.sh && ./install.sh
+# Upload files
+scp -r wolfbet.py requirements.txt install.sh core/ tg/ .env.example user@your-server:~/wolfbet/
 
-# Run in tmux (survives SSH disconnect)
-tmux new -s wolfbet
-python3 wolfbet.py
-# Detach: Ctrl+B then D
-# Re-attach: tmux attach -t wolfbet
+# Install (sets up venv, systemd, wolfctl)
+ssh user@your-server
+cd ~/wolfbet && chmod +x install.sh && ./install.sh
+```
+
+### wolfctl Management
+
+```bash
+wolfctl setup           # Run wizard to configure
+wolfctl start           # Start CLI bot as daemon
+wolfctl stop            # Stop CLI bot
+wolfctl monitor         # Attach live TUI to running daemon
+wolfctl status          # Check running session status
+wolfctl stats           # Show all-time session statistics
+
+wolfctl tg env          # Edit .env (set Telegram token)
+wolfctl tg start        # Start Telegram bot
+wolfctl tg stop         # Stop Telegram bot
+wolfctl tg logs         # Stream Telegram bot logs
+
+wolfctl start-all       # Start both CLI + Telegram bots
+wolfctl stop-all        # Stop both bots
+wolfctl status-all      # Check all services
 ```
 
 ---
 
-## Dashboard
+## Telegram Bot
 
-The dashboard uses pure ANSI rendering (no Rich flicker) — 10 pinned rows + adaptive recent bets. Fits any terminal.
+The Telegram bot provides full betting control from your phone. Each Telegram user gets isolated storage (DB, config, presets).
 
-```text
-─── WolfBet v2.4  #3  00:12:34  ● LIVE ──────────────────────────
- BAL  0.00845321 USDT  PnL +0.00012500  WAG 0.00832100  WR 51.2%
- Bets 2042  W 1046  L 996  Str W+4  Best W+11/L-8
- Bet 0.00010000  Hi 0.00640000  Martingale  2.0x  BPS 5.2  BPM 312  RL 211/480  Speed 4-7/s 240-420/m
- Peak 0.00860000  Low 0.00800000  BestW +0.00009800  WorstL -0.00640000  Avg +0.00000006  Bal +0.00012500
- P/L ▃▅▇▆▄▅▇█▆▅▃▄▆▇
-──────────────────────────────────────────────────────────────────
-     #  Time      Amount          Roll  W/L   P/L              Balance
-  2042  14:22:01  0.00010000     61.20   W   +0.00009800     0.00845321
-  2041  14:22:00  0.00010000     23.40   L   -0.00010000     0.00835521
-──────────────────────────────────────────────────────────────────
- W WIN | Roll: 61.20 | P/L: +0.00009800      [P]ause [R]esume [Q]uit [H]istory
-```
+### Setup
+
+1. Open Telegram → search **@BotFather** → `/newbot`
+2. Choose a name and username → copy the token
+3. On your server: `wolfctl tg env` → set `WOLFBET_TG_TOKEN=<token>`
+4. `wolfctl tg start`
+5. Open your bot in Telegram → `/start`
+
+Commands auto-register on startup (20 commands shown in the `/` menu).
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/start` | Welcome and quick start guide |
+| `/help` | Full command reference |
+| `/setkey` | Set WolfBet API key |
+| `/balance` | Check balances |
+| `/config` | View current config |
+| `/set <param> <value>` | Set a parameter |
+| `/strategies` | List available strategies |
+| `/bet` | Start betting session |
+| `/stop` | Stop session |
+| `/pause` / `/resume` | Pause/resume betting |
+| `/status` | Live status with refresh button |
+| `/stats` | Session history |
+| `/lastbets [N]` | Recent bets |
+| `/rules` | List current rules |
+| `/addrule <JSON>` | Add a rule |
+| `/clearrules` | Clear all rules |
+| `/presets` | List presets |
+| `/savepreset <name>` | Save current config |
+| `/loadpreset <name>` | Load a preset |
+
+---
+
+## Environment Variables
+
+All configuration can be set via environment variables (recommended for servers):
+
+| Variable | Default | Description |
+|---|---|---|
+| `WOLFBET_API_KEY` | *(none)* | API Bearer token (overrides saved config) |
+| `WOLFBET_API_BASE` | `https://wolfbet.com/api/v1` | API base URL |
+| `WOLFBET_DB_PATH` | `~/.wolfbet_autobot.db` | SQLite database path |
+| `WOLFBET_CONFIG_PATH` | `~/.wolfbet_autobot.json` | Saved config path |
+| `WOLFBET_LOG_DIR` | `~/.wolfbet_logs` | Log directory |
+| `WOLFBET_TG_TOKEN` | *(none)* | Telegram bot token |
+| `WOLFBET_TG_DATA` | `~/.wolfbot_tg` | Per-user Telegram data dir |
 
 ---
 
 ## Strategies
 
-| # | Name | How it works | Risk |
-|---|---|---|---|
+| Nr | Name | How it works | Risk |
+| --- | --- | --- | --- |
 | 1 | **Flat Bet** | Same amount every time | Very Low |
-| 2 | **Martingale** | Multiply on loss, reset on win (configurable multiplier) | High |
-| 3 | **Anti-Martingale** | Multiply on win, reset on loss (configurable multiplier) | Medium |
+| 2 | **Martingale** | Multiply on loss, reset on win | High |
+| 3 | **Anti-Martingale** | Multiply on win, reset on loss | Medium |
 | 4 | **D'Alembert** | +1 unit on loss, -1 on win | Low-Medium |
-| 5 | **Paroli (3-step)** | Multiply on win up to 3x then reset (configurable multiplier) | Medium |
-| 6 | **WolfRider** | Multiply on loss, reset on win + switch over/under on bet 2/6/9 | High |
-| 7 | **Delay Martingale** | Flat for N consecutive losses, then start multiplying | High |
-| 8 | **Rule-Based** | Build custom IF/THEN conditions & actions (see below) | Variable |
-
-> Strategies 2, 3, 5, 6, 7 now let you customize the loss/win multiplier in the wizard (e.g. 2.01x, 1.5x, 3x).
->
-> The built-in 20% balance safety cap limits runaway bets, but always set a **Max Loss** stop condition.
+| 5 | **Paroli (3-step)** | Multiply on win up to 3x then reset | Medium |
+| 6 | **WolfRider** | Multiply on loss + switch over/under on bet 2/6/9 | High |
+| 7 | **Delay Martingale** | Flat for N losses, then multiply | High |
+| 8 | **Rule-Based** | Custom IF/THEN conditions & actions | Variable |
 
 ---
 
 ## Rule-Based Strategy (Strategy 8)
 
-Build custom rules interactively using the wizard. Each rule is an **IF condition → THEN action** pair.
+### Condition Modes
 
-### Conditions
-
-| Type | Options | Description |
-|---|---|---|
-| **Sequence** | Every N / Every streak of N / Streak above N / Streak below N | Trigger on win/loss/bet counts or streaks |
-| **Profit** | On profit / loss / balance | Compare with `>=`, `>`, `<=`, `<` against a value |
-| **Bet** | On bet amount / number / win chance / payout | Compare with `>=`, `>`, `<=`, `<` against a value |
+| Mode | Behavior |
+|---|---|
+| **Every N** | Fires at every Nth total win/loss/bet |
+| **Every streak of N** | Fires at N, 2N, 3N… within a streak (modulus) |
+| **First streak of N** | Fires once when streak first hits N (resets on flip) |
+| **Streak above N** | Fires every bet past N in streak |
+| **Streak below N** | Fires when streak is below N |
 
 ### Actions
 
-| Action | Description |
-|---|---|
-| Reset bet amount | Reset to base bet |
-| Increase amount by % | Multiply current bet (e.g. 101% = ×2.01) |
-| Decrease amount by % | Reduce current bet by percentage |
-| Add to amount | Add a fixed value to bet |
-| Deduct from amount | Subtract a fixed value from bet |
-| Set amount | Set bet to an exact value |
-| Switch over/under | Toggle bet direction |
-| Stop betting | Stop the bot |
-| Set win chance | Set exact win chance (recalculates multiplier) |
-| Increase/Decrease win chance by % | Adjust win chance relatively |
-| Reset game | Full reset (bet + streak counters) |
-
-### Rule Management
-
-When you have existing rules, the wizard shows:
-```
-  Current rules (6):
-    1. Every 1 win(s) → Reset bet amount
-    2. Every 1 loss(s) → Increase amount by 101%
-    ...
-
-    [1] Add rule   [2] Edit rule   [3] Delete rule   [4] Clear all   [5] Continue
-```
-
-**Editing a rule** shows each part as a numbered menu — change just the condition type, mode, value, event, or action without recreating the whole rule. You can also **Rebuild from scratch** from within the editor.
-
-### Example
-
-A Martingale variant with direction switching:
-- Every 1 win → Reset bet amount
-- Every 1 loss → Increase amount by 101%
-- Every 500 wins → Stop betting
-- Every 2 bets → Switch over/under
-- Every 6 bets → Switch over/under
-- Every 9 bets → Switch over/under
-
----
-
-## Named Presets
-
-Save your strategy configuration and reuse it instantly:
-
-```bash
-# During wizard: Step 6 asks to save as preset.
-
-# List saved presets
-python3 wolfbet.py --list-presets
-
-# Run with a saved preset (skips wizard)
-python3 wolfbet.py --preset my_strategy
-```
-
-Presets are stored in `~/.wolfbet_presets.json`.
-
----
-
-## Stop Conditions
-
-Configure during setup wizard:
-
-- **Max profit** — stop when session profit reaches X
-
-- **Max loss** — stop when session loss exceeds X
-- **Max bets** — stop after N bets
-- **Max wins** — stop after N wins
-- **Min balance** — stop if balance drops below X
+Reset amount, Increase/Decrease by %, Add/Deduct fixed, Set amount, Switch over/under, Stop, Set/Increase/Decrease win chance, Reset game.
 
 ---
 
 ## CLI Options
 
 ```bash
-python3 wolfbet.py                 # Interactive wizard + TUI dashboard
-python3 wolfbet.py --resume        # Skip wizard, reuse saved config
-python3 wolfbet.py --preset X      # Load preset X and start
-python3 wolfbet.py --daemon        # Run in background (no TUI, implies --resume)
-python3 wolfbet.py --monitor       # Attach live TUI to running daemon
-python3 wolfbet.py --status        # Check running session status (one-shot)
-python3 wolfbet.py --stop          # Stop a running daemon
-python3 wolfbet.py --setup-only    # Run wizard, save config, don't start
-python3 wolfbet.py --list-presets  # Show saved presets
-python3 wolfbet.py --stats         # Show all session history + totals
-python3 wolfbet.py --last-bets N   # Show last N bets across sessions
-python3 wolfbet.py --session-bets N  # Full stats + streak distribution for session N
+python3 wolfbet.py                   # Interactive wizard + TUI
+python3 wolfbet.py --resume          # Skip wizard, reuse saved config
+python3 wolfbet.py --preset X        # Load preset X and start
+python3 wolfbet.py --daemon          # Background (no TUI, implies --resume)
+python3 wolfbet.py --monitor         # Attach live TUI to running daemon
+python3 wolfbet.py --status          # Check running session status
+python3 wolfbet.py --stop            # Stop a running daemon
+python3 wolfbet.py --setup-only      # Wizard only, don't start
+python3 wolfbet.py --stats           # Session history + totals
+python3 wolfbet.py --last-bets N     # Last N bets across sessions
+python3 wolfbet.py --session-bets N  # Full stats + streaks for session N
+python3 wolfbet.py --verbose         # Enable DEBUG logging
 ```
-
----
-
-## Keyboard Controls
-
-| Key | Action |
-|---|---|
-| `P` | Pause betting |
-| `R` | Resume betting |
-| `H` | Show session history screen |
-| `Q` | Stop bot and save session |
-| `Ctrl+C` | Emergency stop (also saves) |
-| `Ctrl+\` | Emergency stop (also saves) |
-
----
-
-## Rate Limits
-
-WolfBet allows **480 requests per minute**. The bot:
-
-- Reads `x-ratelimit-remaining` from every response header
-- When remaining ≤ 2 (or HTTP 429), enters **exponential probe recovery**:
-  - Waits 2s → probes `GET /user/balances` to check if capacity restored
-  - If remaining > 5 → resumes betting immediately
-  - If still low → doubles wait: 2s → 4s → 8s → 16s → 32s (capped)
-- Resumes as soon as capacity restores — no unnecessary waiting
-- Shows probe status and remaining count in the status bar
-- Reports live **bets/minute** so you can monitor throughput
-
----
-
-## Files & Data
-
-| Path | Purpose |
-|---|---|
-| `wolfbet.py` | Main bot (single file) |
-| `~/.wolfbet_autobot.db` | SQLite database (sessions + bets) |
-| `~/.wolfbet_autobot.json` | Saved config for `--resume` |
-| `~/.wolfbet_presets.json` | Named strategy presets |
-| `~/.wolfbet_logs/wolfbet.log` | Daily rotating log (30 days) |
-| `~/.wolfbet_autobot_live.json` | Live state for `--status` |
-| `~/.wolfbet_autobot.pid` | PID file for `--stop` |
-
-```bash
-# Query session history
-sqlite3 ~/.wolfbet_autobot.db "SELECT * FROM sessions ORDER BY id DESC LIMIT 5;"
-
-# Bet stats
-sqlite3 ~/.wolfbet_autobot.db "SELECT state, COUNT(*), SUM(profit) FROM bets GROUP BY state;"
-```
-
----
-
-## API
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /user/balances` | Fetch current balance on startup |
-| `POST /bet/place` | Place each dice bet |
-
-Base URL: `https://wolfbet.com/api/v1`
 
 ---
 

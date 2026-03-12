@@ -1,0 +1,503 @@
+"""BettingEngine — per-user betting instance running in its own thread."""
+
+import time
+import sqlite3
+import threading
+import requests
+from datetime import datetime
+from collections import deque
+from typing import Optional, List
+
+from .config import API_BASE, logger
+from core.database import init_db, db_connect
+from core.strategy import StrategyRule, load_rules_from_text
+from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
+
+
+class BettingEngine:
+    """Self-contained betting engine for one user. Runs in its own thread."""
+
+    def __init__(self, user_id: int, db_path: str, api_key: str, config: dict):
+        self.user_id = user_id
+        self.db_path = db_path
+        self.lock    = threading.Lock()
+
+        # ── config ──
+        self.api_key        = api_key
+        self.currency       = config.get("currency", "usdt")
+        self.rule           = config.get("rule", "over")
+        self.multiplier     = config.get("multiplier", 2.01)
+        self.bet_value      = config.get("bet_value", 50.49)
+        self.base_bet       = config.get("base_bet", 0.0001)
+        self.current_bet    = self.base_bet
+        self.strategy       = config.get("strategy", "Martingale")
+        self.strategy_key   = config.get("strategy_key", "2")
+        self.win_mult       = config.get("win_mult", 1.0)
+        self.loss_mult      = config.get("loss_mult", 2.0)
+        self.bet_delay      = config.get("bet_delay", 0)
+        self.delay_martin_threshold = config.get("delay_martin_threshold", 3)
+
+        # ── rules ──
+        self.custom_rules: List[StrategyRule] = []
+        rules_text = config.get("custom_rules_text", "")
+        if rules_text:
+            self.custom_rules = load_rules_from_text(rules_text)
+
+        # ── stop conditions ──
+        self.max_profit      = config.get("max_profit")
+        self.max_loss        = config.get("max_loss")
+        self.max_bets        = config.get("max_bets")
+        self.max_wins        = config.get("max_wins")
+        self.stop_on_balance = config.get("stop_on_balance")
+
+        # ── session state ──
+        self.running         = False
+        self.paused          = False
+        self.session_id      = None
+        self.session_start   = 0.0
+        self.total_bets      = 0
+        self.wins            = 0
+        self.losses          = 0
+        self.profit          = 0.0
+        self.wagered         = 0.0
+        self.start_balance   = 0.0
+        self.current_balance = 0.0
+        self.current_streak  = 0
+        self.max_win_streak  = 0
+        self.max_loss_streak = 0
+        self.highest_bet     = 0.0
+        self.highest_win     = 0.0
+        self.biggest_loss    = 0.0
+        self.highest_balance = 0.0
+        self.lowest_balance  = float("inf")
+        self.bets_per_second = 0.0
+        self.bets_per_minute = 0.0
+        self.peak_bps        = 0.0
+        self.low_bps         = float("inf")
+        self.peak_bpm        = 0.0
+        self.low_bpm         = float("inf")
+        self._bets_this_sec  = 0
+        self._bets_this_min  = 0
+        self._current_sec    = 0
+        self._current_min    = 0
+        self.profit_history  = deque(maxlen=40)
+        self.profit_history.append(0.0)
+        self.recent_bets     = deque(maxlen=5)
+        self.status          = "Idle"
+        self.last_error      = ""
+        self.stop_reason     = ""
+
+        # ── rate limiting ──
+        self.rate_remaining  = 480
+        self.rate_limit      = 480
+        self.rate_wait       = False
+        self.rate_backoff    = 2.0
+        self.consecutive_errors = 0
+        self.backoff_delay   = 1.0
+
+        # ── strategy internals ──
+        self.dalembert_unit  = 0
+        self.paroli_count    = 0
+
+        # ── callbacks ──
+        self.on_stop         = None   # called with (reason: str)
+        self.on_milestone    = None   # called every N bets
+
+        # ── thread ──
+        self._thread: Optional[threading.Thread] = None
+
+    # ── API ──────────────────────────────────────────────
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/json",
+        }
+
+    def _update_rate_limit(self, resp):
+        try:
+            remaining = int(resp.headers.get("x-ratelimit-remaining", self.rate_remaining))
+            self.rate_remaining = remaining
+            self.rate_limit = int(resp.headers.get("x-ratelimit-limit", 480))
+            if remaining <= 2 and not self.rate_wait:
+                self.rate_wait = True
+                self.rate_backoff = 2.0
+        except Exception:
+            pass
+
+    def api_get_balances(self) -> list:
+        r = requests.get(f"{API_BASE}/user/balances", headers=self._headers(), timeout=12)
+        self._update_rate_limit(r)
+        r.raise_for_status()
+        return r.json().get("balances", [])
+
+    def _api_place_bet(self, amount: float) -> Optional[dict]:
+        payload = {
+            "currency": self.currency,
+            "game": "dice",
+            "amount": f"{amount:.8f}",
+            "rule": self.rule,
+            "multiplier": f"{self.multiplier}",
+            "bet_value": f"{self.bet_value}",
+        }
+        try:
+            r = requests.post(f"{API_BASE}/bet/place", headers=self._headers(),
+                              json=payload, timeout=15)
+            self._update_rate_limit(r)
+            if r.status_code == 200:
+                return r.json()
+            elif r.status_code == 429:
+                self.rate_wait = True
+                self.rate_backoff = 2.0
+                self.last_error = "Rate limit 429"
+            else:
+                self.last_error = f"HTTP {r.status_code}: {r.text[:120]}"
+        except requests.exceptions.Timeout:
+            self.last_error = "Request timeout"
+        except Exception as e:
+            self.last_error = str(e)[:120]
+        return None
+
+    # ── DB ───────────────────────────────────────────────
+    def _db_conn(self):
+        return db_connect(self.db_path)
+
+    def _db_start_session(self) -> int:
+        conn = self._db_conn()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO sessions (started_at, currency, strategy, base_bet, multiplier, start_balance)
+            VALUES (?,?,?,?,?,?)
+        """, (datetime.now().isoformat(), self.currency, self.strategy,
+              self.base_bet, self.multiplier, self.start_balance))
+        conn.commit()
+        sid = c.lastrowid
+        conn.close()
+        return sid
+
+    def _db_save_bet(self, bet_data: dict, profit: float, balance: float):
+        try:
+            conn = self._db_conn()
+            conn.execute("""
+                INSERT INTO bets (session_id, timestamp, amount, multiplier, rule,
+                    bet_value, result_value, state, profit, balance_after)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (
+                self.session_id, datetime.now().isoformat(),
+                float(bet_data.get("amount", 0)), float(bet_data.get("multiplier", 0)),
+                self.rule, float(bet_data.get("bet_value", 0)),
+                float(bet_data.get("result_value", 0)), bet_data.get("state", ""),
+                profit, balance,
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error("User %d: DB save_bet failed: %s", self.user_id, e)
+
+    def _db_save_session(self):
+        try:
+            conn = self._db_conn()
+            lo_bal = self.lowest_balance if self.lowest_balance != float("inf") else self.current_balance
+            conn.execute("""
+                UPDATE sessions SET
+                    ended_at=?, total_bets=?, wins=?, losses=?,
+                    profit=?, wagered=?, end_balance=?,
+                    max_win_streak=?, max_loss_streak=?,
+                    highest_balance=?, lowest_balance=?,
+                    highest_win=?, biggest_loss=?,
+                    bets_per_minute=?, bets_per_second=?,
+                    peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
+                WHERE id=?
+            """, (
+                datetime.now().isoformat(),
+                self.total_bets, self.wins, self.losses,
+                self.profit, self.wagered, self.current_balance,
+                self.max_win_streak, self.max_loss_streak,
+                self.highest_balance, lo_bal,
+                self.highest_win, self.biggest_loss,
+                min(self.bets_per_second * 60, self.rate_limit) if self.bets_per_second else self.bets_per_minute,
+                self.bets_per_second,
+                self.peak_bps,
+                self.low_bps if self.low_bps != float("inf") else 0,
+                self.peak_bpm,
+                self.low_bpm if self.low_bpm != float("inf") else 0,
+                self.session_id,
+            ))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error("User %d: DB save_session failed: %s", self.user_id, e)
+
+    # ── STRATEGY (delegates to core.engine) ────────────────
+    def _compute_next_bet(self, last_result: str) -> float:
+        nxt, self.dalembert_unit, self.paroli_count = compute_next_bet(
+            self.strategy_key, self.base_bet, self.current_bet,
+            self.loss_mult, self.win_mult, last_result,
+            self.current_streak, self.delay_martin_threshold,
+            self.dalembert_unit, self.paroli_count,
+        )
+        return nxt
+
+    def _wolfrider_switch(self):
+        new_rule, new_bv = wolfrider_switch(self.total_bets, self.rule, self.multiplier)
+        if new_rule is not None:
+            self.rule = new_rule
+            self.bet_value = new_bv
+
+    def _apply_rules(self, bet_state: str):
+        triggered = evaluate_rules(
+            self.custom_rules, bet_state, self.wins, self.losses,
+            self.total_bets, self.current_streak, self.profit,
+            self.current_balance, self.current_bet, self.multiplier,
+        )
+        for rule in triggered:
+            mutations = apply_action(
+                rule, self.current_bet, self.base_bet,
+                self.rule, self.multiplier, self.current_streak,
+            )
+            for k, v in mutations.items():
+                setattr(self, k, v)
+
+    def _should_stop(self):
+        p = self.profit
+        b = self.current_balance
+        if self.max_profit is not None and p >= self.max_profit:
+            return True, f"Profit target: {p:+.8f}"
+        if self.max_loss is not None and p <= -abs(self.max_loss):
+            return True, f"Max loss: {p:+.8f}"
+        if self.max_bets is not None and self.total_bets >= self.max_bets:
+            return True, f"Max bets: {self.total_bets}"
+        if self.max_wins is not None and self.wins >= self.max_wins:
+            return True, f"Max wins: {self.wins}"
+        if self.stop_on_balance is not None and b <= self.stop_on_balance:
+            return True, f"Balance floor: {b:.8f}"
+        return False, ""
+
+    # ── LIFECYCLE ────────────────────────────────────────
+    def start(self) -> bool:
+        """Connect, fetch balance, start betting thread. Returns True on success."""
+        try:
+            balances = self.api_get_balances()
+        except Exception as e:
+            self.last_error = f"Connection failed: {e}"
+            return False
+
+        bal = 0.0
+        for b in balances:
+            if b.get("currency", "").lower() == self.currency.lower():
+                bal = float(b.get("amount", 0))
+                break
+        if bal <= 0:
+            self.last_error = f"No {self.currency.upper()} balance found"
+            return False
+
+        init_db(self.db_path)
+        self.start_balance   = bal
+        self.current_balance = bal
+        self.highest_balance = bal
+        self.lowest_balance  = bal
+        self.session_start   = time.time()
+        self.session_id      = self._db_start_session()
+        self.running         = True
+        self.status          = "Starting…"
+
+        self._thread = threading.Thread(target=self._betting_loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self):
+        self.running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=10)
+
+    def pause(self):
+        self.paused = True
+
+    def resume(self):
+        self.paused = False
+
+    def get_status(self) -> dict:
+        elapsed = time.time() - self.session_start if self.session_start else 0
+        h, rem = divmod(int(elapsed), 3600)
+        m, s = divmod(rem, 60)
+        wr = f"{self.wins/self.total_bets*100:.1f}%" if self.total_bets > 0 else "—"
+        return {
+            "running": self.running,
+            "paused": self.paused,
+            "session_id": self.session_id,
+            "uptime": f"{h}h {m}m {s}s",
+            "bets": self.total_bets,
+            "wins": self.wins,
+            "losses": self.losses,
+            "win_rate": wr,
+            "profit": self.profit,
+            "wagered": self.wagered,
+            "balance": self.current_balance,
+            "start_balance": self.start_balance,
+            "current_bet": self.current_bet,
+            "highest_bet": self.highest_bet,
+            "streak": self.current_streak,
+            "max_win_streak": self.max_win_streak,
+            "max_loss_streak": self.max_loss_streak,
+            "highest_balance": self.highest_balance,
+            "lowest_balance": self.lowest_balance if self.lowest_balance != float("inf") else self.current_balance,
+            "highest_win": self.highest_win,
+            "biggest_loss": self.biggest_loss,
+            "bps": self.bets_per_second,
+            "bpm": self.bets_per_minute,
+            "strategy": self.strategy,
+            "multiplier": self.multiplier,
+            "currency": self.currency.upper(),
+            "status": self.status,
+            "last_error": self.last_error,
+        }
+
+    # ── BETTING LOOP ─────────────────────────────────────
+    def _betting_loop(self):
+        last_result = "none"
+        logger.info("User %d: Session #%d started", self.user_id, self.session_id)
+
+        while self.running:
+            if self.paused:
+                self.status = "PAUSED"
+                time.sleep(0.5)
+                continue
+
+            # rate limit probe
+            if self.rate_wait:
+                backoff = self.rate_backoff
+                self.status = f"Rate limit — probing in {backoff:.0f}s…"
+                time.sleep(backoff)
+                try:
+                    r = requests.get(f"{API_BASE}/user/balances", headers=self._headers(), timeout=10)
+                    self._update_rate_limit(r)
+                    if self.rate_remaining > 5:
+                        self.rate_wait = False
+                        self.rate_backoff = 2.0
+                    else:
+                        self.rate_backoff = min(backoff * 2, 32.0)
+                except Exception:
+                    self.rate_backoff = min(backoff * 2, 32.0)
+                continue
+
+            # stop conditions
+            stop, reason = self._should_stop()
+            if stop:
+                self.running = False
+                self.stop_reason = reason
+                self.status = f"STOPPED: {reason}"
+                self._db_save_session()
+                break
+
+            # bet pacing
+            if self.bet_delay > 0:
+                time.sleep(self.bet_delay)
+
+            # place bet
+            self.status = f"Placing bet #{self.total_bets + 1}…"
+            result = self._api_place_bet(self.current_bet)
+
+            if result is None:
+                self.consecutive_errors += 1
+                self.backoff_delay = min(self.backoff_delay * 2, 30.0)
+                time.sleep(self.backoff_delay)
+                continue
+
+            bet_data     = result.get("bet", {})
+            balance_data = result.get("userBalance", {})
+            bet_state    = bet_data.get("state", "loss")
+            result_value = float(bet_data.get("result_value", 0))
+            amount_used  = float(bet_data.get("amount", self.current_bet))
+            new_balance  = float(balance_data.get("amount", self.current_balance))
+            raw_profit   = float(bet_data.get("profit", 0))
+
+            with self.lock:
+                self.consecutive_errors = 0
+                self.backoff_delay = 1.0
+                self.total_bets += 1
+                self.wagered    += amount_used
+                self.profit     += raw_profit
+                self.current_balance = new_balance
+
+                if bet_state == "win":
+                    self.wins += 1
+                    if raw_profit > self.highest_win: self.highest_win = raw_profit
+                    self.current_streak = max(self.current_streak, 0) + 1
+                    self.max_win_streak = max(self.max_win_streak, self.current_streak)
+                else:
+                    self.losses += 1
+                    if amount_used > self.biggest_loss: self.biggest_loss = amount_used
+                    self.current_streak = min(self.current_streak, 0) - 1
+                    self.max_loss_streak = max(self.max_loss_streak, abs(self.current_streak))
+
+                if amount_used > self.highest_bet: self.highest_bet = amount_used
+                if new_balance > self.highest_balance: self.highest_balance = new_balance
+                if new_balance < self.lowest_balance: self.lowest_balance = new_balance
+
+                if self.total_bets % 5 == 0:
+                    self.profit_history.append(self.profit)
+
+                self.recent_bets.append({
+                    "n": self.total_bets, "time": datetime.now().strftime("%H:%M:%S"),
+                    "amt": amount_used, "roll": result_value,
+                    "state": bet_state, "pnl": raw_profit, "bal": new_balance,
+                })
+
+                now = time.time()
+                elapsed = now - self.session_start
+                if elapsed > 0:
+                    self.bets_per_second = self.total_bets / elapsed
+                    self.bets_per_minute = self._bets_this_min
+
+                sec_key = int(now)
+                min_key = int(now) // 60
+                if sec_key != self._current_sec:
+                    if self._current_sec > 0 and self._bets_this_sec > 0:
+                        if self._bets_this_sec > self.peak_bps: self.peak_bps = self._bets_this_sec
+                        if self._bets_this_sec < self.low_bps: self.low_bps = self._bets_this_sec
+                    self._current_sec = sec_key
+                    self._bets_this_sec = 1
+                else:
+                    self._bets_this_sec += 1
+                if min_key != self._current_min:
+                    if self._current_min > 0 and self._bets_this_min > 0:
+                        if self._bets_this_min > self.peak_bpm: self.peak_bpm = self._bets_this_min
+                        if self._bets_this_min < self.low_bpm: self.low_bpm = self._bets_this_min
+                    self._current_min = min_key
+                    self._bets_this_min = 1
+                else:
+                    self._bets_this_min += 1
+
+                sign  = "+" if raw_profit >= 0 else ""
+                emoji = "W" if bet_state == "win" else "L"
+                self.status = f"{emoji} {'WIN' if bet_state=='win' else 'LOSS'} | Roll: {result_value:.2f} | P/L: {sign}{raw_profit:.8f}"
+                self.last_error = ""
+
+            self._db_save_bet(bet_data, raw_profit, new_balance)
+
+            if self.strategy_key == "6":
+                self._wolfrider_switch()
+            if self.strategy_key == "8" and self.custom_rules:
+                self._apply_rules(bet_state)
+
+            raw_next = self._compute_next_bet(bet_state)
+            max_safe = self.current_balance * 0.20
+            self.current_bet = max(self.base_bet, min(raw_next, max_safe))
+            last_result = bet_state
+
+            # milestone callback every 100 bets
+            if self.on_milestone and self.total_bets % 100 == 0:
+                try:
+                    self.on_milestone(self.get_status())
+                except Exception:
+                    pass
+
+        # session ended
+        if self.session_id:
+            self._db_save_session()
+        logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
+        if self.on_stop:
+            try:
+                self.on_stop(self.stop_reason or "Stopped by user")
+            except Exception:
+                pass

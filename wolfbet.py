@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.5  — VPS Terminal Dashboard    ║
+║   🐺  WolfBet AutoBot v2.6  — Live Dashboard            ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, re
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging  # noqa: E401
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
@@ -14,7 +14,7 @@ from logging.handlers import TimedRotatingFileHandler
 try:
     import readline  # enables arrow keys, history, and line editing in input()
 except ImportError:
-    pass  # Windows fallback — input() still works, just no line editing
+    pass  # fallback — input() still works, just no line editing
 
 try:
     import requests
@@ -23,7 +23,6 @@ try:
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
-    # from rich.live import Live  # replaced by direct ANSI rendering
     from rich.prompt import Prompt, Confirm
     from rich.align import Align
     from rich.rule import Rule
@@ -32,17 +31,32 @@ except ImportError:
     print("Missing dependencies. Run:  pip install requests rich")
     sys.exit(1)
 
+# ── Shared core imports (single source of truth) ─────────
+from core.strategy import (
+    STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME,
+    RULE_ACTIONS, RULE_ACTION_LABELS, SEQ_MODES,
+    StrategyRule, describe_rule as _describe_rule,
+    cmp as _cmp, load_rules_from_text as _load_rules_from_text,
+)
+from core.database import init_db as _core_init_db, migrate_db, db_connect, secure_path
+from core.engine import (
+    compute_next_bet as _core_compute_next_bet,
+    wolfrider_switch as _core_wolfrider_switch,
+    apply_action as _core_apply_action,
+    evaluate_rules as _core_evaluate_rules,
+)
+
 # ══════════════════════════════════════════════════════════
-#  CONSTANTS
+#  CONSTANTS (configurable via environment variables)
 # ══════════════════════════════════════════════════════════
-API_BASE     = "https://wolfbet.com/api/v1"
-DB_PATH      = os.path.expanduser("~/.wolfbet_autobot.db")
-CONFIG_PATH  = os.path.expanduser("~/.wolfbet_autobot.json")
-STATE_PATH   = os.path.expanduser("~/.wolfbet_autobot_live.json")
-PID_PATH     = os.path.expanduser("~/.wolfbet_autobot.pid")
-PRESET_PATH  = os.path.expanduser("~/.wolfbet_presets.json")
-LOG_DIR      = os.path.expanduser("~/.wolfbet_logs")
-VERSION      = "2.5.0"
+API_BASE     = os.environ.get("WOLFBET_API_BASE",    "https://wolfbet.com/api/v1")
+DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolfbet_autobot.db"))
+CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
+STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
+PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
+PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
+LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
+VERSION      = "2.6.0"
 
 # ── Daily rotating logger ──
 # Default: WARNING (production). Use --verbose for DEBUG.
@@ -61,89 +75,12 @@ logger.addHandler(_log_handler)
 
 CURRENCIES  = ["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
 
-STRATEGIES  = {
-    "1": ("Flat Bet",        "Same amount every single bet — low risk, low variance"),
-    "2": ("Martingale",      "Double bet on loss, reset to base on win — classic high-risk"),
-    "3": ("Anti-Martingale", "Double bet on win, reset to base on loss — ride hot streaks"),
-    "4": ("D'Alembert",      "Add 1 unit on loss, remove 1 unit on win — gentler progression"),
-    "5": ("Paroli (3-step)", "Double on win up to 3x then reset — safer streak play"),
-    "6": ("WolfRider",      "2.01x on loss, reset on win + switch over/under on bet 2/6/9"),
-    "7": ("Delay Martingale", "Flat for N losses then double — delays escalation"),
-    "8": ("Rule-Based",       "Build custom conditions & actions — full control"),
-}
-
 # ══════════════════════════════════════════════════════════
-#  DATABASE SETUP
+#  DATABASE SETUP (delegates to core.database)
 # ══════════════════════════════════════════════════════════
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            started_at    TEXT,
-            ended_at      TEXT,
-            currency      TEXT,
-            game          TEXT,
-            strategy      TEXT,
-            base_bet      REAL,
-            multiplier    REAL,
-            total_bets    INTEGER DEFAULT 0,
-            wins          INTEGER DEFAULT 0,
-            losses        INTEGER DEFAULT 0,
-            profit        REAL    DEFAULT 0,
-            wagered       REAL    DEFAULT 0,
-            start_balance REAL,
-            end_balance   REAL,
-            max_win_streak  INTEGER DEFAULT 0,
-            max_loss_streak INTEGER DEFAULT 0,
-            highest_balance REAL DEFAULT 0,
-            lowest_balance  REAL DEFAULT 0,
-            highest_win     REAL DEFAULT 0,
-            biggest_loss    REAL DEFAULT 0,
-            bets_per_minute REAL DEFAULT 0,
-            bets_per_second REAL DEFAULT 0,
-            peak_bps        REAL DEFAULT 0,
-            low_bps         REAL DEFAULT 0,
-            peak_bpm        REAL DEFAULT 0,
-            low_bpm         REAL DEFAULT 0
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS bets (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id   INTEGER,
-            timestamp    TEXT,
-            amount       REAL,
-            multiplier   REAL,
-            rule         TEXT,
-            bet_value    REAL,
-            result_value REAL,
-            state        TEXT,
-            profit       REAL,
-            balance_after REAL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id)
-        )
-    """)
-    # Migrate existing databases — add new columns if missing
-    for col, defn in [
-        ("highest_balance", "REAL DEFAULT 0"),
-        ("lowest_balance",  "REAL DEFAULT 0"),
-        ("highest_win",     "REAL DEFAULT 0"),
-        ("biggest_loss",    "REAL DEFAULT 0"),
-        ("bets_per_minute", "REAL DEFAULT 0"),
-        ("bets_per_second", "REAL DEFAULT 0"),
-        ("peak_bps",        "REAL DEFAULT 0"),
-        ("low_bps",         "REAL DEFAULT 0"),
-        ("peak_bpm",        "REAL DEFAULT 0"),
-        ("low_bpm",         "REAL DEFAULT 0"),
-    ]:
-        try:
-            c.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")
-        except sqlite3.OperationalError:
-            pass  # column already exists
-    conn.commit()
-    conn.close()
+    _core_init_db(DB_PATH)
+    migrate_db(DB_PATH)
 
 # ══════════════════════════════════════════════════════════
 #  CONFIG PERSISTENCE
@@ -156,10 +93,18 @@ _CONFIG_KEYS = [
     "profit_increment", "profit_threshold",
 ]
 
+def _mask_key(key: str) -> str:
+    """Mask API key for safe logging: show first 8 + last 4 chars."""
+    if not key or len(key) < 16:
+        return "***"
+    return f"{key[:8]}…{key[-4:]}"
+
 def save_config():
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
-    with open(CONFIG_PATH, "w") as f:
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
+    logger.info("Config saved (key=%s)", _mask_key(data.get("api_key", "")))
 
 def load_config() -> bool:
     if not os.path.exists(CONFIG_PATH):
@@ -170,6 +115,11 @@ def load_config() -> bool:
         for k in _CONFIG_KEYS:
             if k in data:
                 setattr(state, k, data[k])
+        # Environment variable override for API key (ISO 27001: no hardcoded secrets)
+        env_key = os.environ.get("WOLFBET_API_KEY")
+        if env_key:
+            state.api_key = env_key
+        secure_path(CONFIG_PATH)
         state.current_bet = state.base_bet
         # init profit milestone
         if state.profit_threshold:
@@ -247,14 +197,7 @@ COND_TYPES = {
     "3": "bet",        # bet property based
 }
 
-# ── Sequence sub-options ──
-SEQ_MODES = {
-    "1": ("every",         "Every N (total count)"),
-    "2": ("every_streak",  "Every N in streak (N, 2N, 3N…)"),
-    "3": ("first_streak",  "First streak of N (once, resets on flip)"),
-    "4": ("streak_above",  "Streak above N (every bet past N)"),
-    "5": ("streak_below",  "Streak below N"),
-}
+# SEQ_MODES imported from core.strategy
 SEQ_TRIGGERS = {"1": "win", "2": "loss", "3": "bet"}
 
 # ── Profit sub-options ──
@@ -271,283 +214,38 @@ CMP_OPS = {
     "4": ("lt",  "<"),
 }
 
-# ── Actions ──
-RULE_ACTIONS = {
-    "1":  ("reset_amount",    "Reset bet amount"),
-    "2":  ("increase_amount", "Increase amount by %"),
-    "3":  ("decrease_amount", "Decrease amount by %"),
-    "4":  ("add_amount",      "Add to amount"),
-    "5":  ("deduct_amount",   "Deduct from amount"),
-    "6":  ("set_amount",      "Set amount"),
-    "7":  ("switch",          "Switch over/under"),
-    "8":  ("stop",            "Stop betting"),
-    "9":  ("set_winchance",   "Set win chance"),
-    "10": ("increase_wc",     "Increase win chance by %"),
-    "11": ("decrease_wc",     "Decrease win chance by %"),
-    "12": ("reset_game",      "Reset game (full reset)"),
-}
-
-
-class StrategyRule:
-    """A single condition → action rule."""
-    __slots__ = ("cond_type", "cond_field", "cond_mode", "cond_value",
-                 "cond_trigger", "action", "action_value", "description")
-
-    def __init__(self, cond_type="", cond_field="", cond_mode="", cond_value=0.0,
-                 cond_trigger="", action="", action_value=0.0, description=""):
-        self.cond_type    = cond_type     # "sequence", "profit", "bet"
-        self.cond_field   = cond_field    # sequence: ""; profit: "profit"/"loss"/"balance"; bet: "amount"/"number"/"winchance"/"payout"
-        self.cond_mode    = cond_mode     # sequence: "every"/"every_streak"/"streak_above"/"streak_below"; profit/bet: "gte"/"gt"/"lte"/"lt"
-        self.cond_value   = cond_value    # threshold value (N for sequence, amount for profit/bet)
-        self.cond_trigger = cond_trigger  # "win"/"loss"/"bet" (only for sequence type)
-        self.action       = action        # action key from RULE_ACTIONS
-        self.action_value = action_value  # parameter for the action (percentage or absolute)
-        self.description  = description   # human-readable summary
-
-    def __repr__(self):
-        return f"Rule({self.description})"
-
-    def to_dict(self) -> dict:
-        return {k: getattr(self, k) for k in self.__slots__}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "StrategyRule":
-        return cls(**{k: d.get(k, "") for k in cls.__slots__})
-
-
-def _describe_rule(r: StrategyRule) -> str:
-    """Build a human-readable description for a rule."""
-    # Condition part
-    if r.cond_type == "sequence":
-        mode_label = dict(every="Every", every_streak="Every streak of",
-                          first_streak="First streak of",
-                          streak_above="Streak above", streak_below="Streak below").get(r.cond_mode, r.cond_mode)
-        cond = f"{mode_label} {int(r.cond_value)} {r.cond_trigger}(s)"
-    elif r.cond_type == "profit":
-        op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
-        cond = f"On {r.cond_field} {op_sym} {r.cond_value}"
-    elif r.cond_type == "bet":
-        op_sym = dict(gte=">=", gt=">", lte="<=", lt="<").get(r.cond_mode, r.cond_mode)
-        cond = f"On bet {r.cond_field} {op_sym} {r.cond_value}"
-    else:
-        cond = "?"
-
-    # Action part
-    act_labels = {k: v[1] for k, v in RULE_ACTIONS.items()}
-    act_name = act_labels.get(
-        next((k for k, v in RULE_ACTIONS.items() if v[0] == r.action), ""), r.action
-    )
-    if r.action_value and "%" in act_name:
-        act = f"{act_name.replace(' %', '')} {r.action_value}%"
-    elif r.action_value:
-        act = f"{act_name} {r.action_value}"
-    else:
-        act = act_name
-
-    return f"{cond} → {act}"
-
-
-def _cmp(actual: float, mode: str, threshold: float) -> bool:
-    """Compare using operator mode."""
-    if mode == "gte": return actual >= threshold
-    if mode == "gt":  return actual > threshold
-    if mode == "lte": return actual <= threshold
-    if mode == "lt":  return actual < threshold
-    return False
+# RULE_ACTIONS, StrategyRule, _describe_rule, _cmp, _load_rules_from_text
+# all imported from core.strategy (single source of truth)
 
 
 def _apply_action(rule: StrategyRule):
-    """Execute a rule's action on the bot state."""
-    a = rule.action
-    v = rule.action_value
-
-    if a == "reset_amount":
-        state.current_bet = state.base_bet
-    elif a == "increase_amount":
-        state.current_bet *= (1 + v / 100)
-    elif a == "decrease_amount":
-        state.current_bet *= (1 - v / 100)
-        state.current_bet = max(state.current_bet, state.base_bet)
-    elif a == "add_amount":
-        state.current_bet += v
-    elif a == "deduct_amount":
-        state.current_bet = max(state.base_bet, state.current_bet - v)
-    elif a == "set_amount":
-        state.current_bet = max(state.base_bet, v)
-    elif a == "switch":
-        state.rule = "under" if state.rule == "over" else "over"
-        win_chance = 99.0 / state.multiplier
-        if state.rule == "over":
-            state.bet_value = round(100.0 - win_chance - 0.01, 2)
+    """Execute a rule's action on the bot state (delegates to core.engine)."""
+    mutations = _core_apply_action(
+        rule, state.current_bet, state.base_bet,
+        state.rule, state.multiplier, state.current_streak,
+    )
+    for k, v in mutations.items():
+        if k == "stop_reason":
+            state.status = v
+            logger.warning("RULE STOP triggered: %s", rule.description)
+        elif k == "running":
+            state.running = v
         else:
-            state.bet_value = round(win_chance, 2)
-        logger.debug("RULE SWITCH → %s  bet_value=%s", state.rule, state.bet_value)
-    elif a == "stop":
-        state.running = False
-        state.status = f"Rule stop: {rule.description}"
-        logger.warning("RULE STOP triggered: %s", rule.description)
-    elif a == "set_winchance":
-        # v is the new win chance percentage → recalculate multiplier and bet_value
-        wc = max(0.01, min(98.99, v))
-        state.multiplier = round(99.0 / wc, 4)
-        if state.rule == "over":
-            state.bet_value = round(100.0 - wc - 0.01, 2)
-        else:
-            state.bet_value = round(wc, 2)
-        logger.debug("RULE SET WC → %.2f%%  mult=%.4f  bv=%.2f", wc, state.multiplier, state.bet_value)
-    elif a == "increase_wc":
-        wc = 99.0 / state.multiplier
-        wc = min(98.99, wc * (1 + v / 100))
-        state.multiplier = round(99.0 / wc, 4)
-        if state.rule == "over":
-            state.bet_value = round(100.0 - wc - 0.01, 2)
-        else:
-            state.bet_value = round(wc, 2)
-    elif a == "decrease_wc":
-        wc = 99.0 / state.multiplier
-        wc = max(0.01, wc * (1 - v / 100))
-        state.multiplier = round(99.0 / wc, 4)
-        if state.rule == "over":
-            state.bet_value = round(100.0 - wc - 0.01, 2)
-        else:
-            state.bet_value = round(wc, 2)
-    elif a == "reset_game":
-        state.current_bet = state.base_bet
-        state.current_streak = 0
-        logger.info("RULE RESET GAME triggered: %s", rule.description)
+            setattr(state, k, v)
+    if mutations:
+        logger.debug("RULE FIRED: %s → %s", rule.description, list(mutations.keys()))
 
 
 def apply_rules(bet_state: str):
-    """Evaluate and apply all rule-based strategy rules after a bet result.
-    bet_state is 'win' or 'loss'."""
-    for rule in state.custom_rules:
-        triggered = False
-
-        if rule.cond_type == "sequence":
-            # Determine the relevant count/streak
-            streak = state.current_streak  # + = win streak, – = loss streak
-            trig = rule.cond_trigger
-            n = rule.cond_value
-
-            if rule.cond_mode == "every":
-                # Every N wins/losses/bets
-                if trig == "win" and bet_state == "win":
-                    triggered = (state.wins > 0 and state.wins % int(n) == 0)
-                elif trig == "loss" and bet_state == "loss":
-                    triggered = (state.losses > 0 and state.losses % int(n) == 0)
-                elif trig == "bet":
-                    triggered = (state.total_bets > 0 and state.total_bets % int(n) == 0)
-
-            elif rule.cond_mode == "every_streak":
-                # Fires at every Nth bet in the streak (N, 2N, 3N…)
-                if trig == "win" and bet_state == "win":
-                    triggered = (streak > 0 and streak % int(n) == 0)
-                elif trig == "loss" and bet_state == "loss":
-                    triggered = (abs(streak) > 0 and abs(streak) % int(n) == 0)
-
-            elif rule.cond_mode == "first_streak":
-                # Fires ONCE when streak first hits N, silent until streak resets
-                if trig == "win" and bet_state == "win":
-                    triggered = (streak == int(n))
-                elif trig == "loss" and bet_state == "loss":
-                    triggered = (abs(streak) == int(n))
-
-            elif rule.cond_mode == "streak_above":
-                # Current streak is above N
-                if trig == "win" and bet_state == "win":
-                    triggered = (streak > int(n))
-                elif trig == "loss" and bet_state == "loss":
-                    triggered = (abs(streak) > int(n))
-
-            elif rule.cond_mode == "streak_below":
-                # Current streak is below N (just started)
-                if trig == "win" and bet_state == "win":
-                    triggered = (streak < int(n))
-                elif trig == "loss" and bet_state == "loss":
-                    triggered = (abs(streak) < int(n))
-
-        elif rule.cond_type == "profit":
-            field = rule.cond_field
-            if field == "profit" and state.profit > 0:
-                triggered = _cmp(state.profit, rule.cond_mode, rule.cond_value)
-            elif field == "loss" and state.profit < 0:
-                triggered = _cmp(abs(state.profit), rule.cond_mode, rule.cond_value)
-            elif field == "balance":
-                triggered = _cmp(state.current_balance, rule.cond_mode, rule.cond_value)
-
-        elif rule.cond_type == "bet":
-            field = rule.cond_field
-            if field == "amount":
-                triggered = _cmp(state.current_bet, rule.cond_mode, rule.cond_value)
-            elif field == "number":
-                triggered = _cmp(state.total_bets, rule.cond_mode, rule.cond_value)
-            elif field == "winchance":
-                wc = 99.0 / state.multiplier
-                triggered = _cmp(wc, rule.cond_mode, rule.cond_value)
-            elif field == "payout":
-                triggered = _cmp(state.multiplier, rule.cond_mode, rule.cond_value)
-
-        if triggered:
-            logger.debug("RULE FIRED: %s", rule.description)
-            _apply_action(rule)
-
-
-def _load_rules_from_text(text: str) -> List[StrategyRule]:
-    """Load rules from saved config. Supports new JSON format and legacy text format."""
-    text = text.strip()
-    if not text:
-        return []
-
-    # Try JSON format first (new v2 rules)
-    if text.startswith("["):
-        try:
-            data = json.loads(text)
-            rules = []
-            for d in data:
-                r = StrategyRule.from_dict(d)
-                if not r.description:
-                    r.description = _describe_rule(r)
-                rules.append(r)
-            return rules
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    # Legacy text format: onEvery<N><trigger><Action> [params]
-    rules = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = re.match(
-            r'onEvery(\d+)(win|lose|bet)(Reset|Stop|Increase|Switch)\s*(.*)',
-            line, re.IGNORECASE
-        )
-        if not m:
-            logger.warning("Could not parse legacy rule: %s", line)
-            continue
-        n       = int(m.group(1))
-        trigger = m.group(2).lower()
-        action  = m.group(3).lower()
-        params  = m.group(4).strip()
-        value   = 0.0
-
-        if action == "increase":
-            pct = re.search(r'(\d+(?:\.\d+)?)%', params)
-            if pct:
-                value = float(pct.group(1))
-
-        # Map legacy to new format
-        action_map = {"reset": "reset_amount", "stop": "stop",
-                      "increase": "increase_amount", "switch": "switch"}
-        r = StrategyRule(
-            cond_type="sequence", cond_mode="every", cond_value=float(n),
-            cond_trigger=trigger if trigger != "lose" else "loss",
-            action=action_map.get(action, action), action_value=value,
-        )
-        r.description = _describe_rule(r)
-        rules.append(r)
-
-    return rules
+    """Evaluate and apply all rule-based strategy rules (delegates to core.engine)."""
+    triggered = _core_evaluate_rules(
+        state.custom_rules, bet_state, state.wins, state.losses,
+        state.total_bets, state.current_streak, state.profit,
+        state.current_balance, state.current_bet, state.multiplier,
+    )
+    for rule in triggered:
+        logger.debug("RULE FIRED: %s", rule.description)
+        _apply_action(rule)
 
 
 # ══════════════════════════════════════════════════════════
@@ -737,74 +435,22 @@ def api_place_bet(amount: float) -> Optional[dict]:
 #  STRATEGY ENGINE
 # ══════════════════════════════════════════════════════════
 def compute_next_bet(last_result: str) -> float:
-    key  = state.strategy_key
-    base = state.base_bet
-    cur  = state.current_bet
-    lm   = state.loss_mult   # on-loss multiplier (e.g. 2.0, 2.01, 1.5)
-    wm   = state.win_mult    # on-win multiplier  (e.g. 2.0, 1.0)
-
-    if key == "1":   # Flat
-        return base
-
-    elif key == "2": # Martingale — multiply on loss, reset on win
-        return (cur * lm) if last_result == "loss" else base
-
-    elif key == "3": # Anti-Martingale — multiply on win, reset on loss
-        return (cur * wm) if last_result == "win" else base
-
-    elif key == "4": # D'Alembert — add 1 unit on loss, remove 1 on win
-        if last_result == "loss":
-            state.dalembert_unit += 1
-        elif last_result == "win" and state.dalembert_unit > 0:
-            state.dalembert_unit -= 1
-        return base * (1 + state.dalembert_unit)
-
-    elif key == "5": # Paroli — multiply on win up to 3x, then reset
-        if last_result == "win":
-            state.paroli_count += 1
-            if state.paroli_count >= 3:
-                state.paroli_count = 0
-                return base
-            return cur * wm
-        else:
-            state.paroli_count = 0
-            return base
-
-    elif key == "6": # WolfRider — multiply on loss, reset on win (switching handled separately)
-        return base if last_result == "win" else (cur * lm)
-
-    elif key == "7": # Delay Martingale — flat for N losses, then multiply
-        if last_result == "win":
-            return base
-        consec_losses = abs(min(state.current_streak, 0))
-        if consec_losses <= state.delay_martin_threshold:
-            return base
-        return cur * lm
-
-    elif key == "8": # Rule-Based — rules manage the bet amount directly
-        return cur   # don't change; apply_rules() handles adjustments
-
-    return base
+    """Compute next bet amount (delegates to core.engine)."""
+    nxt, state.dalembert_unit, state.paroli_count = _core_compute_next_bet(
+        state.strategy_key, state.base_bet, state.current_bet,
+        state.loss_mult, state.win_mult, last_result,
+        state.current_streak, state.delay_martin_threshold,
+        state.dalembert_unit, state.paroli_count,
+    )
+    return nxt
 
 def wolfrider_switch():
-    """WolfRider post-bet: switch over/under on every 2nd, 6th, and 9th bet."""
-    n = state.total_bets
-    switches = 0
-    if n > 0 and n % 2 == 0:
-        switches += 1
-    if n > 0 and n % 6 == 0:
-        switches += 1
-    if n > 0 and n % 9 == 0:
-        switches += 1
-    # odd number of switches = actual switch; even = cancel out
-    if switches % 2 == 1:
-        state.rule = "under" if state.rule == "over" else "over"
-        win_chance = 99.0 / state.multiplier
-        if state.rule == "over":
-            state.bet_value = round(100.0 - win_chance - 0.01, 2)
-        else:
-            state.bet_value = round(win_chance, 2)
-        logger.debug("WOLFRIDER SWITCH → %s  bet_value=%s  (bet #%d)", state.rule, state.bet_value, n)
+    """WolfRider post-bet: switch over/under (delegates to core.engine)."""
+    new_rule, new_bv = _core_wolfrider_switch(state.total_bets, state.rule, state.multiplier)
+    if new_rule is not None:
+        state.rule = new_rule
+        state.bet_value = new_bv
+        logger.debug("WOLFRIDER SWITCH → %s  bet_value=%s  (bet #%d)", new_rule, new_bv, state.total_bets)
 
 def should_stop() -> tuple:
     p = state.profit
@@ -1026,9 +672,7 @@ def betting_loop():
 #  DATABASE  I/O
 # ══════════════════════════════════════════════════════════
 def _db_conn():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return db_connect(DB_PATH)
 
 def _db_start_session() -> int:
     conn = _db_conn()
@@ -1178,7 +822,8 @@ def _save_state_file():
             "last_error": state.last_error,
             "updated_at": datetime.now().isoformat(),
         }
-        with open(STATE_PATH, "w") as f:
+        fd = os.open(STATE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
     except Exception:
         pass
@@ -1860,7 +1505,7 @@ def setup_wizard():
     console.print()
     console.print(Align.center(
         Panel(
-            "[bold cyan]WolfBet AutoBot  v2.5[/]\n"
+            "[bold cyan]WolfBet AutoBot  v2.6[/]\n"
             "[dim]High-speed dice auto-bettor with live TUI dashboard[/]",
             box=box.DOUBLE, expand=False, padding=(1, 6), style="blue"
         )
@@ -1871,6 +1516,10 @@ def setup_wizard():
 
     # ── Load saved config as defaults ─────────────────────
     has_saved = load_config()
+    # Environment variable takes priority (ISO 27001: externalized secrets)
+    env_key = os.environ.get("WOLFBET_API_KEY")
+    if env_key:
+        state.api_key = env_key
     saved_key = state.api_key
     balances  = None
     available_bal = {}
