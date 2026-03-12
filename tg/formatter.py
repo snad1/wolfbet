@@ -351,8 +351,10 @@ def format_lastbets(rows: list) -> str:
 def _calc_uptime(started: str, ended: str) -> str:
     """Calculate uptime string from started/ended timestamps."""
     try:
-        t0 = datetime.fromisoformat(started[:19]) if started else None
-        t1 = datetime.fromisoformat(ended[:19]) if ended else datetime.now()
+        s = started[:19].replace("T", " ") if started else None
+        e = ended[:19].replace("T", " ") if ended else None
+        t0 = datetime.strptime(s, "%Y-%m-%d %H:%M:%S") if s else None
+        t1 = datetime.strptime(e, "%Y-%m-%d %H:%M:%S") if e else datetime.now()
         if t0:
             d = int((t1 - t0).total_seconds())
             h, rem = divmod(max(d, 0), 3600)
