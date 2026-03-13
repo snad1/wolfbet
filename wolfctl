@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# WolfBet AutoBot — Unified Management Command v3.2
+set -euo pipefail
+
+INSTALL_DIR="$HOME/wolfbet-bot"
+SERVICE="wolfbet"
+TG_SERVICE="wolfbet-tg"
+PYTHON="$INSTALL_DIR/venv/bin/python3"
+BOT="$INSTALL_DIR/wolfbet.py"
+ENV_FILE="$INSTALL_DIR/.env"
+SCRIPT_NAME="wolfctl"
+
+usage() {
+    echo ""
+    echo "  wolfctl — WolfBet AutoBot Manager v3.2"
+    echo ""
+    echo "  CLI BOT:"
+    echo "    wolfctl setup       Run wizard to configure"
+    echo "    wolfctl start       Start CLI bot as daemon"
+    echo "    wolfctl stop        Stop CLI bot"
+    echo "    wolfctl restart     Restart CLI bot"
+    echo "    wolfctl status      Show CLI bot status"
+    echo "    wolfctl monitor     Attach live TUI to running daemon"
+    echo "    wolfctl logs        Stream CLI bot logs"
+    echo "    wolfctl logs-full   Show last 200 log lines"
+    echo ""
+    echo "  TELEGRAM BOT:"
+    echo "    wolfctl tg start    Start Telegram bot"
+    echo "    wolfctl tg stop     Stop Telegram bot"
+    echo "    wolfctl tg restart  Restart Telegram bot"
+    echo "    wolfctl tg status   Show Telegram bot status"
+    echo "    wolfctl tg logs     Stream Telegram bot logs"
+    echo "    wolfctl tg env      Edit .env file (token, config)"
+    echo ""
+    echo "  ALL SERVICES:"
+    echo "    wolfctl start-all   Start both CLI + Telegram bots"
+    echo "    wolfctl stop-all    Stop both bots"
+    echo "    wolfctl status-all  Show status of all services"
+    echo ""
+    echo "  SHORTCUTS:"
+    echo "    wolfctl interactive Start CLI daemon + attach monitor"
+    echo "    wolfctl tmux        Monitor in detachable tmux session"
+    echo ""
+    echo "  DATA:"
+    echo "    wolfctl stats       Show all-time session statistics"
+    echo "    wolfctl session ID  Full stats + streak distribution"
+    echo "    wolfctl presets     List saved presets"
+    echo "    wolfctl update      Update bot from current directory"
+    echo ""
+}
+
+# ── CLI bot commands ──────────────────────────────────
+cmd_setup() {
+    echo "Running setup wizard…"
+    "$PYTHON" "$BOT" --setup-only
+}
+
+cmd_start() {
+    if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
+        echo "No config found. Run 'wolfctl setup' first."
+        exit 1
+    fi
+    systemctl --user start "$SERVICE"
+    sleep 1
+    if systemctl --user is-active --quiet "$SERVICE"; then
+        echo "CLI bot started."
+        echo "  Check: wolfctl status"
+        echo "  Logs:  wolfctl logs"
+    else
+        echo "Failed to start. Check: wolfctl logs-full"
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    systemctl --user stop "$SERVICE"
+    echo "CLI bot stopped."
+    "$PYTHON" "$BOT" --status 2>/dev/null || true
+}
+
+cmd_restart() {
+    systemctl --user restart "$SERVICE"
+    sleep 1
+    echo "CLI bot restarted."
+    "$PYTHON" "$BOT" --status 2>/dev/null || true
+}
+
+cmd_status() {
+    echo ""
+    echo "── CLI Bot Service ──"
+    systemctl --user status "$SERVICE" --no-pager 2>/dev/null || echo "  Not running"
+    echo ""
+    echo "── Session Status ──"
+    "$PYTHON" "$BOT" --status 2>/dev/null || echo "  No active session"
+}
+
+cmd_logs() {
+    journalctl --user -u "$SERVICE" -f --no-pager
+}
+
+cmd_logs_full() {
+    journalctl --user -u "$SERVICE" -n 200 --no-pager
+}
+
+cmd_monitor() {
+    "$PYTHON" "$BOT" --monitor
+}
+
+cmd_interactive() {
+    if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
+        echo "No config found. Run 'wolfctl setup' first."
+        exit 1
+    fi
+    if ! systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        systemctl --user start "$SERVICE"
+        sleep 1
+        if ! systemctl --user is-active --quiet "$SERVICE"; then
+            echo "Failed to start daemon. Check: wolfctl logs-full"
+            exit 1
+        fi
+        echo "Daemon started."
+    fi
+    "$PYTHON" "$BOT" --monitor
+}
+
+cmd_tmux() {
+    SESSION="wolfbet"
+    if ! systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
+            echo "No config found. Run 'wolfctl setup' first."
+            exit 1
+        fi
+        systemctl --user start "$SERVICE"
+        sleep 1
+    fi
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        echo "tmux session '$SESSION' already running."
+        echo "  Attach:  tmux attach -t $SESSION"
+    else
+        tmux new-session -d -s "$SESSION" "$PYTHON $BOT --monitor"
+        echo "Started monitor in tmux session '$SESSION'"
+        echo "  Attach:  tmux attach -t $SESSION"
+        echo "  Detach:  Ctrl+B then D"
+    fi
+}
+
+cmd_stats() {
+    "$PYTHON" "$BOT" --stats
+}
+
+cmd_session() {
+    local sid="${1:-}"
+    if [ -z "$sid" ]; then
+        echo "Usage: wolfctl session <ID>"
+        exit 1
+    fi
+    "$PYTHON" "$BOT" --session-bets "$sid"
+}
+
+cmd_presets() {
+    "$PYTHON" "$BOT" --list-presets
+}
+
+cmd_update() {
+    # Pull latest from git if inside a repo
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "Pulling latest from git…"
+        git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
+    fi
+    echo "Updating bot files…"
+    if [ ! -f "wolfbet.py" ]; then
+        echo "No wolfbet.py in current directory."
+        exit 1
+    fi
+
+    cp wolfbet.py         "$INSTALL_DIR/wolfbet.py"
+    cp requirements.txt   "$INSTALL_DIR/requirements.txt"
+
+    # Update core/
+    if [ -d "core" ]; then
+        mkdir -p "$INSTALL_DIR/core"
+        cp core/*.py "$INSTALL_DIR/core/"
+    fi
+
+    # Update tg/
+    if [ -d "tg" ]; then
+        mkdir -p "$INSTALL_DIR/tg"
+        cp tg/*.py "$INSTALL_DIR/tg/"
+    fi
+
+    # Self-update: copy this script to its installed location
+    if [ -f "$SCRIPT_NAME" ]; then
+        local installed
+        installed="$(command -v "$SCRIPT_NAME" 2>/dev/null || true)"
+        if [ -n "$installed" ] && [ -f "$installed" ]; then
+            cp "$SCRIPT_NAME" "$installed"
+            chmod +x "$installed"
+            echo "Updated $SCRIPT_NAME → $installed"
+        fi
+    fi
+
+    # Re-install deps
+    "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+
+    # Auto-restart TG bot if running
+    if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
+        systemctl --user restart "$TG_SERVICE"
+        sleep 1
+        if systemctl --user is-active --quiet "$TG_SERVICE"; then
+            echo "Updated + Telegram bot restarted."
+        else
+            echo "Updated but TG restart failed. Check: wolfctl tg logs"
+        fi
+    else
+        echo "Updated. TG bot not running (skipped restart)."
+    fi
+    echo "  CLI bot: wolfctl restart"
+}
+
+# ── Telegram bot commands ────────────────────────────
+cmd_tg() {
+    local action="${1:-status}"
+    case "$action" in
+        start)
+            if [ -f "$ENV_FILE" ]; then
+                TOKEN=$(grep -E "^WOLFBET_TG_TOKEN=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
+                if [ -z "$TOKEN" ]; then
+                    echo "Telegram token not set. Edit: wolfctl tg env"
+                    exit 1
+                fi
+            else
+                echo "No .env file found. Run installer or create: $ENV_FILE"
+                exit 1
+            fi
+            systemctl --user start "$TG_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$TG_SERVICE"; then
+                echo "Telegram bot started."
+                echo "  Logs: wolfctl tg logs"
+            else
+                echo "Failed to start. Check: wolfctl tg logs"
+                systemctl --user status "$TG_SERVICE" --no-pager 2>/dev/null || true
+                exit 1
+            fi
+            ;;
+        stop)
+            systemctl --user stop "$TG_SERVICE"
+            echo "Telegram bot stopped."
+            ;;
+        restart)
+            systemctl --user restart "$TG_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$TG_SERVICE"; then
+                echo "Telegram bot restarted."
+            else
+                echo "Failed to restart. Check: wolfctl tg logs"
+                exit 1
+            fi
+            ;;
+        status)
+            echo ""
+            echo "── Telegram Bot Service ──"
+            systemctl --user status "$TG_SERVICE" --no-pager 2>/dev/null || echo "  Not running"
+            echo ""
+            if [ -f "$ENV_FILE" ]; then
+                TOKEN=$(grep -E "^WOLFBET_TG_TOKEN=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
+                if [ -n "$TOKEN" ]; then
+                    echo "  Token: ${TOKEN:0:10}…(set)"
+                else
+                    echo "  Token: NOT SET — run: wolfctl tg env"
+                fi
+            else
+                echo "  .env: NOT FOUND"
+            fi
+            ;;
+        logs)
+            journalctl --user -u "$TG_SERVICE" -f --no-pager
+            ;;
+        logs-full)
+            journalctl --user -u "$TG_SERVICE" -n 200 --no-pager
+            ;;
+        env)
+            if [ ! -f "$ENV_FILE" ]; then
+                cat > "$ENV_FILE" << 'INNEREOF'
+# WolfBet AutoBot — Environment
+WOLFBET_TG_TOKEN=
+WOLFBET_TG_DATA=~/.wolfbot_tg
+INNEREOF
+            fi
+            "${EDITOR:-nano}" "$ENV_FILE"
+            echo "Restart Telegram bot to apply: wolfctl tg restart"
+            ;;
+        *)
+            echo "Usage: wolfctl tg [start|stop|restart|status|logs|logs-full|env]"
+            ;;
+    esac
+}
+
+# ── All-services commands ────────────────────────────
+cmd_start_all() {
+    echo "Starting all services…"
+    cmd_start 2>/dev/null || true
+    cmd_tg start 2>/dev/null || true
+    echo ""
+    cmd_status_all
+}
+
+cmd_stop_all() {
+    echo "Stopping all services…"
+    systemctl --user stop "$SERVICE" 2>/dev/null || true
+    systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
+    echo "All services stopped."
+}
+
+cmd_status_all() {
+    echo ""
+    echo "╔══════════════════════════════════════════╗"
+    echo "║   WolfBet AutoBot — Service Status        ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo ""
+
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        echo "  CLI Bot:      ● RUNNING"
+    else
+        echo "  CLI Bot:      ○ stopped"
+    fi
+
+    if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
+        echo "  Telegram Bot: ● RUNNING"
+    else
+        echo "  Telegram Bot: ○ stopped"
+    fi
+
+    echo ""
+}
+
+# ── Dispatch ─────────────────────────────────────────
+case "${1:-}" in
+    setup)       cmd_setup ;;
+    start)       cmd_start ;;
+    stop)        cmd_stop ;;
+    restart)     cmd_restart ;;
+    status)      cmd_status ;;
+    monitor)     cmd_monitor ;;
+    logs)        cmd_logs ;;
+    logs-full)   cmd_logs_full ;;
+    interactive) cmd_interactive ;;
+    tmux)        cmd_tmux ;;
+    stats)       cmd_stats ;;
+    session)     cmd_session "${2:-}" ;;
+    presets)     cmd_presets ;;
+    update)      cmd_update ;;
+    tg)          cmd_tg "${2:-}" ;;
+    start-all)   cmd_start_all ;;
+    stop-all)    cmd_stop_all ;;
+    status-all)  cmd_status_all ;;
+    *)           usage ;;
+esac
