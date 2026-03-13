@@ -4,9 +4,11 @@ import os
 import logging
 
 # ── Environment ──────────────────────────────────────────
-BOT_TOKEN = os.environ.get("WOLFBET_TG_TOKEN", "")
-DATA_DIR  = os.environ.get("WOLFBET_TG_DATA", os.path.expanduser("~/.wolfbot_tg"))
-API_BASE  = os.environ.get("WOLFBET_API_BASE", "https://wolfbet.com/api/v1")
+BOT_TOKEN  = os.environ.get("WOLFBET_TG_TOKEN", "")
+DATA_DIR   = os.environ.get("WOLFBET_TG_DATA", os.path.expanduser("~/.wolfbot_tg"))
+API_BASE   = os.environ.get("WOLFBET_API_BASE", "https://wolfbet.com/api/v1")
+WEB_URL    = os.environ.get("WOLFBET_WEB_URL", "")          # e.g. http://IP:8002
+WEB_SECRET = os.environ.get("WOLFBET_WEB_SECRET_KEY", "")   # must match web app
 
 # ── Rate limit tiers: seconds between bets ───────────────
 TIERS = {
