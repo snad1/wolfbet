@@ -559,10 +559,18 @@ class BettingEngine:
         self._last_profit_milestone = snap.get("_last_profit_milestone", 0.0)
 
     def start_resumed(self) -> bool:
-        """Resume a saved session. No API test, no balance fetch, no new DB session."""
+        """Resume a saved session. Tests API connection but skips balance fetch / new DB session."""
         self._http = requests.Session()
         self._http.headers.update(self._headers())
         init_db(self.db_path)
+
+        # Verify API is reachable before resuming the betting loop
+        try:
+            self.api_get_balances()
+        except Exception as e:
+            self.last_error = f"Resume connection failed: {e}"
+            return False
+
         self.running = True
         self.paused = False
         self.status = "Resumed"

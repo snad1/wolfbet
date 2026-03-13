@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.5 — Reliable Resume (2026-03-13)
+
+### TG Bot v1.5.5
+
+#### Fixed
+
+- **Resume now tests API connection** — `start_resumed()` verifies the API is reachable before starting the betting loop.
+- **Resume retries** — Connection is retried up to 3 times (5s apart) on startup.
+- **Resume failure notification** — If resume fails, the user is notified via Telegram instead of silent failure.
+
 ## v1.5.4 — Resume Display Fixes (2026-03-13)
 
 ### TG Bot v1.5.4
