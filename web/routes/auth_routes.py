@@ -43,7 +43,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
         COOKIE_NAME,
         token,
         httponly=True,
-        secure=not settings.debug,
+        secure=request.url.scheme == "https",
         samesite="lax",
         max_age=settings.jwt_expire_hours * 3600,
     )
@@ -92,7 +92,7 @@ async def telegram_auth(request: Request, token: str = ""):
         COOKIE_NAME,
         session_token,
         httponly=True,
-        secure=not settings.debug,
+        secure=request.url.scheme == "https",
         samesite="lax",
         max_age=7 * 86400,
     )
