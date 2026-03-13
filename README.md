@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.6
+# WolfBet AutoBot v2.6 + Telegram Bot v1.5
 
 High-speed auto-betting engine for WolfBet Dice with a live dashboard + Telegram bot. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -38,7 +38,7 @@ Both the CLI bot and Telegram bot import shared logic from `core/` — change on
 | **Telegram bot** | Full control via Telegram — start/stop/pause/status/config |
 | **8 betting strategies** | Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, WolfRider, Delay Martingale, Rule-Based |
 | **5 rule condition modes** | Every N, Every streak of N, First streak of N, Streak above/below N |
-| **12 rule actions** | Reset/increase/decrease/set amount, switch, stop, set/adjust win chance, reset game |
+| **21 rule actions** | Full Stake-matching action set: bet amount, win chance, payout multiplier, switch, stop, reset |
 | **Named presets** | Save & load strategy configs by name |
 | **Env-based config** | API key, paths, Telegram token — all via environment variables |
 | **Secure file handling** | Config files written with 0600 permissions, API keys masked in logs |
@@ -123,14 +123,18 @@ Commands auto-register on startup (20 commands shown in the `/` menu).
 | `/config` | View current config |
 | `/set <param> <value>` | Set a parameter |
 | `/strategies` | List available strategies |
-| `/bet` | Start betting session |
-| `/stop` | Stop session |
-| `/pause` / `/resume` | Pause/resume betting |
-| `/status` | Live status with refresh button |
+| `/bet` | Start betting session (up to 5 concurrent) |
+| `/stop [slot\|all]` | Stop session — `/stop 2` or `/stop all` |
+| `/pause [slot\|all]` / `/resume [slot\|all]` | Pause/resume betting |
+| `/status [slot]` | Live status — summary when multiple sessions |
+| `/monitor [slot] [interval]` | Auto-updating status (3-60s) |
 | `/stats` | Session history |
+| `/session <id>` | Full session report with config snapshot + streaks |
 | `/lastbets [N]` | Recent bets |
 | `/rules` | List current rules |
 | `/addrule <JSON>` | Add a rule |
+| `/delrule <N>` | Delete rule by number |
+| `/editrule <N> <JSON>` | Edit rule by number (JSON patch) |
 | `/clearrules` | Clear all rules |
 | `/presets` | List presets |
 | `/savepreset <name>` | Save current config |
@@ -183,7 +187,10 @@ All configuration can be set via environment variables (recommended for servers)
 
 ### Actions
 
-Reset amount, Increase/Decrease by %, Add/Deduct fixed, Set amount, Switch over/under, Stop, Set/Increase/Decrease win chance, Reset game.
+**Bet Amount:** Reset, Increase by %, Decrease by %, Add fixed, Deduct fixed, Set exact
+**Win Chance:** Reset, Set, Increase by %, Decrease by %, Add, Deduct
+**Payout:** Reset, Set, Increase by %, Decrease by %, Add, Deduct
+**Other:** Switch over/under, Stop, Reset game
 
 ---
 
