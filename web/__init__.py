@@ -1,3 +1,3 @@
 """WolfBet Admin Web App — Dashboard & management for WolfBet AutoBot."""
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
