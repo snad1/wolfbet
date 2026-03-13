@@ -173,7 +173,7 @@ def get_bets_for_chart(user_id: int, session_id: int, max_points: int = 2000) ->
     if total <= max_points:
         rows = conn.execute(
             """SELECT id, timestamp, amount, multiplier, bet_value, rule,
-                      result, state, profit, balance_after
+                      result_value, state, profit, balance_after
                FROM bets WHERE session_id = ? ORDER BY id ASC""",
             (session_id,),
         ).fetchall()
@@ -182,7 +182,7 @@ def get_bets_for_chart(user_id: int, session_id: int, max_points: int = 2000) ->
         step = total // max_points
         rows = conn.execute(
             """SELECT id, timestamp, amount, multiplier, bet_value, rule,
-                      result, state, profit, balance_after
+                      result_value, state, profit, balance_after
                FROM (
                    SELECT *, ROW_NUMBER() OVER (ORDER BY id ASC) AS rn
                    FROM bets WHERE session_id = ?
@@ -212,7 +212,7 @@ def get_bets_for_chart(user_id: int, session_id: int, max_points: int = 2000) ->
             "profit": round(row.get("profit") or 0.0, 8),
             "state": row.get("state") or "loss",
             "target": round(row.get("multiplier") or 0.0, 4),
-            "result": str(round(row.get("result") or 0.0, 4)),
+            "result": str(round(row.get("result_value") or 0.0, 4)),
             "ts": ts_display,
         })
     return result

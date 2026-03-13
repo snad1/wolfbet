@@ -87,7 +87,7 @@ async def ws_session(ws: WebSocket, user_id: int, session_id: int):
                 conn = _connect_ro(user_id)
                 rows = conn.execute(
                     """SELECT id, timestamp, amount, multiplier, bet_value, rule,
-                              result, state, profit, balance_after
+                              result_value, state, profit, balance_after
                        FROM bets
                        WHERE session_id = ? AND id > ?
                        ORDER BY id ASC""",
@@ -114,7 +114,7 @@ async def ws_session(ws: WebSocket, user_id: int, session_id: int):
                     "profit": round(row.get("profit") or 0.0, 8),
                     "state": row.get("state") or "loss",
                     "target": round(row.get("multiplier") or 0.0, 4),
-                    "result": str(round(row.get("result") or 0.0, 4)),
+                    "result": str(round(row.get("result_value") or 0.0, 4)),
                     "ts": ts_display,
                 }
                 await manager.send_to(ws, "new_bet", chart_point)
