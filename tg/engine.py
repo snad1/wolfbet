@@ -17,6 +17,8 @@ from core.engine import compute_next_bet, wolfrider_switch, apply_action, evalua
 # ── Batching / periodic save constants ──────────────────
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
 SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
+REQUEST_TIMEOUT    = (5, 15) # (connect, read) in seconds
+MAX_TIMEOUT_STREAK = 3       # recreate HTTP session after this many consecutive timeouts
 
 
 class BettingEngine:
@@ -99,6 +101,7 @@ class BettingEngine:
         self.rate_wait       = False
         self.rate_backoff    = 2.0
         self.consecutive_errors = 0
+        self._consecutive_timeouts = 0
         self.backoff_delay   = 1.0
         self._insufficient_balance = False
 
@@ -135,6 +138,17 @@ class BettingEngine:
         self._thread: Optional[threading.Thread] = None
 
     # ── API ──────────────────────────────────────────────
+    def _recreate_http(self):
+        """Close and recreate the HTTP session to recover from stale connections."""
+        try:
+            if self._http:
+                self._http.close()
+        except Exception:
+            pass
+        self._http = requests.Session()
+        self._http.headers.update(self._headers())
+        logger.info("User %d: HTTP session recreated", self.user_id)
+
     def _headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.api_key}",
@@ -154,7 +168,7 @@ class BettingEngine:
             pass
 
     def api_get_balances(self) -> list:
-        r = self._http.get(f"{API_BASE}/user/balances", timeout=12)
+        r = self._http.get(f"{API_BASE}/user/balances", timeout=REQUEST_TIMEOUT)
         self._update_rate_limit(r)
         r.raise_for_status()
         return r.json().get("balances", [])
@@ -170,8 +184,9 @@ class BettingEngine:
         }
         try:
             r = self._http.post(f"{API_BASE}/bet/place",
-                                json=payload, timeout=15)
+                                json=payload, timeout=REQUEST_TIMEOUT)
             self._update_rate_limit(r)
+            self._consecutive_timeouts = 0  # success — reset
             if r.status_code == 200:
                 data = r.json()
                 if "error" in data:
@@ -189,8 +204,14 @@ class BettingEngine:
                 self.last_error = "Rate limit 429"
             else:
                 self.last_error = f"HTTP {r.status_code}: {r.text[:120]}"
-        except requests.exceptions.Timeout:
-            self.last_error = "Request timeout"
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            self._consecutive_timeouts += 1
+            self.last_error = f"Request timeout (#{self._consecutive_timeouts})"
+            if self._consecutive_timeouts >= MAX_TIMEOUT_STREAK:
+                logger.warning("User %d: %d consecutive timeouts — recreating HTTP session",
+                               self.user_id, self._consecutive_timeouts)
+                self._recreate_http()
+                self._consecutive_timeouts = 0
         except Exception as e:
             self.last_error = str(e)[:120]
         return None
@@ -616,7 +637,7 @@ class BettingEngine:
                 self.status = f"Rate limit — probing in {backoff:.0f}s…"
                 time.sleep(backoff)
                 try:
-                    r = self._http.get(f"{API_BASE}/user/balances", timeout=10)
+                    r = self._http.get(f"{API_BASE}/user/balances", timeout=REQUEST_TIMEOUT)
                     self._update_rate_limit(r)
                     if self.rate_remaining > 5:
                         self.rate_wait = False
