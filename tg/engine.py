@@ -242,7 +242,7 @@ class BettingEngine:
             "rule": self.rule,
         }
         if self.strategy_key == "7":  # Delay Martingale
-            snap["delay_threshold"] = self.delay_threshold
+            snap["delay_threshold"] = self.delay_martin_threshold
         stops = {}
         if self.max_profit is not None: stops["max_profit"] = self.max_profit
         if self.max_loss is not None:   stops["max_loss"] = self.max_loss
