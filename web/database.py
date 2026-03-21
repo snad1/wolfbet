@@ -102,6 +102,23 @@ def verify_admin(username: str, password: str) -> dict | None:
     return None
 
 
+def change_admin_password(username: str, old_password: str, new_password: str) -> bool:
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM admin_users WHERE username = ?", (username,)
+    ).fetchone()
+    if not row or not _verify_password(old_password, row["password_hash"]):
+        conn.close()
+        return False
+    conn.execute(
+        "UPDATE admin_users SET password_hash = ? WHERE id = ?",
+        (_hash_password(new_password), row["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
 # ── TG user helpers ──
 
 def sync_tg_user(user_id: int, username: str = None, tier: str = None):
