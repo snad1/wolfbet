@@ -192,6 +192,78 @@ async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Test with /balance", parse_mode="Markdown")
 
 
+# ── /benchmark ───────────────────────────────────────────
+async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run test bets (amount=0) and measure API response times."""
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+    api_key = config.get("api_key")
+    if not api_key:
+        await update.message.reply_text("Set your API key first: /setkey <key>", parse_mode="Markdown")
+        return
+
+    count = 10
+    if context.args:
+        try:
+            count = min(int(context.args[0]), 50)
+        except ValueError:
+            pass
+
+    msg = await update.message.reply_text(f"Running {count} test bets (amount=0)...")
+
+    import requests as _req
+    import time as _time
+    from .config import API_BASE
+
+    session = _req.Session()
+    session.headers.update({"Authorization": f"Bearer {api_key}"})
+    currency = config.get("currency") or "btc"
+    multiplier = float(config.get("multiplier") or 2.0)
+    bet_value = round(100 - 99 / multiplier - 0.01, 2)
+    times = []
+
+    for i in range(count):
+        payload = {
+            "currency": currency,
+            "game": "dice",
+            "amount": "0",
+            "rule": config.get("rule") or "over",
+            "multiplier": str(multiplier),
+            "bet_value": str(bet_value),
+        }
+        try:
+            t0 = _time.time()
+            r = session.post(f"{API_BASE}/bet/place", json=payload, timeout=(5, 15))
+            elapsed = (_time.time() - t0) * 1000
+            times.append(elapsed)
+        except Exception:
+            times.append(-1)
+
+    session.close()
+
+    valid = [t for t in times if t > 0]
+    if not valid:
+        await msg.edit_text("All requests failed.")
+        return
+
+    avg = sum(valid) / len(valid)
+    mn, mx = min(valid), max(valid)
+    failed = len(times) - len(valid)
+    theoretical_bps = 1000 / avg if avg > 0 else 0
+
+    lines = [
+        f"*Benchmark Results ({count} bets)*\n",
+        f"  Avg: `{avg:.0f}ms`",
+        f"  Min: `{mn:.0f}ms`",
+        f"  Max: `{mx:.0f}ms`",
+        f"  Failed: `{failed}`\n",
+        f"  Max theoretical: `{theoretical_bps:.1f}` bets/sec",
+        f"\n*Individual times:*",
+        f"`{'  '.join(f'{t:.0f}ms' if t > 0 else 'FAIL' for t in times)}`",
+    ]
+    await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+
+
 # ── /balance ─────────────────────────────────────────────
 async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id

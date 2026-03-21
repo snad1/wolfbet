@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from .config import BOT_TOKEN, DATA_DIR, logger
 from . import VERSION
 from .handlers import (
-    cmd_start, cmd_help, cmd_setkey, cmd_balance, cmd_config,
+    cmd_start, cmd_help, cmd_setkey, cmd_benchmark, cmd_balance, cmd_config,
     cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_pause, cmd_resume,
     cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
@@ -79,6 +79,7 @@ def main():
             BotCommand("savepreset",  "Save current config as preset"),
             BotCommand("loadpreset",  "Load a preset"),
             BotCommand("web",         "Open web dashboard"),
+            BotCommand("benchmark",   "Test API response speed"),
         ])
         logger.info("Bot commands registered with Telegram")
         # Resume any engines saved from graceful shutdown
@@ -121,6 +122,7 @@ def main():
     app.add_handler(CommandHandler("savepreset", cmd_savepreset))
     app.add_handler(CommandHandler("loadpreset", cmd_loadpreset))
     app.add_handler(CommandHandler("web", cmd_web))
+    app.add_handler(CommandHandler("benchmark", cmd_benchmark))
 
     # Inline button callbacks
     app.add_handler(CallbackQueryHandler(callback_handler))
