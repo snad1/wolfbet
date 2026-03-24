@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.6 + Telegram Bot v1.5
+# WolfBet AutoBot v2.6 + Telegram Bot v1.5.6
 
 High-speed auto-betting engine for WolfBet Dice with a live dashboard + Telegram bot. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -44,6 +44,7 @@ Both the CLI bot and Telegram bot import shared logic from `core/` — change on
 | **Secure file handling** | Config files written with 0600 permissions, API keys masked in logs |
 | **Smart rate recovery** | Exponential probe (2s→4s→8s→32s) instead of hard 60s freeze |
 | **Session database** | SQLite log of every bet and session — survives restarts |
+| **Auto data retention** | Old bet records auto-purged after 3 days; session stats preserved forever |
 | **Daemon + monitor** | `--daemon` for background, `--monitor` to attach live TUI |
 | **Performance tracking** | BPS, BPM, peak/low speed, peak/low balance, best win, worst loss |
 | **Streak distribution** | Per-session bar charts showing win/loss streak frequency |
@@ -139,6 +140,8 @@ Commands auto-register on startup (20 commands shown in the `/` menu).
 | `/presets` | List presets |
 | `/savepreset <name>` | Save current config |
 | `/loadpreset <name>` | Load a preset |
+| `/cleanup [days]` | Purge old bet records (default 3 days), keep session stats |
+| `/delsession <id>` | Delete a specific session and its bets |
 
 ---
 
