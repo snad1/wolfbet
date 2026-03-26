@@ -12,7 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from . import VERSION
-from .config import CONFIG_KEYS, DATA_DIR, TIERS, get_user_tier, logger
+from .config import APP_ENV, CONFIG_KEYS, DATA_DIR, TIERS, get_user_tier, logger
 from .database import (
     user_db_path, load_user_config, save_user_config,
     load_presets, save_presets,
@@ -291,7 +291,9 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"`{cur:>6}  {amt:.8f}`")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"Error: `{e}`", parse_mode="Markdown")
+        logger.error("cmd_balance error: %s", e, exc_info=True)
+        msg = f"Error: `{e}`" if APP_ENV != "production" else "Something went wrong. Please try again."
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 # ── /config ──────────────────────────────────────────────
@@ -371,7 +373,9 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
+        logger.error("cmd_config error: %s", e, exc_info=True)
+        msg = f"Config error: `{e}`" if APP_ENV != "production" else "Configuration error. Please check your settings."
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 # ── /set ─────────────────────────────────────────────────
@@ -497,7 +501,9 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         engine = BettingEngine(user_id, db_path, config["api_key"], config)
     except Exception as e:
-        await update.message.reply_text(f"Config error: `{e}`", parse_mode="Markdown")
+        logger.error("cmd_start config error: %s", e, exc_info=True)
+        msg = f"Config error: `{e}`" if APP_ENV != "production" else "Configuration error. Please check your settings."
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
     slot = _alloc_slot(user_id)
@@ -811,8 +817,9 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`pip install python-jose[cryptography]`",
             parse_mode="Markdown")
     except Exception as e:
-        logger.error("cmd_web error: %s", e)
-        await update.message.reply_text(f"Error generating link: {e}")
+        logger.error("cmd_web error: %s", e, exc_info=True)
+        msg = f"Error generating link: {e}" if APP_ENV != "production" else "Could not generate web link. Please try again."
+        await update.message.reply_text(msg)
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1080,7 +1087,9 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r = StrategyRule.from_dict(d)
         r.description = describe_rule(r)
     except Exception as e:
-        await update.message.reply_text(f"Invalid JSON: `{e}`", parse_mode="Markdown")
+        logger.error("cmd_addrule error: %s", e, exc_info=True)
+        msg = f"Invalid JSON: `{e}`" if APP_ENV != "production" else "Invalid rule format. Please check the syntax."
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
     config = load_user_config(user_id)
@@ -1152,7 +1161,9 @@ async def cmd_editrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         patch = json.loads(raw)
     except json.JSONDecodeError as e:
-        await update.message.reply_text(f"Invalid JSON: `{e}`", parse_mode="Markdown")
+        logger.error("cmd_editrule JSON error: %s", e, exc_info=True)
+        msg = f"Invalid JSON: `{e}`" if APP_ENV != "production" else "Invalid rule format. Please check the syntax."
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
     # Merge patch into existing rule
@@ -1162,7 +1173,9 @@ async def cmd_editrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_rule = StrategyRule.from_dict(old_dict)
         new_rule.description = describe_rule(new_rule)
     except Exception as e:
-        await update.message.reply_text(f"Invalid rule after edit: `{e}`", parse_mode="Markdown")
+        logger.error("cmd_editrule validation error: %s", e, exc_info=True)
+        msg = f"Invalid rule after edit: `{e}`" if APP_ENV != "production" else "Invalid rule. Please check the syntax."
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
     rules[idx - 1] = new_rule
