@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.7.1 — Fix BPM Calculation (2026-03-29)
+
+### Fixed
+
+- **BPM calculation** — `bets_per_minute` was set to raw count of bets in the current calendar minute instead of the actual rate; now correctly derived as `bets_per_second * 60`
+
+---
+
 ## v1.6.0 — Insufficient Balance Fix (2026-03-29)
 
 ### Fixed

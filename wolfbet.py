@@ -56,7 +56,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.7.0"
+VERSION      = "2.7.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -638,8 +638,7 @@ def betting_loop():
             elapsed = now - state.session_start
             if elapsed > 0:
                 state.bets_per_second = state.total_bets / elapsed
-                # BPM = actual bets in the current minute (real count, not extrapolated)
-                state.bets_per_minute = state._bets_this_min
+                state.bets_per_minute = state.bets_per_second * 60
 
             # track peak/low bets per individual second and minute
             sec_key = int(now)

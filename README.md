@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.6 + Telegram Bot v1.6.0
+# WolfBet AutoBot v2.7.1 + Telegram Bot v1.6.1
 
 High-speed auto-betting engine for WolfBet Dice with a live dashboard + Telegram bot. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
