@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.7 — Security Hardening (2026-03-29)
+
+### TG Bot v1.5.7
+
+#### Security
+
+- **ENV-controlled error messages** — Error handlers now log full details server-side and show user-friendly messages in production. Controlled via `APP_ENV` environment variable
+- **`wolfctl` self-update safety** — Script wrapped in `{ }` block to prevent parse errors when `cmd_update` replaces the file mid-run
+
+---
+
 ## v1.5.6 — Data Retention & Cleanup (2026-03-24)
 
 ### TG Bot v1.5.6
