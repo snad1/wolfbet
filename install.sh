@@ -56,7 +56,7 @@ if [ -d "../shared" ]; then
     cp -r ../shared "$INSTALL_DIR/"
     echo "   shared/ library copied"
 else
-    echo "   ⚠ ../shared/ not found — shared imports may fail"
+    echo "   shared/ not copied locally (pip package used instead)"
 fi
 
 # ── 3. Environment file ───────────────────────────────
