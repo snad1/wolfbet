@@ -609,6 +609,28 @@ class BettingEngine:
         h, rem = divmod(int(elapsed), 3600)
         m, s = divmod(rem, 60)
         wr = f"{self.wins/self.total_bets*100:.1f}%" if self.total_bets > 0 else "—"
+
+        # stop conditions
+        stops = {}
+        if self.max_profit is not None: stops["max_profit"] = self.max_profit
+        if self.max_loss is not None:   stops["max_loss"] = self.max_loss
+        if self.max_bets is not None:   stops["max_bets"] = self.max_bets
+        if self.max_wins is not None:   stops["max_wins"] = self.max_wins
+        if self.stop_on_balance is not None: stops["min_balance"] = self.stop_on_balance
+
+        # strategy detail
+        strat_detail = ""
+        if self.strategy_key in ("2", "6", "7"):
+            strat_detail = f"loss_mult: {self.loss_mult}x"
+        elif self.strategy_key in ("3", "5"):
+            strat_detail = f"win_mult: {self.win_mult}x"
+
+        # rule descriptions
+        rule_descs = []
+        for r in self.custom_rules:
+            d = r.to_dict()
+            rule_descs.append(f"{d.get('trigger','')} {d.get('condition','')} {d.get('threshold','')}: {d.get('action','')} {d.get('value','')}")
+
         return {
             "running": self.running,
             "paused": self.paused,
@@ -633,10 +655,21 @@ class BettingEngine:
             "biggest_loss": self.biggest_loss,
             "bps": self.bets_per_second,
             "bpm": self.bets_per_minute,
+            "peak_bps": self.peak_bps,
+            "low_bps": self.low_bps if self.low_bps != float("inf") else 0,
+            "peak_bpm": self.peak_bpm,
+            "low_bpm": self.low_bpm if self.low_bpm != float("inf") else 0,
             "base_bet": self.base_bet,
             "strategy": self.strategy,
+            "strategy_key": self.strategy_key,
+            "strategy_detail": strat_detail,
             "multiplier": self.multiplier,
             "currency": self.currency.upper(),
+            "bet_delay": self.bet_delay,
+            "stop_conditions": stops,
+            "profit_increment": self.profit_increment,
+            "profit_threshold": self.profit_threshold,
+            "rules": rule_descs,
             "status": self.status,
             "last_error": self.last_error,
             "api_ms": self._last_api_ms,
