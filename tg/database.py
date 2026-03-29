@@ -1,6 +1,5 @@
 """Telegram per-user file paths — delegates to shared library."""
 
-import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
