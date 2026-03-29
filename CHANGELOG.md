@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.6.0 — Insufficient Balance Fix (2026-03-29)
+
+### Fixed
+
+- **Insufficient balance detection** — CLI and TG now properly detect "insufficient balance" in API error responses and stop the session immediately
+- **TG error notification** — Added `on_error` callback; sends `⚠️ Insufficient balance` message to user via Telegram before stopping
+
+---
+
 ## v1.5.9 — Shared Library as pip Package (2026-03-29)
 
 ### Infrastructure
