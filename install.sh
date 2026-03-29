@@ -50,6 +50,15 @@ cp tg/formatter.py  "$INSTALL_DIR/tg/"
 cp tg/handlers.py   "$INSTALL_DIR/tg/"
 cp tg/bot.py        "$INSTALL_DIR/tg/"
 
+# Copy shared/ library (cross-bot shared modules)
+if [ -d "../shared" ]; then
+    rm -rf "$INSTALL_DIR/shared"
+    cp -r ../shared "$INSTALL_DIR/"
+    echo "   shared/ library copied"
+else
+    echo "   ⚠ ../shared/ not found — shared imports may fail"
+fi
+
 # ── 3. Environment file ───────────────────────────────
 echo "[3/7] Setting up environment…"
 if [ ! -f "$ENV_FILE" ]; then
@@ -334,7 +343,14 @@ cmd_update() {
         mkdir -p "$INSTALL_DIR/core" "$INSTALL_DIR/tg"
         cp core/*.py "$INSTALL_DIR/core/"
         cp tg/*.py   "$INSTALL_DIR/tg/"
-        echo "Bot + TG bot files updated."
+        # Update shared/ library
+        if [ -d "../shared" ]; then
+            rm -rf "$INSTALL_DIR/shared"
+            cp -r ../shared "$INSTALL_DIR/"
+            echo "Bot + TG bot + shared/ updated."
+        else
+            echo "Bot + TG bot files updated (shared/ not found)."
+        fi
         # Auto-restart TG bot gracefully (sessions auto-resume)
         if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
             echo "Restarting Telegram bot (sessions will auto-resume)…"
@@ -524,8 +540,9 @@ echo ""
 echo "  PROJECT STRUCTURE:"
 echo "    $INSTALL_DIR/"
 echo "    ├── wolfbet.py          CLI bot (TUI dashboard)"
-echo "    ├── core/               Shared: strategy, DB schema"
+echo "    ├── core/               Bot-specific: strategy, DB, engine"
 echo "    ├── tg/                 Telegram bot package"
+echo "    ├── shared/             Cross-bot shared library"
 echo "    ├── .env                Environment config (tokens)"
 echo "    └── venv/               Python virtual environment"
 echo ""

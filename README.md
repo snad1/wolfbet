@@ -23,10 +23,10 @@ wolfbet/
 │   └── strategy.py     Re-exports from core/
 ├── install.sh          Server installer (systemd, wolfctl, venv)
 ├── .env.example        Environment variable template
-└── requirements.txt    Python dependencies
+└── requirements.txt    Python dependencies (includes casino-shared)
 ```
 
-Both the CLI bot and Telegram bot import shared logic from `core/` — change once, applies everywhere.
+Both the CLI bot and Telegram bot import shared logic from `core/` — change once, applies everywhere. Cross-bot shared code (`shared/`) is installed as a pip package (`casino-shared`) from GitHub.
 
 ---
 
@@ -73,6 +73,7 @@ python3 wolfbet.py
 scp -r wolfbet.py requirements.txt install.sh core/ tg/ .env.example user@your-server:~/wolfbet/
 
 # Install (sets up venv, systemd, wolfctl)
+# shared/ library is auto-installed via pip from GitHub (requires SSH key)
 ssh user@your-server
 cd ~/wolfbet && chmod +x install.sh && ./install.sh
 ```

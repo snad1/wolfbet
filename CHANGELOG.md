@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.9 — Shared Library as pip Package (2026-03-29)
+
+### Infrastructure
+
+- **casino-shared pip package** — `shared/` library now installable via `pip install casino-shared` from GitHub, eliminating manual file copying on servers
+- **requirements.txt** — Added `casino-shared @ git+ssh://git@github.com/snad1/casino-shared.git` to both bot and web requirements
+- **install.sh** — Added `shared/` copy step as fallback for offline/non-pip installs
+- **wolfctl update** — Now syncs `shared/` library alongside core/tg during updates
+
+---
+
 ## v1.5.8 — DRY Shared Library Extraction (2026-03-29)
 
 ### Infrastructure
