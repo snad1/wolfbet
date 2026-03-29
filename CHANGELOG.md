@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.5.8 — DRY Shared Library Extraction (2026-03-29)
+
+### Infrastructure
+
+- **Shared library extraction** — Extracted ~6,600 lines of duplicated code into `shared/` library used across all 6 casino bots
+  - `web/websocket.py` → thin shim delegating to `shared/web/websocket.py`
+  - `web/database.py` → thin shim binding `settings.db_path` to `shared/web/database.py`
+  - `web/auth.py` → thin shim using `make_auth()` factory from `shared/web/auth.py`
+  - `web/services.py` → thin shim binding settings to `shared/web/services.py`
+  - `web/bot_db.py` → thin shim with chart column config to `shared/web/bot_db.py`
+  - `web/routes/auth_routes.py` → thin shim using `make_auth_router()` factory
+  - `tg/database.py` → thin shim binding `DATA_DIR` to `shared/tg/database.py`
+  - `core/strategy.py` → keeps local STRATEGIES dict, delegates rule engine to `shared/core/strategy.py`
+  - `core/database.py` → keeps local `init_db`/`migrate_db`, delegates utilities to `shared/core/database.py`
+- Zero downstream import changes — all existing imports continue working
+
+### Security
+
+- **Shell injection fix** — Replaced `create_subprocess_shell` with `shutil.copy2` in update flow
+- **Deprecated datetime fix** — Replaced `datetime.utcnow()` with `datetime.now(timezone.utc)`
+- **Narrowed exception handling** — Replaced broad `except Exception` with specific types
+- **Removed unused imports** — Cleaned up `import os` from tg/database.py shim
+
+### Testing
+
+- **114-test suite** added covering all shared modules (database, auth, strategy, services, bot_db, tg persistence)
+
+---
+
 ## v1.5.7 — Security Hardening (2026-03-29)
 
 ### TG Bot v1.5.7
