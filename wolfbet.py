@@ -317,6 +317,7 @@ class BotState:
         self.backoff_delay   = 1.0     # current backoff (grows on consecutive errors)
         self.max_backoff     = 30.0    # cap for exponential backoff
         self.consecutive_errors = 0
+        self._insufficient_balance = False
 
         # ── rate limiting ──
         self.rate_limit      = 480
@@ -409,6 +410,18 @@ def api_place_bet(amount: float) -> Optional[dict]:
 
         if r.status_code == 200:
             data = r.json()
+            if "error" in data:
+                err_msg = data["error"].get("message", "") if isinstance(data["error"], dict) else str(data["error"])
+                err_lower = err_msg.lower()
+                if "insufficient" in err_lower or "balance" in err_lower:
+                    logger.warning("INSUFFICIENT BALANCE")
+                    with state.lock:
+                        state.last_error = "Insufficient balance"
+                        state._insufficient_balance = True
+                    return None
+                with state.lock:
+                    state.last_error = f"API error: {err_msg[:120]}"
+                return None
             logger.debug("BET OK  id=%s state=%s",
                          data.get("bet", {}).get("id"),
                          data.get("bet", {}).get("state"))
@@ -430,9 +443,16 @@ def api_place_bet(amount: float) -> Optional[dict]:
         with state.lock:
             state.last_error = "Request timeout — retrying…"
     except Exception as e:
-        logger.exception("UNEXPECTED ERROR placing bet: %s", e)
-        with state.lock:
-            state.last_error = str(e)[:120]
+        err_str = str(e).lower()
+        if "insufficient" in err_str or "balance" in err_str:
+            logger.warning("INSUFFICIENT BALANCE")
+            with state.lock:
+                state.last_error = "Insufficient balance"
+                state._insufficient_balance = True
+        else:
+            logger.exception("UNEXPECTED ERROR placing bet: %s", e)
+            with state.lock:
+                state.last_error = str(e)[:120]
     return None
 
 # ══════════════════════════════════════════════════════════
@@ -533,6 +553,11 @@ def betting_loop():
         result = api_place_bet(state.current_bet)
 
         if result is None:
+            if state._insufficient_balance:
+                state.running = False
+                state.status = "STOPPED: Insufficient balance"
+                _db_save_session()
+                break
             # exponential backoff on consecutive errors
             with state.lock:
                 state.consecutive_errors += 1
