@@ -131,6 +131,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Parameters for* /set*:*\n"
         "`currency` — usdt, btc, eth, ltc, trx, bch, doge, xrp\n"
         "`game` — dice (API v1), dice-manual (Manual v1), limbo (API v2)\n"
+        "`proxy` — http://user:pass@ip:port or socks5://... (`off` to disable)\n"
         "`strategy` — flat, martingale, antimartingale, dalembert, paroli, wolfrider, delaymartingale, rulebased\n"
         "`multiplier` — target multiplier (e.g. 2.01)\n"
         "`basebet` — base bet amount\n"
@@ -391,6 +392,17 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         api_set = "Yes" if config.get("api_key") else "No"
         lines.append(f"API key: `{api_set}`")
+        proxy = config.get("proxy")
+        if proxy:
+            # Show proxy host only, hide credentials
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(proxy)
+                lines.append(f"Proxy: `{p.scheme}://{p.hostname}:{p.port}`")
+            except Exception:
+                lines.append("Proxy: `set`")
+        else:
+            lines.append("Proxy: `off`")
         lines.append(f"Tier: `{get_user_tier(user_id)}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -416,6 +428,19 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if param == "currency":
             config["currency"] = value.lower()
+        elif param == "proxy":
+            if value.lower() in ("off", "none", "direct", "0"):
+                config["proxy"] = None
+                await update.message.reply_text("Proxy disabled — using direct connection.", parse_mode="Markdown")
+                save_user_config(user_id, config)
+                return
+            if not (value.startswith("http://") or value.startswith("https://") or value.startswith("socks5://")):
+                await update.message.reply_text(
+                    "Proxy format: `http://user:pass@ip:port` or `socks5://user:pass@ip:port`\n"
+                    "Use `/set proxy off` to disable.",
+                    parse_mode="Markdown")
+                return
+            config["proxy"] = value
         elif param == "game":
             from .engine import GAME_LABELS
             g = value.lower()

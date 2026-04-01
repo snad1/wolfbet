@@ -45,6 +45,7 @@ class BettingEngine:
 
         # ── config (use `or` to handle None from presets) ──
         self.api_key        = api_key
+        self.proxy          = config.get("proxy") or None
         self.currency       = config.get("currency") or "usdt"
         self.game           = config.get("game") or "dice"
         self.rule           = config.get("rule") or "over"
@@ -166,6 +167,7 @@ class BettingEngine:
         self._http = httpx.AsyncClient(
             headers=self._headers(), timeout=REQUEST_TIMEOUT,
             http2=False, follow_redirects=False,
+            proxy=self.proxy if self.proxy else None,
         )
         logger.info("User %d: HTTP client recreated", self.user_id)
 
@@ -545,6 +547,7 @@ class BettingEngine:
         rules_ser = json.dumps([r.to_dict() for r in self.custom_rules]) if self.custom_rules else ""
         config = {
             "api_key": self.api_key,
+            "proxy": self.proxy,
             "currency": self.currency,
             "game": self.game,
             "rule": self.rule,
@@ -728,6 +731,7 @@ class BettingEngine:
             "rules": rule_descs,
             "game": self.game,
             "game_label": GAME_LABELS.get(self.game, self.game),
+            "proxy": bool(self.proxy),
             "status": self.status,
             "last_error": self.last_error,
             "api_ms": self._last_api_ms,

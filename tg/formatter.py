@@ -61,10 +61,11 @@ def format_status(s: dict) -> str:
     state = "\U0001f7e2 LIVE" if not s["paused"] else "\U0001f7e1 PAUSED"
 
     game_label = s.get("game_label", "Dice")
+    proxy_tag = " \U0001f310" if s.get("proxy") else ""
 
     lines = [
         f"*Session #{s['session_id']}* \u2014 {s['uptime']}",
-        f"{state} \u2014 {game_label}",
+        f"{state} \u2014 {game_label}{proxy_tag}",
         "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         "\U0001f4b0 *Balance*",
         f"  Current: `{s['balance']:.8f} {s['currency']}`",
