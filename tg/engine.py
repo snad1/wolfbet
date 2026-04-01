@@ -15,18 +15,37 @@ from core.database import init_db, migrate_db, db_connect, cleanup_old_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
 
+import hashlib
+
 # ── Game endpoint configuration ──
-# game_key → (api_path, api_version, rate_limit_default, x_hash_api)
+# game_key → (api_path, api_version, rate_limit_default, needs_hash)
 GAME_ENDPOINTS = {
-    "dice":        ("/v1/bet/place",              1, 480, None),
-    "dice-manual": ("/v1/dice/manual/play",       1, 720, "4fcfa97d3a307bbcb20a7bf8ee29dcdfce7a20c0edda6867a32ee1b43e0742de"),
-    "limbo":       ("/v2/limbo/manual/play",       2, 500, "7cb7c8fc779782c7f7ce9a52901e69991eef0ee09228ea6767a1f52a619d3b53"),
+    "dice":           ("/v1/bet/place",         1, 480,  False),
+    "dice-manual":    ("/v1/dice/manual/play",  1, 720,  True),
+    "limbo":          ("/v2/limbo/manual/play",  2, 500,  True),
+    "limbo-auto":     ("/v2/limbo/auto/play",    2, 4000, True),
+    "dice-auto":      ("/v1/dice/auto/play",     1, 4000, True),
 }
 GAME_LABELS = {
-    "dice":        "Dice (API v1)",
-    "dice-manual": "Dice Manual (v1)",
-    "limbo":       "Limbo (v2)",
+    "dice":           "Dice (API v1)",
+    "dice-manual":    "Dice Manual (v1)",
+    "limbo":          "Limbo (v2)",
+    "limbo-auto":     "Limbo Auto (v2)",
+    "dice-auto":      "Dice Auto (v1)",
 }
+
+# Auto-bet start/stop endpoints
+AUTO_ENDPOINTS = {
+    "limbo-auto": {"start": "/v2/limbo/auto/start", "stop": "/v2/limbo/auto/stop"},
+    "dice-auto":  {"start": "/v1/dice/auto/start",  "stop": "/v1/dice/auto/stop"},
+}
+
+
+def _wolfbet_hash(body_str: str = "") -> str:
+    """Generate WolfBet x-hash-api: interleave(md5(body), md5(nonce))."""
+    md5_body = hashlib.md5(body_str.encode()).hexdigest()
+    md5_nonce = hashlib.md5(str(int(time.time() * 1000)).encode()).hexdigest()
+    return "".join(a + b for a, b in zip(md5_body, md5_nonce))
 
 # ── Batching / periodic save constants ──────────────────
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
@@ -150,6 +169,9 @@ class BettingEngine:
         self._last_session_save = 0.0          # last time session was saved
         self._db_connection: Optional[sqlite3.Connection] = None  # persistent connection
 
+        # ── auto-bet state ──
+        self._auto_uuid: Optional[str] = None
+
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
 
@@ -171,18 +193,26 @@ class BettingEngine:
         )
         logger.info("User %d: HTTP client recreated", self.user_id)
 
-    def _headers(self, game_key: str = None) -> dict:
-        h = {
+    def _base_headers(self) -> dict:
+        return {
             "Authorization": f"Bearer {self.api_key}",
             "X-Requested-With": "XMLHttpRequest",
             "Content-Type": "application/json",
         }
-        gk = game_key or self.game
-        ep = GAME_ENDPOINTS.get(gk)
-        if ep and ep[3]:
-            h["x-hash-api"]    = ep[3]
-            h["x-client-type"] = "Web-Application"
-        return h
+
+    def _headers(self, game_key: str = None) -> dict:
+        """Static headers for the HTTP client (no hash — added per-request)."""
+        return self._base_headers()
+
+    def _request_headers(self, body_str: str = "") -> dict:
+        """Per-request headers including dynamic x-hash-api."""
+        ep = GAME_ENDPOINTS.get(self.game)
+        if ep and ep[3]:  # needs_hash
+            return {
+                "x-hash-api": _wolfbet_hash(body_str),
+                "x-client-type": "Web-Application",
+            }
+        return {}
 
     def _update_rate_limit(self, resp):
         try:
@@ -204,6 +234,81 @@ class BettingEngine:
         self._update_rate_limit(r)
         r.raise_for_status()
         return r.json().get("balances", [])
+
+    async def _auto_start(self) -> bool:
+        """Start an auto-bet session on WolfBet, returns True on success."""
+        endpoints = AUTO_ENDPOINTS.get(self.game)
+        if not endpoints:
+            self.last_error = f"No auto-bet endpoint for {self.game}"
+            return False
+        url = f"{API_BASE}{endpoints['start']}"
+        payload = self._build_auto_start_payload()
+        body_str = json.dumps(payload, separators=(",", ":"))
+        extra_headers = self._request_headers(body_str)
+        try:
+            r = await self._http.post(url, json=payload, headers=extra_headers)
+            if r.status_code == 200:
+                data = r.json()
+                uuid = data.get("autoBet", {}).get("uuid")
+                if uuid:
+                    self._auto_uuid = uuid
+                    logger.info("User %d: Auto-bet started, uuid=%s", self.user_id, uuid)
+                    return True
+                self.last_error = f"No UUID in auto/start response: {data}"
+            else:
+                self.last_error = f"Auto start HTTP {r.status_code}: {r.text[:120]}"
+        except Exception as e:
+            self.last_error = f"Auto start failed: {e}"
+        return False
+
+    async def _auto_stop(self):
+        """Stop the auto-bet session on WolfBet."""
+        endpoints = AUTO_ENDPOINTS.get(self.game)
+        if not endpoints or not self._auto_uuid:
+            return
+        url = f"{API_BASE}{endpoints['stop']}"
+        payload = {"uuid": self._auto_uuid}
+        body_str = json.dumps(payload, separators=(",", ":"))
+        extra_headers = self._request_headers(body_str)
+        try:
+            await self._http.post(url, json=payload, headers=extra_headers)
+            logger.info("User %d: Auto-bet stopped, uuid=%s", self.user_id, self._auto_uuid)
+        except Exception:
+            pass
+        self._auto_uuid = None
+
+    def _is_auto_game(self) -> bool:
+        return self.game in AUTO_ENDPOINTS
+
+    def _build_auto_start_payload(self) -> dict:
+        """Build the payload for auto/start — includes strategy config."""
+        base = {
+            "currency":   self.currency,
+            "amount":     f"{self.base_bet:.8f}",
+            "multiplier": f"{self.multiplier}",
+            "config":     self._build_auto_config(),
+        }
+        if self.game == "limbo-auto":
+            base["game"] = "limbo"
+        elif self.game == "dice-auto":
+            base["game"] = "dice"
+            base["rule"] = self.rule
+            base["bet_value"] = f"{self.bet_value}"
+        return base
+
+    def _build_auto_config(self) -> list:
+        """Translate our strategy into WolfBet auto-bet config format."""
+        if self.strategy_key == "1":  # Flat
+            return [{"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]},
+                    {"command": [{"name": "resetAmount"}], "when": [{"name": "loss", "value": 1, "type": "every"}]}]
+        elif self.strategy_key == "2":  # Martingale
+            return [{"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]},
+                    {"command": [{"name": "increaseAmount", "value": f"{self.loss_mult}"}], "when": [{"name": "loss", "value": 1, "type": "every"}]}]
+        elif self.strategy_key == "3":  # Anti-Martingale
+            return [{"command": [{"name": "increaseAmount", "value": f"{self.win_mult}"}], "when": [{"name": "win", "value": 1, "type": "every"}]},
+                    {"command": [{"name": "resetAmount"}], "when": [{"name": "loss", "value": 1, "type": "every"}]}]
+        # Default: flat (resetAmount on every result)
+        return [{"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]}]
 
     def _build_bet_payload(self, amount: float) -> dict:
         gk = self.game
@@ -234,15 +339,19 @@ class BettingEngine:
                 "multiplier": f"{self.multiplier}",
                 "auto":       1,
             }
+        elif gk in ("limbo-auto", "dice-auto"):
+            return {"uuid": self._auto_uuid}
         return {}
 
     async def _api_place_bet(self, amount: float) -> Optional[dict]:
         payload = self._build_bet_payload(amount)
-        ep = GAME_ENDPOINTS.get(self.game, ("/v1/bet/place", 1, 480, None))
+        ep = GAME_ENDPOINTS.get(self.game, ("/v1/bet/place", 1, 480, False))
         url = f"{API_BASE}{ep[0]}"
+        body_str = json.dumps(payload, separators=(",", ":"))
+        extra_headers = self._request_headers(body_str)
         try:
             t0 = time.time()
-            r = await self._http.post(url, json=payload)
+            r = await self._http.post(url, json=payload, headers=extra_headers)
             self._last_api_ms = (time.time() - t0) * 1000
             self._update_rate_limit(r)
             self._consecutive_timeouts = 0
@@ -539,6 +648,10 @@ class BettingEngine:
         self.running         = True
         self.status          = "Starting…"
 
+        if self._is_auto_game():
+            if not await self._auto_start():
+                return False
+
         self._task = asyncio.create_task(self._betting_loop())
         return True
 
@@ -550,6 +663,7 @@ class BettingEngine:
             "proxy": self.proxy,
             "currency": self.currency,
             "game": self.game,
+            "_auto_uuid": self._auto_uuid,
             "rule": self.rule,
             "multiplier": self.multiplier,
             "bet_value": self.bet_value,
@@ -627,6 +741,7 @@ class BettingEngine:
         self.paroli_count      = snap.get("paroli_count", 0)
         self.next_profit_milestone  = snap.get("next_profit_milestone", 0.0)
         self._last_profit_milestone = snap.get("_last_profit_milestone", 0.0)
+        self._auto_uuid            = snap.get("_auto_uuid")
 
     async def start_resumed(self) -> bool:
         """Resume a saved session. Tests API connection but skips balance fetch / new DB session."""
@@ -909,7 +1024,9 @@ class BettingEngine:
                     except Exception as e:
                         logger.error("User %d: Milestone callback failed: %s", self.user_id, e)
 
-        # session ended — flush remaining bets and save final state
+        # session ended — stop auto-bet if active, flush DB
+        if self._auto_uuid:
+            await self._auto_stop()
         self._flush_bets()
         if self.session_id:
             self._db_save_session(final=True)
