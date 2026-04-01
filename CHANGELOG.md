@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.8.0 — Multi-Game Support (2026-04-01)
+
+### Added
+
+- **Multi-game support** — Three WolfBet endpoints with different rate limits:
+  - `dice` — API v1 `/api/v1/bet/place` (480 req/min) — existing default
+  - `dice-manual` — Dashboard API `/api/v1/dice/manual/play` (720 req/min)
+  - `limbo` — Dashboard API `/api/v2/limbo/manual/play` (500 req/min)
+- **Game selection** — CLI wizard Step 3 now prompts for game; TG via `/set game <name>`
+- **Per-game headers** — Manual endpoints automatically include `x-hash-api` and `x-client-type` headers
+- **Concurrent multi-game sessions** — Run up to 5 sessions on different games simultaneously (up to 1,700 bets/min combined)
+
+---
+
 ## v2.7.2 — Recurring Bets & Zero-Balance Fix (2026-03-29)
 
 ### Added
