@@ -453,6 +453,16 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Pipeline must be 1-50. Only works with auto-bet games.")
                 return
             config["pipeline"] = val
+            strategy_key = config.get("strategy_key", "2")
+            if val > 1 and strategy_key != "1":
+                await update.message.reply_text(
+                    f"Set `pipeline` = `{val}`\n\n"
+                    f"Pipeline > 1 only works correctly with **Flat** strategy.\n"
+                    f"Your current strategy is sequential — pipeline will be forced to 1 at start.\n"
+                    f"Use `/set strategy flat` first, then `/set pipeline {val}`.",
+                    parse_mode="Markdown")
+                save_user_config(user_id, config)
+                return
         elif param == "game":
             from .engine import GAME_LABELS
             g = value.lower()

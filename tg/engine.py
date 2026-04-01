@@ -1021,8 +1021,16 @@ class BettingEngine:
 
     # ── PIPELINED BETTING LOOP (auto-bet only) ─────────
     async def _pipelined_betting_loop(self):
-        """Fire multiple auto/play requests concurrently for higher throughput."""
+        """Fire multiple auto/play requests concurrently for higher throughput.
+        WARNING: Only safe with Flat strategy. Sequential strategies (Martingale etc)
+        break when bets overlap because each concurrent bet sees different state."""
         depth = self.pipeline
+        # Force pipeline=1 for sequential strategies — they require ordered execution
+        if self.strategy_key != "1":  # not Flat
+            logger.warning("User %d: Pipeline=%d but strategy=%s is sequential — forcing pipeline=1",
+                          self.user_id, depth, self.strategy)
+            depth = 1
+            self.pipeline = 1
         logger.info("User %d: Session #%d started (pipeline=%d)", self.user_id, self.session_id, depth)
         sem = asyncio.Semaphore(depth)
         should_stop = False
