@@ -1,10 +1,11 @@
-"""BettingEngine — per-user betting instance running in its own thread."""
+"""BettingEngine — per-user betting instance running as async task."""
 
+import asyncio
 import json
 import time
 import sqlite3
 import threading
-import requests
+import httpx
 from datetime import datetime
 from collections import deque
 from typing import Optional, List
@@ -30,7 +31,7 @@ GAME_LABELS = {
 # ── Batching / periodic save constants ──────────────────
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
 SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
-REQUEST_TIMEOUT    = (5, 15) # (connect, read) in seconds
+REQUEST_TIMEOUT    = httpx.Timeout(15.0, connect=5.0)
 MAX_TIMEOUT_STREAK = 3       # recreate HTTP session after this many consecutive timeouts
 
 
@@ -148,24 +149,25 @@ class BettingEngine:
         self._last_session_save = 0.0          # last time session was saved
         self._db_connection: Optional[sqlite3.Connection] = None  # persistent connection
 
-        # ── persistent HTTP session (reuses TCP/TLS connections) ──
-        self._http = requests.Session()
-        self._http.headers.update(self._headers())
+        # ── async HTTP client (reuses TCP/TLS connections) ──
+        self._http: Optional[httpx.AsyncClient] = None
 
-        # ── thread ──
-        self._thread: Optional[threading.Thread] = None
+        # ── async task ──
+        self._task: Optional[asyncio.Task] = None
 
     # ── API ──────────────────────────────────────────────
-    def _recreate_http(self):
-        """Close and recreate the HTTP session to recover from stale connections."""
+    async def _recreate_http(self):
+        """Close and recreate the HTTP client to recover from stale connections."""
         try:
             if self._http:
-                self._http.close()
+                await self._http.aclose()
         except Exception:
             pass
-        self._http = requests.Session()
-        self._http.headers.update(self._headers())
-        logger.info("User %d: HTTP session recreated", self.user_id)
+        self._http = httpx.AsyncClient(
+            headers=self._headers(), timeout=REQUEST_TIMEOUT,
+            http2=False, follow_redirects=False,
+        )
+        logger.info("User %d: HTTP client recreated", self.user_id)
 
     def _headers(self, game_key: str = None) -> dict:
         h = {
@@ -193,8 +195,10 @@ class BettingEngine:
         except Exception:
             pass
 
-    def api_get_balances(self) -> list:
-        r = self._http.get(f"{API_BASE}/v1/user/balances", timeout=REQUEST_TIMEOUT)
+    async def api_get_balances(self) -> list:
+        if not self._http:
+            await self._recreate_http()
+        r = await self._http.get(f"{API_BASE}/v1/user/balances")
         self._update_rate_limit(r)
         r.raise_for_status()
         return r.json().get("balances", [])
@@ -230,20 +234,20 @@ class BettingEngine:
             }
         return {}
 
-    def _api_place_bet(self, amount: float) -> Optional[dict]:
+    async def _api_place_bet(self, amount: float) -> Optional[dict]:
         payload = self._build_bet_payload(amount)
         ep = GAME_ENDPOINTS.get(self.game, ("/v1/bet/place", 1, 480, None))
         url = f"{API_BASE}{ep[0]}"
         try:
             t0 = time.time()
-            r = self._http.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+            r = await self._http.post(url, json=payload)
             self._last_api_ms = (time.time() - t0) * 1000
             self._update_rate_limit(r)
-            self._consecutive_timeouts = 0  # success — reset
+            self._consecutive_timeouts = 0
             if r.status_code == 200:
                 data = r.json()
                 if "error" in data:
-                    err_msg = data["error"].get("message", "")
+                    err_msg = data["error"].get("message", "") if isinstance(data["error"], dict) else str(data["error"])
                     if "insufficient balance" in err_msg.lower():
                         self.last_error = "Insufficient balance"
                         self._insufficient_balance = True
@@ -259,13 +263,13 @@ class BettingEngine:
                 self.last_error = "Rate limit 429"
             else:
                 self.last_error = f"HTTP {r.status_code}: {r.text[:120]}"
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        except (httpx.TimeoutException, httpx.ConnectError):
             self._consecutive_timeouts += 1
             self.last_error = f"Request timeout (#{self._consecutive_timeouts})"
             if self._consecutive_timeouts >= MAX_TIMEOUT_STREAK:
-                logger.warning("User %d: %d consecutive timeouts — recreating HTTP session",
+                logger.warning("User %d: %d consecutive timeouts — recreating HTTP client",
                                self.user_id, self._consecutive_timeouts)
-                self._recreate_http()
+                await self._recreate_http()
                 self._consecutive_timeouts = 0
         except Exception as e:
             err_str = str(e).lower()
@@ -501,10 +505,12 @@ class BettingEngine:
         return ""
 
     # ── LIFECYCLE ────────────────────────────────────────
-    def start(self) -> bool:
-        """Connect, fetch balance, start betting thread. Returns True on success."""
+    async def start(self) -> bool:
+        """Connect, fetch balance, start betting task. Returns True on success."""
+        if not self._http:
+            await self._recreate_http()
         try:
-            balances = self.api_get_balances()
+            balances = await self.api_get_balances()
         except Exception as e:
             self.last_error = f"Connection failed: {e}"
             return False
@@ -531,8 +537,7 @@ class BettingEngine:
         self.running         = True
         self.status          = "Starting…"
 
-        self._thread = threading.Thread(target=self._betting_loop, daemon=True)
-        self._thread.start()
+        self._task = asyncio.create_task(self._betting_loop())
         return True
 
     def snapshot_state(self) -> dict:
@@ -619,15 +624,14 @@ class BettingEngine:
         self.next_profit_milestone  = snap.get("next_profit_milestone", 0.0)
         self._last_profit_milestone = snap.get("_last_profit_milestone", 0.0)
 
-    def start_resumed(self) -> bool:
+    async def start_resumed(self) -> bool:
         """Resume a saved session. Tests API connection but skips balance fetch / new DB session."""
-        self._http = requests.Session()
-        self._http.headers.update(self._headers())
+        if not self._http:
+            await self._recreate_http()
         init_db(self.db_path)
 
-        # Verify API is reachable before resuming the betting loop
         try:
-            self.api_get_balances()
+            await self.api_get_balances()
         except Exception as e:
             self.last_error = f"Resume connection failed: {e}"
             return False
@@ -636,20 +640,18 @@ class BettingEngine:
         self.paused = False
         self.status = "Resumed"
         self._last_session_save = time.time()
-        # Recalculate speed from restored totals so status isn't 0 after resume
         elapsed = time.time() - self.session_start if self.session_start else 0
         if elapsed > 0 and self.total_bets > 0:
             self.bets_per_second = self.total_bets / elapsed
             self.bets_per_minute = self.bets_per_second * 60
-        self._thread = threading.Thread(target=self._betting_loop, daemon=True)
-        self._thread.start()
+        self._task = asyncio.create_task(self._betting_loop())
         logger.info("User %d: Resumed session #%d", self.user_id, self.session_id)
         return True
 
     def stop(self):
         self.running = False
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=10)
+        if self._task and not self._task.done():
+            self._task.cancel()
 
     def pause(self):
         self.paused = True
@@ -732,24 +734,24 @@ class BettingEngine:
         }
 
     # ── BETTING LOOP ─────────────────────────────────────
-    def _betting_loop(self):
+    async def _betting_loop(self):
         last_result = "none"
         logger.info("User %d: Session #%d started", self.user_id, self.session_id)
 
         while self.running:
             if self.paused:
                 self.status = "PAUSED"
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
                 continue
 
             # rate limit recovery — wait then resume betting
             if self.rate_wait:
                 backoff = self.rate_backoff
                 self.status = f"Rate limit — resuming in {backoff:.0f}s…"
-                time.sleep(backoff)
+                await asyncio.sleep(backoff)
                 self.rate_wait = False
                 self.rate_backoff = 2.0
-                self.rate_remaining = 50  # assume recovered; actual bet response will update
+                self.rate_remaining = 50
                 continue
 
             # stop conditions
@@ -764,11 +766,11 @@ class BettingEngine:
 
             # bet pacing
             if self.bet_delay > 0:
-                time.sleep(self.bet_delay)
+                await asyncio.sleep(self.bet_delay)
 
             # place bet
             self.status = f"Placing bet #{self.total_bets + 1}…"
-            result = self._api_place_bet(self.current_bet)
+            result = await self._api_place_bet(self.current_bet)
 
             if result is None:
                 if self._insufficient_balance:
@@ -785,7 +787,7 @@ class BettingEngine:
                     break
                 self.consecutive_errors += 1
                 self.backoff_delay = min(self.backoff_delay * 2, 30.0)
-                time.sleep(self.backoff_delay)
+                await asyncio.sleep(self.backoff_delay)
                 continue
 
             bet_data     = result.get("bet", {})
@@ -898,7 +900,8 @@ class BettingEngine:
         if self.session_id:
             self._db_save_session(final=True)
         self._close_conn()
-        self._http.close()
+        if self._http:
+            await self._http.aclose()
         logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
         if self.on_stop:
             try:
