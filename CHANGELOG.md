@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.9.1 — Auto-bet Fixes & Web Game Labels (2026-04-01)
+
+### Added
+
+- **Game type in web dashboard** — Blue badge (DICE, LIMBO, LIMBO-AUTO, etc.) on all session tables: user dashboard, history, admin user detail
+- **Auto-bet UUID in /status** — Shows WolfBet UUID for verification and tracking
+- **D'Alembert strategy for auto-bet** — Mapped to `increaseAmountValue` on loss / `decreaseAmountValue` on win
+- **WolfBet stopReason detection** — Auto-bet sessions stop when server sends a stop signal
+
+### Fixed
+
+- **Dice auto-bet endpoints** — Corrected to `/api/v2/dice/auto/*` (was incorrectly v1); dice payload now includes `rule` and `bet_value`
+- **Auto-bet profit increment** — Stops and restarts auto-bet with new base bet when profit threshold is hit (WolfBet's `resetAmount` always returns to original base). Session ID stays the same, only UUID changes
+- **Auto-bet config commands** — Fixed command names to match WolfBet API: `increaseAmountPercent` (not `increaseAmount`), `lose` (not `loss`) for triggers
+
+### Strategy Mapping (all 7 strategies)
+
+- Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, WolfRider (dice switch), Delay Martingale — all translated to WolfBet server-side config
+
+---
+
 ## v2.9.0 — Auto-bet, Async Engine, Proxy Support (2026-04-01)
 
 ### Added
