@@ -1025,8 +1025,8 @@ class BettingEngine:
         depth = self.pipeline
         logger.info("User %d: Session #%d started (pipeline=%d)", self.user_id, self.session_id, depth)
         sem = asyncio.Semaphore(depth)
-        pending = set()
         should_stop = False
+        last_bet_state = "none"
 
         async def _one_bet():
             nonlocal should_stop
@@ -1131,6 +1131,7 @@ class BettingEngine:
                 sign = "+" if raw_profit >= 0 else ""
                 emoji = "W" if bet_state == "win" else "L"
                 self.status = f"{emoji} {'WIN' if bet_state == 'win' else 'LOSS'} | Roll: {result_value:.2f} | P/L: {sign}{raw_profit:.8f}"
+                last_bet_state = bet_state
 
                 self._queue_bet(bet_data, raw_profit, new_balance)
 
@@ -1159,8 +1160,8 @@ class BettingEngine:
                                 self.user_id, old_uuid[:8], self._auto_uuid[:8] if self._auto_uuid else "?")
 
             # milestone check
-            if self.on_milestone and self.total_bets > 0:
-                reason = self._check_milestone(bet_state if 'bet_state' in dir() else "loss")
+            if self.on_milestone and self.total_bets > 0 and last_bet_state:
+                reason = self._check_milestone(last_bet_state)
                 if reason:
                     try:
                         s = self.get_status()
@@ -1177,15 +1178,23 @@ class BettingEngine:
                             self.total_bets, self.bets_per_second, self.profit)
 
         # cleanup
-        if self._auto_uuid:
-            await self._auto_stop()
+        try:
+            if self._auto_uuid:
+                await self._auto_stop()
+        except Exception as e:
+            logger.error("User %d: auto_stop failed: %s", self.user_id, e)
         self._flush_bets()
         if self.session_id:
             self._db_save_session(final=True)
         self._close_conn()
         if self._http:
-            await self._http.aclose()
-        logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
+            try:
+                await self._http.aclose()
+            except Exception:
+                pass
+        logger.info("User %d: Session #%d ended — %s (bets=%d, P/L=%+.8f)",
+                    self.user_id, self.session_id, self.stop_reason or "stopped",
+                    self.total_bets, self.profit)
         if self.on_stop:
             try:
                 self.on_stop(self.stop_reason or "Stopped by user")
