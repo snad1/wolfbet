@@ -315,6 +315,10 @@ class BettingEngine:
         elif self.strategy_key == "3":  # Anti-Martingale
             rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+        elif self.strategy_key == "4":  # D'Alembert
+            unit = self.base_bet
+            rules.append({"command": [{"name": "decreaseAmountValue", "value": unit}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "increaseAmountValue", "value": unit}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
         elif self.strategy_key == "5":  # Paroli
             rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
@@ -1047,12 +1051,15 @@ class BettingEngine:
                             self.user_id, self.base_bet, self.next_profit_milestone)
                 # Auto-bet: restart session with new base bet (server doesn't know about increment)
                 if self._is_auto_game() and self._auto_uuid:
+                    old_uuid = self._auto_uuid
                     await self._auto_stop()
                     if not await self._auto_start():
                         logger.error("User %d: Auto-bet restart after profit increment failed", self.user_id)
                         self.running = False
                         self.stop_reason = "Auto-bet restart failed after profit increment"
                         break
+                    logger.info("User %d: Auto-bet restarted for profit increment: %s → %s (base_bet=%.8f)",
+                                self.user_id, old_uuid[:8], self._auto_uuid[:8] if self._auto_uuid else "?", self.base_bet)
 
             if self.strategy_key == "6":
                 self._wolfrider_switch()
