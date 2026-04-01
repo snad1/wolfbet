@@ -654,8 +654,6 @@ class BettingEngine:
 
     def stop(self):
         self.running = False
-        if self._task and not self._task.done():
-            self._task.cancel()
 
     def pause(self):
         self.paused = True
@@ -746,14 +744,18 @@ class BettingEngine:
         while self.running:
             if self.paused:
                 self.status = "PAUSED"
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 continue
 
             # rate limit recovery — wait then resume betting
             if self.rate_wait:
                 backoff = self.rate_backoff
                 self.status = f"Rate limit — resuming in {backoff:.0f}s…"
-                await asyncio.sleep(backoff)
+                # Sleep in small chunks so stop() is responsive
+                for _ in range(int(backoff * 4)):
+                    if not self.running:
+                        break
+                    await asyncio.sleep(0.25)
                 self.rate_wait = False
                 self.rate_backoff = 2.0
                 self.rate_remaining = 50
