@@ -297,18 +297,45 @@ class BettingEngine:
         return base
 
     def _build_auto_config(self) -> list:
-        """Translate our strategy into WolfBet auto-bet config format."""
+        """Translate our strategy + stop conditions into WolfBet auto-bet config."""
+        rules = []
+
+        # Strategy rules
+        # loss_mult 2.0 → increaseAmountPercent: 100 (doubles)
+        # loss_mult 2.01 → increaseAmountPercent: 101
+        loss_pct = round((self.loss_mult - 1) * 100)
+        win_pct = round((self.win_mult - 1) * 100)
+
         if self.strategy_key == "1":  # Flat
-            return [{"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]},
-                    {"command": [{"name": "resetAmount"}], "when": [{"name": "loss", "value": 1, "type": "every"}]}]
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
         elif self.strategy_key == "2":  # Martingale
-            return [{"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]},
-                    {"command": [{"name": "increaseAmount", "value": f"{self.loss_mult}"}], "when": [{"name": "loss", "value": 1, "type": "every"}]}]
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
         elif self.strategy_key == "3":  # Anti-Martingale
-            return [{"command": [{"name": "increaseAmount", "value": f"{self.win_mult}"}], "when": [{"name": "win", "value": 1, "type": "every"}]},
-                    {"command": [{"name": "resetAmount"}], "when": [{"name": "loss", "value": 1, "type": "every"}]}]
-        # Default: flat (resetAmount on every result)
-        return [{"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]}]
+            rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+        elif self.strategy_key == "5":  # Paroli
+            rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 3, "type": "streak"}]})
+        elif self.strategy_key == "7":  # Delay Martingale
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": self.delay_martin_threshold, "type": "streakGreater"}]})
+        else:  # Default flat
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+
+        # Stop conditions
+        if self.max_profit is not None:
+            rules.append({"command": [{"name": "stop"}], "when": [{"name": "profit", "value": float(self.max_profit), "type": "gte"}]})
+        if self.max_loss is not None:
+            rules.append({"command": [{"name": "stop"}], "when": [{"name": "loss", "value": float(self.max_loss), "type": "gt"}]})
+        if self.max_bets is not None:
+            rules.append({"command": [{"name": "stop"}], "when": [{"name": "bet", "value": int(self.max_bets), "type": "every"}]})
+        if self.stop_on_balance is not None:
+            rules.append({"command": [{"name": "stop"}], "when": [{"name": "balance", "value": float(self.stop_on_balance), "type": "lt"}]})
+
+        return rules
 
     def _build_bet_payload(self, amount: float) -> dict:
         gk = self.game
