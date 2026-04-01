@@ -147,6 +147,12 @@ def format_status(s: dict) -> str:
         for i, desc in enumerate(rules, 1):
             lines.append(f"  {i}. `{desc}`")
 
+    # auto-bet UUID
+    auto_uuid = s.get("auto_uuid")
+    if auto_uuid:
+        lines.append("")
+        lines.append(f"\U0001f517 UUID: `{auto_uuid}`")
+
     lines += ["", f"`{s['status']}`"]
 
     return "\n".join(lines)
