@@ -631,6 +631,37 @@ class BettingEngine:
             return True, f"Balance floor: {b:.8f}"
         return False, ""
 
+    def _update_speed_stats(self):
+        """Update BPS/BPM tracking — called after each bet result."""
+        now = time.time()
+        elapsed = now - self.session_start
+        if elapsed > 0:
+            self.bets_per_second = self.total_bets / elapsed
+            self.bets_per_minute = self.bets_per_second * 60
+
+        sec_key = int(now)
+        min_key = int(now) // 60
+        if sec_key != self._current_sec:
+            if self._current_sec > 0 and self._bets_this_sec > 0:
+                if self._bets_this_sec > self.peak_bps:
+                    self.peak_bps = self._bets_this_sec
+                if self._bets_this_sec < self.low_bps:
+                    self.low_bps = self._bets_this_sec
+            self._current_sec = sec_key
+            self._bets_this_sec = 1
+        else:
+            self._bets_this_sec += 1
+        if min_key != self._current_min:
+            if self._current_min > 0 and self._bets_this_min > 0:
+                if self._bets_this_min > self.peak_bpm:
+                    self.peak_bpm = self._bets_this_min
+                if self._bets_this_min < self.low_bpm:
+                    self.low_bpm = self._bets_this_min
+            self._current_min = min_key
+            self._bets_this_min = 1
+        else:
+            self._bets_this_min += 1
+
     def _check_milestone(self, last_state: str) -> str:
         """Check if any milestone threshold was hit. Returns reason or empty string."""
         # Every N bets
@@ -801,6 +832,15 @@ class BettingEngine:
         if elapsed > 0 and self.total_bets > 0:
             self.bets_per_second = self.total_bets / elapsed
             self.bets_per_minute = self.bets_per_second * 60
+
+        # Auto-bet: old UUID is dead after restart — get a new one
+        if self._is_auto_game():
+            self._auto_uuid = None  # clear stale UUID
+            if not await self._auto_start():
+                self.last_error = f"Auto-bet resume failed: {self.last_error}"
+                self.running = False
+                return False
+
         self._task = asyncio.create_task(self._betting_loop())
         logger.info("User %d: Resumed session #%d", self.user_id, self.session_id)
         return True
@@ -1045,11 +1085,7 @@ class BettingEngine:
                 if self.total_bets % 5 == 0:
                     self.profit_history.append(self.profit)
 
-                now = time.time()
-                elapsed = now - self.session_start
-                if elapsed > 0:
-                    self.bets_per_second = self.total_bets / elapsed
-                    self.bets_per_minute = self.bets_per_second * 60
+                self._update_speed_stats()
 
                 sign = "+" if raw_profit >= 0 else ""
                 emoji = "W" if bet_state == "win" else "L"
