@@ -474,6 +474,11 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["game"] = g
         elif param == "strategy":
             name = value.lower().replace("-", "").replace(" ", "").replace("_", "")
+            # Short aliases
+            _aliases = {"flat": "flatbet", "anti": "antimartingale", "delay": "delaymartingale",
+                        "paroli": "paroli3step", "rule": "rulebased", "rules": "rulebased",
+                        "dalembert": "dalembert", "wolf": "wolfrider"}
+            name = _aliases.get(name, name)
             key = STRATEGY_BY_NAME.get(name)
             if not key:
                 if value in STRATEGIES:
