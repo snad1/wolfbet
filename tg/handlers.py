@@ -1210,11 +1210,23 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No session history yet.")
         return
 
+    # Optional game filter: /stats limbo, /stats dice-manual
+    game_filter = None
+    filter_clause = ""
+    filter_params = ()
+    if context.args:
+        from .engine import GAME_LABELS
+        g = context.args[0].lower()
+        if g in GAME_LABELS:
+            game_filter = g
+            filter_clause = " WHERE game = ?"
+            filter_params = (g,)
+
     migrate_db(db_path)
     conn = sqlite3.connect(db_path)
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT id, started_at, ended_at,
-               UPPER(currency), strategy, multiplier, base_bet,
+               UPPER(currency), COALESCE(game, 'dice'), strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
                max_win_streak, max_loss_streak,
@@ -1224,10 +1236,10 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
                COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
                COALESCE(config_snapshot, '')
-        FROM sessions ORDER BY id DESC LIMIT 10
-    """).fetchall()
+        FROM sessions{filter_clause} ORDER BY id DESC LIMIT 10
+    """, filter_params).fetchall()
 
-    totals = conn.execute("""
+    totals = conn.execute(f"""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
                COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
                COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
@@ -1237,16 +1249,18 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
                COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
                COALESCE(AVG(bets_per_second),0)
-        FROM sessions
-    """).fetchone()
+        FROM sessions{filter_clause}
+    """, filter_params).fetchone()
     conn.close()
 
     if not rows:
-        await update.message.reply_text("No sessions found.")
+        msg = f"No sessions found for `{game_filter}`." if game_filter else "No sessions found."
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # Send each session as a separate block (avoid Telegram message length limit)
-    lines = ["\U0001f4ca *Session History (last 10)*\n"]
+    from .engine import GAME_LABELS
+    title = f"*{GAME_LABELS.get(game_filter, game_filter)}*" if game_filter else "last 10"
+    lines = [f"\U0001f4ca *Session History ({title})*\n"]
     for row in rows:
         lines.append(format_session_row(row))
 
@@ -1558,7 +1572,7 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(db_path)
     sess = conn.execute("""
         SELECT id, started_at, ended_at,
-               UPPER(currency), strategy, multiplier, base_bet,
+               UPPER(currency), COALESCE(game, 'dice'), strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
                start_balance, end_balance,
                max_win_streak, max_loss_streak,

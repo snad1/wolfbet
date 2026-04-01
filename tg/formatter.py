@@ -60,9 +60,11 @@ def format_status(s: dict) -> str:
 
     state = "\U0001f7e2 LIVE" if not s["paused"] else "\U0001f7e1 PAUSED"
 
+    game_label = s.get("game_label", "Dice")
+
     lines = [
         f"*Session #{s['session_id']}* \u2014 {s['uptime']}",
-        f"{state}",
+        f"{state} \u2014 {game_label}",
         "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         "\U0001f4b0 *Balance*",
         f"  Current: `{s['balance']:.8f} {s['currency']}`",
@@ -163,7 +165,7 @@ def format_stop(s: dict, reason: str) -> str:
     bc_s = "+" if bal_change >= 0 else ""
 
     return (
-        f"\U0001f6d1 *Session #{s['session_id']} ended*\n"
+        f"\U0001f6d1 *Session #{s['session_id']} ended* ({s.get('game_label', 'Dice')})\n"
         f"Reason: _{reason}_\n"
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\U0001f4b0 *Balance*\n"
@@ -196,7 +198,7 @@ def format_milestone(data: dict) -> str:
     pe = _pnl_emoji(p)
     reason = data.get("milestone_reason", f"{data['bets']} bets")
     return (
-        f"\U0001f3af *Milestone: {reason}*\n"
+        f"\U0001f3af *Milestone: {reason}* ({data.get('game_label', 'Dice')})\n"
         f"  {pe} P/L: `{ps}{p:.8f}`\n"
         f"  Bal: `{data['balance']:.8f} {data['currency']}`\n"
         f"  Bets: `{_fmti(data['bets'])}` W: `{_fmti(data['wins'])}` L: `{_fmti(data['losses'])}`\n"
@@ -206,18 +208,26 @@ def format_milestone(data: dict) -> str:
 
 # ── Single session row for /stats list ───────────────────
 def format_session_row(row) -> str:
-    """Format a session row — expects 26 or 27 columns (with config_snapshot)."""
-    if len(row) >= 27:
-        (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+    """Format a session row — expects 27 or 28 columns (with game + config_snapshot)."""
+    if len(row) >= 28:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
          profit, wagered, start_bal, end_bal, mws, mls,
          hi_bal, lo_bal, hi_win, big_loss,
          bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm, config_snap) = row
-    else:
-        (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+    elif len(row) >= 27:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
          profit, wagered, start_bal, end_bal, mws, mls,
          hi_bal, lo_bal, hi_win, big_loss,
          bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = row
         config_snap = ""
+    else:
+        # Legacy rows without game column
+        (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+         profit, wagered, start_bal, end_bal, mws, mls,
+         hi_bal, lo_bal, hi_win, big_loss,
+         bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = row[:26]
+        game = "dice"
+        config_snap = row[26] if len(row) > 26 else ""
 
     bets = bets or 0; wins = wins or 0; losses = losses or 0
     profit = profit or 0; wagered = wagered or 0
@@ -253,7 +263,7 @@ def format_session_row(row) -> str:
     tag_line = f"  `{' | '.join(tags)}`\n" if tags else ""
 
     return (
-        f"{pe} *#{sid}* `{(strat or '?')}`  {(mult or 0)}x  {(cur or '?')}\n"
+        f"{pe} *#{sid}* `{(game or 'dice').upper()}`  `{(strat or '?')}`  {(mult or 0)}x  {(cur or '?')}\n"
         f"  {_fmt_ts(started)} \u2192 {_fmt_ts(ended, 'running')}\n"
         f"  Bets: `{_fmti(bets)}` W: `{_fmti(wins)}` L: `{_fmti(losses)}` WR: `{wr}`\n"
         f"  P/L: `{ps}{profit:.8f}`  Wag: `{wagered:.8f}`\n"
@@ -270,17 +280,24 @@ def format_session_row(row) -> str:
 # ── Detailed session view for /session <id> ──────────────
 def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
     """Format a full session detail view (like CLI's session detail)."""
-    if len(sess) >= 27:
-        (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+    if len(sess) >= 28:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
          profit, wagered, start_bal, end_bal, mws, mls,
          hi_bal, lo_bal, hi_win, big_loss,
          bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm, config_snap) = sess
-    else:
-        (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+    elif len(sess) >= 27:
+        (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
          profit, wagered, start_bal, end_bal, mws, mls,
          hi_bal, lo_bal, hi_win, big_loss,
          bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = sess
         config_snap = ""
+    else:
+        (sid, started, ended, cur, strat, mult, base, bets, wins, losses,
+         profit, wagered, start_bal, end_bal, mws, mls,
+         hi_bal, lo_bal, hi_win, big_loss,
+         bpm, bps, pk_bps, lw_bps, pk_bpm, lw_bpm) = sess[:26]
+        game = "dice"
+        config_snap = sess[26] if len(sess) > 26 else ""
 
     bets = bets or 0; wins = wins or 0; losses = losses or 0
     profit = profit or 0; wagered = wagered or 0
@@ -306,7 +323,7 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
     bc_e = _pnl_emoji(bal_change)
 
     lines = [
-        f"\U0001f4cb *Session #{sid} \u2014 Full Report*",
+        f"\U0001f4cb *Session #{sid} \u2014 {(game or 'dice').upper()} Full Report*",
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         f"\u23f1 *Time*",
         f"  Started: `{_fmt_ts(started)}`",

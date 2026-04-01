@@ -325,10 +325,10 @@ class BettingEngine:
         conn = db_connect(self.db_path)
         c = conn.cursor()
         c.execute("""
-            INSERT INTO sessions (started_at, currency, strategy, base_bet, multiplier,
+            INSERT INTO sessions (started_at, currency, game, strategy, base_bet, multiplier,
                                   start_balance, config_snapshot)
-            VALUES (?,?,?,?,?,?,?)
-        """, (datetime.now().isoformat(), self.currency, self.strategy,
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (datetime.now().isoformat(), self.currency, self.game, self.strategy,
               self.base_bet, self.multiplier, self.start_balance, snapshot))
         conn.commit()
         sid = c.lastrowid
@@ -723,6 +723,8 @@ class BettingEngine:
             "profit_increment": self.profit_increment,
             "profit_threshold": self.profit_threshold,
             "rules": rule_descs,
+            "game": self.game,
+            "game_label": GAME_LABELS.get(self.game, self.game),
             "status": self.status,
             "last_error": self.last_error,
             "api_ms": self._last_api_ms,
