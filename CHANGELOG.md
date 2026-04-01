@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.9.0 — Auto-bet, Async Engine, Proxy Support (2026-04-01)
+
+### Added
+
+- **Auto-bet mode** — Server-side strategy execution via WolfBet's auto-bet API with **4,000 req/min** rate limit (8x faster than manual):
+  - `limbo-auto` — `/api/v2/limbo/auto/play`
+  - `dice-auto` — `/api/v1/dice/auto/play`
+  - Flow: `auto/start` (get UUID) → loop `auto/play` → `auto/stop`
+  - Full strategy translation: Flat, Martingale, Anti-Martingale, Paroli, Delay Martingale
+  - Stop conditions mapped to server-side config: max profit (gte), max loss (gt), max bets (every), min balance (lt)
+- **Per-session proxy support** — Route each session through a different IP for independent throughput:
+  - `/set proxy http://user:pass@ip:port` or `socks5://...`
+  - `/set proxy off` to disable
+  - Proxy indicator (globe icon) in `/status`
+- **Dynamic x-hash-api** — Reverse-engineered WolfBet's hash algorithm: `interleave(md5(body), md5(nonce))`. Replaces static hardcoded hashes
+- **Game label in all outputs** — `/status`, `/stop`, milestones, `/stats`, `/session` now show game type
+- **Game filter for stats** — `/stats limbo` shows only limbo sessions
+- **Game stored in DB** — Sessions table now records which game was played
+
+### Changed
+
+- **Async engine** — TG betting engine converted from blocking threads (`requests`) to async tasks (`httpx.AsyncClient`). All sessions run concurrently on the same event loop — true parallel I/O instead of GIL-limited threads
+- **Rate limit recovery** — Wait-and-resume instead of probing wrong endpoint. Fixes sessions getting stuck in 32s probe loops when running multiple game types
+- **Stop notification** — `/stop` now properly sends session summary (was silently dropped when `task.cancel()` killed the async task)
+- **Reduced log noise** — Suppressed httpx/httpcore polling logs, added per-session progress log every 500 bets
+
+---
+
 ## v2.8.0 — Multi-Game Support (2026-04-01)
 
 ### Added
