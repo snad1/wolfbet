@@ -852,18 +852,55 @@ class BettingEngine:
         """Apply config changes to a running session. Returns status message."""
         msgs = []
 
-        # Pipeline — instant change, no restart needed
+        # ── Instant changes (no restart) ──
         if "pipeline" in changes:
             old = self.pipeline
             self.pipeline = int(changes["pipeline"])
             msgs.append(f"Pipeline: {old} → {self.pipeline}")
 
-        # Bet delay — instant change
         if "bet_delay" in changes:
             self.bet_delay = float(changes["bet_delay"])
             msgs.append(f"Delay: {self.bet_delay}s")
 
-        # Changes that require auto-bet restart
+        # Stop conditions — instant, checked every bet
+        if "max_profit" in changes:
+            v = changes["max_profit"]
+            self.max_profit = float(v) if v is not None else None
+            msgs.append(f"Max profit: {v}")
+        if "max_loss" in changes:
+            v = changes["max_loss"]
+            self.max_loss = float(v) if v is not None else None
+            msgs.append(f"Max loss: {v}")
+        if "max_bets" in changes:
+            v = changes["max_bets"]
+            self.max_bets = int(v) if v is not None else None
+            msgs.append(f"Max bets: {v}")
+        if "max_wins" in changes:
+            v = changes["max_wins"]
+            self.max_wins = int(v) if v is not None else None
+            msgs.append(f"Max wins: {v}")
+        if "stop_on_balance" in changes:
+            v = changes["stop_on_balance"]
+            self.stop_on_balance = float(v) if v is not None else None
+            msgs.append(f"Min balance: {v}")
+
+        # Milestone settings — instant
+        if "milestone_bets" in changes:
+            self.milestone_bets = int(changes["milestone_bets"])
+            msgs.append(f"Milestone bets: {self.milestone_bets}")
+        if "milestone_wins" in changes:
+            self.milestone_wins = int(changes["milestone_wins"])
+            msgs.append(f"Milestone wins: {self.milestone_wins}")
+
+        # Profit increment — instant
+        if "profit_increment" in changes:
+            self.profit_increment = changes["profit_increment"]
+            msgs.append(f"Profit increment: {self.profit_increment}")
+        if "profit_threshold" in changes:
+            self.profit_threshold = changes["profit_threshold"]
+            msgs.append(f"Profit threshold: {self.profit_threshold}")
+
+        # ── Changes that require auto-bet restart ──
         needs_restart = False
         if "base_bet" in changes:
             self.base_bet = float(changes["base_bet"])
@@ -877,6 +914,10 @@ class BettingEngine:
         if "loss_mult" in changes:
             self.loss_mult = float(changes["loss_mult"])
             msgs.append(f"Loss mult: {self.loss_mult}")
+            needs_restart = True
+        if "win_mult" in changes:
+            self.win_mult = float(changes["win_mult"])
+            msgs.append(f"Win mult: {self.win_mult}")
             needs_restart = True
         if "strategy_key" in changes:
             self.strategy_key = changes["strategy_key"]
