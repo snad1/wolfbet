@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.10.0 — Pipeline Mode & Live Mutation (2026-04-01)
+
+### Added
+
+- **Pipeline mode** — Fire N concurrent auto-bet requests for 40+ bps (vs 23 bps sequential = +78% throughput). Tested optimal depth: 20. Configure with `/set pipeline 20` (auto-bet games only)
+- **`/tweak` command** — Mutate running sessions without stopping:
+  - `/tweak pipeline 20` — change concurrent requests (instant)
+  - `/tweak basebet 0.00000002` — change base bet (auto-bet restarts seamlessly)
+  - `/tweak delay 0.1` — add/change bet delay (instant)
+  - `/tweak multiplier 2.5` — change multiplier (auto-bet restarts)
+  - `/tweak lossmult 2.01` — change loss multiplier (auto-bet restarts)
+  - Add slot number for multi-session: `/tweak pipeline 10 2`
+- **Speed stats in pipeline mode** — BPS/BPM range tracking now works in pipelined loop
+
+### Fixed
+
+- **Auto-bet resume after bot restart** — Old UUID dies on restart; resume now calls `auto/start` for a fresh UUID instead of reusing the stale one (caused sessions to get stuck)
+- **Scientific notation in /config** — Profit threshold displayed as `4.349e-05` instead of `0.00004349` (fixed across all 6 bots)
+- **Pipeline safety** — Stop conditions checked after each result in batch; rate limit pauses all pipeline requests; `/stop` drains cleanly
+
+---
+
 ## v2.9.1 — Auto-bet Fixes & Web Game Labels (2026-04-01)
 
 ### Added
