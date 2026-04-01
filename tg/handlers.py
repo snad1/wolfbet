@@ -132,6 +132,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`currency` — usdt, btc, eth, ltc, trx, bch, doge, xrp\n"
         "`game` — dice (API v1), dice-manual (Manual v1), limbo (v2), limbo-auto (Auto v2), dice-auto (Auto v2)\n"
         "`proxy` — http://user:pass@ip:port or socks5://... (`off` to disable)\n"
+        "`pipeline` — concurrent requests for auto-bet (1-50, default 1)\n"
         "`strategy` — flat, martingale, antimartingale, dalembert, paroli, wolfrider, delaymartingale, rulebased\n"
         "`multiplier` — target multiplier (e.g. 2.01)\n"
         "`basebet` — base bet amount\n"
@@ -403,6 +404,9 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append("Proxy: `set`")
         else:
             lines.append("Proxy: `off`")
+        pipeline = int(config.get("pipeline") or 1)
+        if pipeline > 1:
+            lines.append(f"Pipeline: `{pipeline}` (auto-bet only)")
         lines.append(f"Tier: `{get_user_tier(user_id)}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -441,6 +445,12 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown")
                 return
             config["proxy"] = value
+        elif param == "pipeline":
+            val = int(value)
+            if val < 1 or val > 50:
+                await update.message.reply_text("Pipeline must be 1-50. Only works with auto-bet games.")
+                return
+            config["pipeline"] = val
         elif param == "game":
             from .engine import GAME_LABELS
             g = value.lower()
