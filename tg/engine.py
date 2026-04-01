@@ -24,20 +24,20 @@ GAME_ENDPOINTS = {
     "dice-manual":    ("/v1/dice/manual/play",  1, 720,  True),
     "limbo":          ("/v2/limbo/manual/play",  2, 500,  True),
     "limbo-auto":     ("/v2/limbo/auto/play",    2, 4000, True),
-    "dice-auto":      ("/v1/dice/auto/play",     1, 4000, True),
+    "dice-auto":      ("/v2/dice/auto/play",     2, 4000, True),
 }
 GAME_LABELS = {
     "dice":           "Dice (API v1)",
     "dice-manual":    "Dice Manual (v1)",
     "limbo":          "Limbo (v2)",
     "limbo-auto":     "Limbo Auto (v2)",
-    "dice-auto":      "Dice Auto (v1)",
+    "dice-auto":      "Dice Auto (v2)",
 }
 
 # Auto-bet start/stop endpoints
 AUTO_ENDPOINTS = {
     "limbo-auto": {"start": "/v2/limbo/auto/start", "stop": "/v2/limbo/auto/stop"},
-    "dice-auto":  {"start": "/v1/dice/auto/start",  "stop": "/v1/dice/auto/stop"},
+    "dice-auto":  {"start": "/v2/dice/auto/start",  "stop": "/v2/dice/auto/stop"},
 }
 
 
@@ -319,6 +319,11 @@ class BettingEngine:
             rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 3, "type": "streak"}]})
+        elif self.strategy_key == "6":  # WolfRider (dice only — switch direction)
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+            rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+            if self.game == "dice-auto":
+                rules.append({"command": [{"name": "switch"}], "when": [{"name": "bet", "value": 1, "type": "every"}]})
         elif self.strategy_key == "7":  # Delay Martingale
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
             rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": self.delay_martin_threshold, "type": "streakGreater"}]})
