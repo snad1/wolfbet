@@ -740,21 +740,14 @@ class BettingEngine:
                 time.sleep(0.5)
                 continue
 
-            # rate limit probe
+            # rate limit recovery — wait then resume betting
             if self.rate_wait:
                 backoff = self.rate_backoff
-                self.status = f"Rate limit — probing in {backoff:.0f}s…"
+                self.status = f"Rate limit — resuming in {backoff:.0f}s…"
                 time.sleep(backoff)
-                try:
-                    r = self._http.get(f"{API_BASE}/user/balances", timeout=REQUEST_TIMEOUT)
-                    self._update_rate_limit(r)
-                    if self.rate_remaining > 5:
-                        self.rate_wait = False
-                        self.rate_backoff = 2.0
-                    else:
-                        self.rate_backoff = min(backoff * 2, 32.0)
-                except Exception:
-                    self.rate_backoff = min(backoff * 2, 32.0)
+                self.rate_wait = False
+                self.rate_backoff = 2.0
+                self.rate_remaining = 50  # assume recovered; actual bet response will update
                 continue
 
             # stop conditions

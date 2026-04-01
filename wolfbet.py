@@ -552,36 +552,16 @@ def betting_loop():
             time.sleep(0.4)
             continue
 
-        # ── rate-limit cooldown with exponential probe ──
+        # ── rate-limit cooldown — wait then resume ──
         if state.rate_wait:
             backoff = state.rate_backoff
-            state.status = f"Rate limit — probing in {backoff:.0f}s… (RL {state.rate_remaining}/{state.rate_limit})"
+            state.status = f"Rate limit — resuming in {backoff:.0f}s…"
             time.sleep(backoff)
-
-            # Probe: lightweight GET to check if capacity restored
-            try:
-                r = requests.get(f"{API_BASE}/user/balances", headers=_headers(), timeout=10)
-                _update_rate_limit(r)
-                rl = state.rate_remaining
-                if rl > 5:
-                    # Capacity restored — resume
-                    with state.lock:
-                        state.rate_wait    = False
-                        state.rate_backoff = 2.0
-                    state.status = f"Rate limit cleared — {rl} remaining, resuming…"
-                    logger.info("Rate limit probe OK: %d remaining, resuming", rl)
-                else:
-                    # Still low — increase backoff
-                    with state.lock:
-                        state.rate_backoff = min(backoff * 2, 32.0)
-                    state.status = f"Rate limit — still {rl} remaining, next probe in {state.rate_backoff:.0f}s…"
-                    logger.info("Rate limit probe: %d remaining, backoff → %.0fs", rl, state.rate_backoff)
-            except Exception as e:
-                # Probe failed — increase backoff
-                with state.lock:
-                    state.rate_backoff = min(backoff * 2, 32.0)
-                state.status = f"Rate probe failed — retrying in {state.rate_backoff:.0f}s…"
-                logger.warning("Rate limit probe failed: %s, backoff → %.0fs", e, state.rate_backoff)
+            with state.lock:
+                state.rate_wait      = False
+                state.rate_backoff   = 2.0
+                state.rate_remaining = 50  # assume recovered; bet response will update
+            logger.info("Rate limit cooldown done, resuming betting")
             continue
 
         # ── stop-condition check ─────────────────────────
