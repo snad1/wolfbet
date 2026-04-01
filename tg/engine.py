@@ -546,6 +546,7 @@ class BettingEngine:
         config = {
             "api_key": self.api_key,
             "currency": self.currency,
+            "game": self.game,
             "rule": self.rule,
             "multiplier": self.multiplier,
             "bet_value": self.bet_value,
