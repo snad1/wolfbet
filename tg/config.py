@@ -7,7 +7,7 @@ import logging
 APP_ENV    = os.environ.get("APP_ENV", "production")
 BOT_TOKEN  = os.environ.get("WOLFBET_TG_TOKEN", "")
 DATA_DIR   = os.environ.get("WOLFBET_TG_DATA", os.path.expanduser("~/.wolfbot_tg"))
-API_BASE   = os.environ.get("WOLFBET_API_BASE", "https://wolfbet.com/api/v1")
+API_BASE   = os.environ.get("WOLFBET_API_BASE", "https://wolfbet.com/api")
 WEB_URL    = os.environ.get("WOLFBET_WEB_URL", "")          # e.g. http://IP:8002
 WEB_SECRET = os.environ.get("WOLFBET_WEB_SECRET_KEY", "")   # must match web app
 
@@ -26,7 +26,7 @@ logger = logging.getLogger("wolfbot")
 
 # ── Config keys persisted per user ───────────────────────
 CONFIG_KEYS = [
-    "api_key", "currency", "rule", "multiplier", "bet_value",
+    "api_key", "currency", "game", "rule", "multiplier", "bet_value",
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",

@@ -14,6 +14,19 @@ from core.database import init_db, migrate_db, db_connect, cleanup_old_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
 
+# ── Game endpoint configuration ──
+# game_key → (api_path, api_version, rate_limit_default, x_hash_api)
+GAME_ENDPOINTS = {
+    "dice":        ("/v1/bet/place",              1, 480, None),
+    "dice-manual": ("/v1/dice/manual/play",       1, 720, "4fcfa97d3a307bbcb20a7bf8ee29dcdfce7a20c0edda6867a32ee1b43e0742de"),
+    "limbo":       ("/v2/limbo/manual/play",       2, 500, "7cb7c8fc779782c7f7ce9a52901e69991eef0ee09228ea6767a1f52a619d3b53"),
+}
+GAME_LABELS = {
+    "dice":        "Dice (API v1)",
+    "dice-manual": "Dice Manual (v1)",
+    "limbo":       "Limbo (v2)",
+}
+
 # ── Batching / periodic save constants ──────────────────
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
 SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
@@ -32,6 +45,7 @@ class BettingEngine:
         # ── config (use `or` to handle None from presets) ──
         self.api_key        = api_key
         self.currency       = config.get("currency") or "usdt"
+        self.game           = config.get("game") or "dice"
         self.rule           = config.get("rule") or "over"
         self.multiplier     = float(config.get("multiplier") or 2.01)
         self.initial_multiplier = self.multiplier
@@ -153,18 +167,26 @@ class BettingEngine:
         self._http.headers.update(self._headers())
         logger.info("User %d: HTTP session recreated", self.user_id)
 
-    def _headers(self) -> dict:
-        return {
+    def _headers(self, game_key: str = None) -> dict:
+        h = {
             "Authorization": f"Bearer {self.api_key}",
             "X-Requested-With": "XMLHttpRequest",
             "Content-Type": "application/json",
         }
+        gk = game_key or self.game
+        ep = GAME_ENDPOINTS.get(gk)
+        if ep and ep[3]:
+            h["x-hash-api"]    = ep[3]
+            h["x-client-type"] = "Web-Application"
+        return h
 
     def _update_rate_limit(self, resp):
         try:
+            ep = GAME_ENDPOINTS.get(self.game, ("", 1, 480, None))
+            default_limit = ep[2]
             remaining = int(resp.headers.get("x-ratelimit-remaining", self.rate_remaining))
             self.rate_remaining = remaining
-            self.rate_limit = int(resp.headers.get("x-ratelimit-limit", 480))
+            self.rate_limit = int(resp.headers.get("x-ratelimit-limit", default_limit))
             if remaining <= 2 and not self.rate_wait:
                 self.rate_wait = True
                 self.rate_backoff = 2.0
@@ -172,24 +194,49 @@ class BettingEngine:
             pass
 
     def api_get_balances(self) -> list:
-        r = self._http.get(f"{API_BASE}/user/balances", timeout=REQUEST_TIMEOUT)
+        r = self._http.get(f"{API_BASE}/v1/user/balances", timeout=REQUEST_TIMEOUT)
         self._update_rate_limit(r)
         r.raise_for_status()
         return r.json().get("balances", [])
 
+    def _build_bet_payload(self, amount: float) -> dict:
+        gk = self.game
+        if gk == "dice":
+            return {
+                "currency":   self.currency,
+                "game":       "dice",
+                "amount":     f"{amount:.8f}",
+                "rule":       self.rule,
+                "multiplier": f"{self.multiplier}",
+                "bet_value":  f"{self.bet_value}",
+            }
+        elif gk == "dice-manual":
+            return {
+                "currency":   self.currency,
+                "game":       "dice",
+                "amount":     f"{amount:.8f}",
+                "rule":       self.rule,
+                "multiplier": f"{self.multiplier}",
+                "bet_value":  f"{self.bet_value}",
+                "auto":       1,
+            }
+        elif gk == "limbo":
+            return {
+                "currency":   self.currency,
+                "game":       "limbo",
+                "amount":     f"{amount:.8f}",
+                "multiplier": f"{self.multiplier}",
+                "auto":       1,
+            }
+        return {}
+
     def _api_place_bet(self, amount: float) -> Optional[dict]:
-        payload = {
-            "currency": self.currency,
-            "game": "dice",
-            "amount": f"{amount:.8f}",
-            "rule": self.rule,
-            "multiplier": f"{self.multiplier}",
-            "bet_value": f"{self.bet_value}",
-        }
+        payload = self._build_bet_payload(amount)
+        ep = GAME_ENDPOINTS.get(self.game, ("/v1/bet/place", 1, 480, None))
+        url = f"{API_BASE}{ep[0]}"
         try:
             t0 = time.time()
-            r = self._http.post(f"{API_BASE}/bet/place",
-                                json=payload, timeout=REQUEST_TIMEOUT)
+            r = self._http.post(url, json=payload, timeout=REQUEST_TIMEOUT)
             self._last_api_ms = (time.time() - t0) * 1000
             self._update_rate_limit(r)
             self._consecutive_timeouts = 0  # success — reset

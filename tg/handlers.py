@@ -96,6 +96,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/config — View current configuration\n\n"
         "*Configure:*\n"
         "/set currency usdt\n"
+        "/set game dice — dice, dice-manual, limbo\n"
         "/set strategy martingale\n"
         "/set multiplier 2.01\n"
         "/set basebet 0.0001\n"
@@ -129,6 +130,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/strategies — List strategies\n\n"
         "*Parameters for* /set*:*\n"
         "`currency` — usdt, btc, eth, ltc, trx, bch, doge, xrp\n"
+        "`game` — dice (API v1, 480/min), dice-manual (v1, 720/min), limbo (v2, 500/min)\n"
         "`strategy` — flat, martingale, antimartingale, dalembert, paroli, wolfrider, delaymartingale, rulebased\n"
         "`multiplier` — target multiplier (e.g. 2.01)\n"
         "`basebet` — base bet amount\n"
@@ -315,14 +317,22 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         multiplier = float(config.get("multiplier") or 2.01)
         wc = round(99.0 / multiplier, 2) if multiplier > 0 else 0
 
+        from .engine import GAME_LABELS
+        game = config.get("game") or "dice"
+        game_label = GAME_LABELS.get(game, game)
+
         lines = [
             "*Current Configuration:*",
             f"Currency: `{(config.get('currency') or 'usdt').upper()}`",
+            f"Game: `{game_label}`",
             f"Strategy: `{strategy}`",
-            f"Rule: `{config.get('rule') or 'over'}`",
+        ]
+        if game in ("dice", "dice-manual"):
+            lines.append(f"Rule: `{config.get('rule') or 'over'}`")
+        lines.extend([
             f"Multiplier: `{multiplier}x` ({wc}% win chance)",
             f"Base bet: `{float(config.get('base_bet') or 0.0001):.8f}`",
-        ]
+        ])
 
         # Strategy-specific fields
         if strategy_key in ("2", "7"):  # Martingale, Delay Martingale
@@ -406,6 +416,15 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if param == "currency":
             config["currency"] = value.lower()
+        elif param == "game":
+            from .engine import GAME_LABELS
+            g = value.lower()
+            if g not in GAME_LABELS:
+                await update.message.reply_text(
+                    f"Unknown game. Available: {', '.join(GAME_LABELS.keys())}",
+                    parse_mode="Markdown")
+                return
+            config["game"] = g
         elif param == "strategy":
             name = value.lower().replace("-", "").replace(" ", "").replace("_", "")
             key = STRATEGY_BY_NAME.get(name)
@@ -650,16 +669,20 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "loop": loop,
         }
 
-    # Warn about rate limit when running multiple sessions
+    from .engine import GAME_LABELS, GAME_ENDPOINTS
+    game_label = GAME_LABELS.get(engine.game, engine.game)
+    ep = GAME_ENDPOINTS.get(engine.game, ("", 1, 480, None))
+
     rate_warn = ""
     if len(_get_running(user_id)) > 1:
-        rate_warn = "\n\n⚠️ WolfBet has a 480 req/min rate limit. Multiple concurrent sessions share this limit."
+        rate_warn = f"\n\n⚠️ WolfBet rate limit: {ep[2]}/min. Multiple sessions share this."
 
     wc = round(99.0 / engine.multiplier, 2)
     slot_info = f" (slot {slot})" if len(_get_running(user_id)) > 1 else ""
     rec_info = f"\nRecurring: `{int(config.get('recurring_delay') or 60)}s`" if config.get("recurring") else ""
     await msg.edit_text(
         f"Session #{engine.session_id}{slot_info} started!\n\n"
+        f"Game: `{game_label}`\n"
         f"Strategy: `{engine.strategy}`\n"
         f"Multiplier: `{engine.multiplier}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"

@@ -49,7 +49,20 @@ from core.engine import (
 # ══════════════════════════════════════════════════════════
 #  CONSTANTS (configurable via environment variables)
 # ══════════════════════════════════════════════════════════
-API_BASE     = os.environ.get("WOLFBET_API_BASE",    "https://wolfbet.com/api/v1")
+API_BASE     = os.environ.get("WOLFBET_API_BASE",    "https://wolfbet.com/api")
+
+# ── Game endpoint configuration ──
+# game_key → (api_path, api_version, rate_limit_default, x_hash_api)
+GAME_ENDPOINTS = {
+    "dice":        ("/v1/bet/place",              1, 480, None),
+    "dice-manual": ("/v1/dice/manual/play",       1, 720, "4fcfa97d3a307bbcb20a7bf8ee29dcdfce7a20c0edda6867a32ee1b43e0742de"),
+    "limbo":       ("/v2/limbo/manual/play",       2, 500, "7cb7c8fc779782c7f7ce9a52901e69991eef0ee09228ea6767a1f52a619d3b53"),
+}
+GAME_LABELS = {
+    "dice":        "Dice (API v1)",
+    "dice-manual": "Dice Manual (v1)",
+    "limbo":       "Limbo (v2)",
+}
 DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolfbet_autobot.db"))
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
@@ -367,16 +380,24 @@ console = Console()
 # ══════════════════════════════════════════════════════════
 #  API HELPERS
 # ══════════════════════════════════════════════════════════
-def _headers() -> dict:
-    return {
+def _headers(game_key: str = None) -> dict:
+    h = {
         "Authorization":    f"Bearer {state.api_key}",
         "X-Requested-With": "XMLHttpRequest",
         "Content-Type":     "application/json",
     }
+    gk = game_key or state.game
+    ep = GAME_ENDPOINTS.get(gk)
+    if ep and ep[3]:  # x_hash_api
+        h["x-hash-api"]    = ep[3]
+        h["x-client-type"] = "Web-Application"
+    return h
 
 def _update_rate_limit(resp):
     try:
-        limit     = int(resp.headers.get("x-ratelimit-limit",     480))
+        ep = GAME_ENDPOINTS.get(state.game, ("", 1, 480, None))
+        default_limit = ep[2]
+        limit     = int(resp.headers.get("x-ratelimit-limit",     default_limit))
         remaining = int(resp.headers.get("x-ratelimit-remaining", state.rate_remaining))
         with state.lock:
             state.rate_limit     = limit
@@ -388,23 +409,50 @@ def _update_rate_limit(resp):
         pass
 
 def api_get_balances():
-    r = requests.get(f"{API_BASE}/user/balances", headers=_headers(), timeout=12)
+    r = requests.get(f"{API_BASE}/v1/user/balances", headers=_headers("dice"), timeout=12)
     _update_rate_limit(r)
     r.raise_for_status()
     return r.json().get("balances", [])
 
+def _build_bet_payload(amount: float) -> dict:
+    gk = state.game
+    if gk == "dice":
+        return {
+            "currency":   state.currency,
+            "game":       "dice",
+            "amount":     f"{amount:.8f}",
+            "rule":       state.rule,
+            "multiplier": f"{state.multiplier}",
+            "bet_value":  f"{state.bet_value}",
+        }
+    elif gk == "dice-manual":
+        return {
+            "currency":   state.currency,
+            "game":       "dice",
+            "amount":     f"{amount:.8f}",
+            "rule":       state.rule,
+            "multiplier": f"{state.multiplier}",
+            "bet_value":  f"{state.bet_value}",
+            "auto":       1,
+        }
+    elif gk == "limbo":
+        return {
+            "currency":   state.currency,
+            "game":       "limbo",
+            "amount":     f"{amount:.8f}",
+            "multiplier": f"{state.multiplier}",
+            "auto":       1,
+        }
+    return {}
+
+
 def api_place_bet(amount: float) -> Optional[dict]:
-    payload = {
-        "currency":  state.currency,
-        "game":      state.game,
-        "amount":    f"{amount:.8f}",
-        "rule":      state.rule,
-        "multiplier": f"{state.multiplier}",
-        "bet_value":  f"{state.bet_value}",
-    }
-    logger.debug("BET payload=%s", json.dumps(payload))  # only visible with --verbose
+    payload = _build_bet_payload(amount)
+    ep = GAME_ENDPOINTS.get(state.game, ("/v1/bet/place", 1, 480, None))
+    url = f"{API_BASE}{ep[0]}"
+    logger.debug("BET payload=%s url=%s", json.dumps(payload), url)
     try:
-        r = requests.post(f"{API_BASE}/bet/place", headers=_headers(),
+        r = requests.post(url, headers=_headers(),
                           json=payload, timeout=15)
         _update_rate_limit(r)
 
@@ -1625,12 +1673,25 @@ def setup_wizard():
 
     def step_bet_config():
         console.print(Rule("[bold cyan]Step 3 / 7 — Bet Configuration[/]"))
-        console.print("  [dim]Game: Dice (only game on WolfBet API v1)[/]\n")
+        console.print("  [dim]Available games:[/]")
+        for gk, label in GAME_LABELS.items():
+            ep = GAME_ENDPOINTS[gk]
+            console.print(f"    [yellow]{gk:14s}[/] — {label}  (rate limit: {ep[2]}/min)")
+        console.print()
 
-        v = _ask("Bet direction", default=state.rule, choices=["over", "under"])
+        v = _ask("Select game", default=state.game, choices=list(GAME_LABELS.keys()))
         if v is _BACK:
             return False
-        state.rule = v.lower()
+        state.game = v.lower()
+        console.print()
+
+        if state.game in ("dice", "dice-manual"):
+            v = _ask("Bet direction", default=state.rule, choices=["over", "under"])
+            if v is _BACK:
+                return False
+            state.rule = v.lower()
+        else:
+            state.rule = "over"  # not used for limbo
 
         console.print()
         console.print("  [dim]Multiplier examples (99% RTP, 1% house edge):[/]")
@@ -1653,11 +1714,14 @@ def setup_wizard():
             state.multiplier = m
             break
         win_chance = 99.0 / state.multiplier
-        if state.rule == "over":
-            state.bet_value = round(100.0 - win_chance - 0.01, 2)
+        if state.game in ("dice", "dice-manual"):
+            if state.rule == "over":
+                state.bet_value = round(100.0 - win_chance - 0.01, 2)
+            else:
+                state.bet_value = round(win_chance, 2)
+            console.print(f"    [dim]→ Bet value:[/] [yellow]{state.bet_value}[/]  [dim]Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
         else:
-            state.bet_value = round(win_chance, 2)
-        console.print(f"    [dim]→ Bet value:[/] [yellow]{state.bet_value}[/]  [dim]Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
+            console.print(f"    [dim]→ Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
 
         v = _ask(f"Base bet amount ({state.currency.upper()})", default=str(state.base_bet))
         if v is _BACK:
