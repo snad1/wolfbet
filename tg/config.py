@@ -24,6 +24,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("wolfbot")
 
+# Suppress noisy httpx request logs (Telegram polling etc)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # ── Config keys persisted per user ───────────────────────
 CONFIG_KEYS = [
     "api_key", "currency", "game", "rule", "multiplier", "bet_value",

@@ -863,6 +863,13 @@ class BettingEngine:
             # queue bet for batched DB write
             self._queue_bet(bet_data, raw_profit, new_balance)
 
+            # periodic progress log (every 500 bets)
+            if self.total_bets % 500 == 0:
+                game_label = GAME_LABELS.get(self.game, self.game)
+                logger.info("User %d: [%s] #%d bets=%-6d bps=%.1f P/L=%+.8f bal=%.8f",
+                            self.user_id, game_label, self.session_id,
+                            self.total_bets, self.bets_per_second, self.profit, self.current_balance)
+
             # periodic session save (every 60s)
             self._periodic_save()
 
