@@ -130,7 +130,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/strategies — List strategies\n\n"
         "*Parameters for* /set*:*\n"
         "`currency` — usdt, btc, eth, ltc, trx, bch, doge, xrp\n"
-        "`game` — dice, dice-manual, limbo\n"
+        "`game` — dice (API v1), dice-manual (Manual v1), limbo (API v2)\n"
         "`strategy` — flat, martingale, antimartingale, dalembert, paroli, wolfrider, delaymartingale, rulebased\n"
         "`multiplier` — target multiplier (e.g. 2.01)\n"
         "`basebet` — base bet amount\n"
