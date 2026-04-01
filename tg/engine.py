@@ -866,23 +866,23 @@ class BettingEngine:
         if "max_profit" in changes:
             v = changes["max_profit"]
             self.max_profit = float(v) if v is not None else None
-            msgs.append(f"Max profit: {v}")
+            msgs.append(f"Max profit: {float(v):.8f}" if v is not None else "Max profit: off")
         if "max_loss" in changes:
             v = changes["max_loss"]
             self.max_loss = float(v) if v is not None else None
-            msgs.append(f"Max loss: {v}")
+            msgs.append(f"Max loss: {float(v):.8f}" if v is not None else "Max loss: off")
         if "max_bets" in changes:
             v = changes["max_bets"]
             self.max_bets = int(v) if v is not None else None
-            msgs.append(f"Max bets: {v}")
+            msgs.append(f"Max bets: {v}" if v is not None else "Max bets: off")
         if "max_wins" in changes:
             v = changes["max_wins"]
             self.max_wins = int(v) if v is not None else None
-            msgs.append(f"Max wins: {v}")
+            msgs.append(f"Max wins: {v}" if v is not None else "Max wins: off")
         if "stop_on_balance" in changes:
             v = changes["stop_on_balance"]
             self.stop_on_balance = float(v) if v is not None else None
-            msgs.append(f"Min balance: {v}")
+            msgs.append(f"Min balance: {float(v):.8f}" if v is not None else "Min balance: off")
 
         # Milestone settings — instant
         if "milestone_bets" in changes:

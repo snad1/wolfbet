@@ -350,11 +350,11 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Stop conditions
         stops = []
-        if config.get("max_profit"): stops.append(f"Max profit: {config['max_profit']}")
-        if config.get("max_loss"):   stops.append(f"Max loss: {config['max_loss']}")
+        if config.get("max_profit"): stops.append(f"Max profit: {float(config['max_profit']):.8f}")
+        if config.get("max_loss"):   stops.append(f"Max loss: {float(config['max_loss']):.8f}")
         if config.get("max_bets"):   stops.append(f"Max bets: {config['max_bets']}")
         if config.get("max_wins"):   stops.append(f"Max wins: {config['max_wins']}")
-        if config.get("stop_on_balance"): stops.append(f"Min balance: {config['stop_on_balance']}")
+        if config.get("stop_on_balance"): stops.append(f"Min balance: {float(config['stop_on_balance']):.8f}")
         if stops:
             lines.append(f"Stop: `{', '.join(stops)}`")
         else:
