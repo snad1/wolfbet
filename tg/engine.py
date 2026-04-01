@@ -808,6 +808,53 @@ class BettingEngine:
     def stop(self):
         self.running = False
 
+    async def mutate(self, changes: dict) -> str:
+        """Apply config changes to a running session. Returns status message."""
+        msgs = []
+
+        # Pipeline — instant change, no restart needed
+        if "pipeline" in changes:
+            old = self.pipeline
+            self.pipeline = int(changes["pipeline"])
+            msgs.append(f"Pipeline: {old} → {self.pipeline}")
+
+        # Bet delay — instant change
+        if "bet_delay" in changes:
+            self.bet_delay = float(changes["bet_delay"])
+            msgs.append(f"Delay: {self.bet_delay}s")
+
+        # Changes that require auto-bet restart
+        needs_restart = False
+        if "base_bet" in changes:
+            self.base_bet = float(changes["base_bet"])
+            self.current_bet = self.base_bet
+            msgs.append(f"Base bet: {self.base_bet:.8f}")
+            needs_restart = True
+        if "multiplier" in changes:
+            self.multiplier = float(changes["multiplier"])
+            msgs.append(f"Multiplier: {self.multiplier}")
+            needs_restart = True
+        if "loss_mult" in changes:
+            self.loss_mult = float(changes["loss_mult"])
+            msgs.append(f"Loss mult: {self.loss_mult}")
+            needs_restart = True
+        if "strategy_key" in changes:
+            self.strategy_key = changes["strategy_key"]
+            self.strategy = changes.get("strategy", self.strategy)
+            msgs.append(f"Strategy: {self.strategy}")
+            needs_restart = True
+
+        # Restart auto-bet if strategy/bet params changed
+        if needs_restart and self._is_auto_game() and self._auto_uuid:
+            old_uuid = self._auto_uuid
+            await self._auto_stop()
+            if await self._auto_start():
+                msgs.append(f"Auto-bet restarted ({old_uuid[:8]} → {self._auto_uuid[:8]})")
+            else:
+                msgs.append(f"Auto-bet restart failed: {self.last_error}")
+
+        return "; ".join(msgs) if msgs else "No changes applied"
+
     def pause(self):
         self.paused = True
 

@@ -107,6 +107,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/bet — Start betting session (up to 5 concurrent)\n"
         "/stop — Stop session (`/stop all` for all)\n"
         "/stop recurring — Cancel all recurring bets\n"
+        "/tweak \u2014 Change settings on running session\n"
         "/pause / /resume (add slot# for multi-session)\n"
         "/status — Live status (`/status 2` for slot)\n"
         "/monitor — Auto-updating status\n"
@@ -158,6 +159,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/bet — Start session\n"
         "/stop — Stop session (`/stop all` or `/stop 2`)\n"
         "/stop recurring — Cancel all recurring bets and stop sessions\n"
+        "/tweak — Change settings on running session (pipeline, basebet, delay)\n"
         "/pause — Pause (`/pause all` or `/pause 2`)\n"
         "/resume — Resume (`/resume all` or `/resume 2`)\n"
         "/status — Live status (`/status 2` for specific slot)\n"
@@ -938,6 +940,57 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /pause ───────────────────────────────────────────────
+# ── /tweak — mutate running session ─────────────────────
+async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change settings on a running session without stopping it.
+    Usage: /tweak <param> <value> [slot]
+    Examples: /tweak pipeline 20, /tweak basebet 0.00000002, /tweak delay 0.1
+    """
+    user_id = update.effective_user.id
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "*Tweak a running session:*\n"
+            "`/tweak pipeline 20` — change concurrent requests\n"
+            "`/tweak basebet 0.00000002` — change base bet\n"
+            "`/tweak delay 0.1` — add bet delay\n"
+            "`/tweak multiplier 2.5` — change multiplier\n"
+            "`/tweak lossmult 2.01` — change loss multiplier\n\n"
+            "Add slot number for multi-session: `/tweak pipeline 10 2`",
+            parse_mode="Markdown")
+        return
+
+    param = context.args[0].lower()
+    value = context.args[1]
+    slot_args = context.args[2:] if len(context.args) > 2 else []
+
+    slot, engine, err = _resolve_engine(user_id, slot_args)
+    if err:
+        await _reply(update, err)
+        return
+
+    changes = {}
+    if param == "pipeline":
+        val = int(value)
+        if val < 1 or val > 50:
+            await update.message.reply_text("Pipeline must be 1-50.")
+            return
+        changes["pipeline"] = val
+    elif param in ("basebet", "base_bet"):
+        changes["base_bet"] = float(value)
+    elif param == "delay":
+        changes["bet_delay"] = float(value)
+    elif param == "multiplier":
+        changes["multiplier"] = float(value)
+    elif param in ("lossmult", "loss_mult"):
+        changes["loss_mult"] = float(value)
+    else:
+        await update.message.reply_text(f"Unknown tweak param: `{param}`", parse_mode="Markdown")
+        return
+
+    result = await engine.mutate(changes)
+    await update.message.reply_text(f"Tweaked slot {slot}: {result}", parse_mode="Markdown")
+
+
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     # /pause all
