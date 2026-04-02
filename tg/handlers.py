@@ -334,15 +334,15 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if game in ("dice", "dice-manual"):
             lines.append(f"Rule: `{config.get('rule') or 'over'}`")
         lines.extend([
-            f"Multiplier: `{multiplier}x` ({wc}% win chance)",
+            f"Multiplier: `{multiplier:.2f}x` ({wc}% win chance)",
             f"Base bet: `{float(config.get('base_bet') or 0.0001):.8f}`",
         ])
 
         # Strategy-specific fields
         if strategy_key in ("2", "7"):  # Martingale, Delay Martingale
-            lines.append(f"Loss mult: `{float(config.get('loss_mult') or 2.0)}x`")
+            lines.append(f"Loss mult: `{float(config.get('loss_mult') or 2.0):.2f}x`")
         if strategy_key in ("3", "5"):  # Anti-Martingale, Paroli
-            lines.append(f"Win mult: `{float(config.get('win_mult') or 1.0)}x`")
+            lines.append(f"Win mult: `{float(config.get('win_mult') or 1.0):.2f}x`")
         if strategy_key == "7":  # Delay Martingale
             lines.append(f"Delay threshold: `{int(config.get('delay_martin_threshold') or 3)}`")
 
@@ -375,7 +375,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ml = config.get("milestone_losses", 0)
         if ml: ms.append(f"{ml} losses")
         mp = config.get("milestone_profit", 0)
-        if mp: ms.append(f"{mp} profit")
+        if mp: ms.append(f"{float(mp):.8f} profit")
         lines.append(f"Milestones: `{', '.join(ms) if ms else 'off'}`")
 
         rec_on = config.get("recurring", False)
@@ -730,7 +730,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Session #{engine.session_id}{slot_info} started!\n\n"
         f"Game: `{game_label}`\n"
         f"Strategy: `{engine.strategy}`\n"
-        f"Multiplier: `{engine.multiplier}x` ({wc}%)\n"
+        f"Multiplier: `{engine.multiplier:.2f}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
         f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
         f"{rec_info}\n\n"
@@ -839,7 +839,7 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
         chat_id,
         f"Recurring session #{engine.session_id} started!\n\n"
         f"Strategy: `{engine.strategy}`\n"
-        f"Multiplier: `{engine.multiplier}x` ({wc}%)\n"
+        f"Multiplier: `{engine.multiplier:.2f}x` ({wc}%)\n"
         f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
         f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`\n"
         f"Recurring: `{rec_data['delay'] if rec_data else delay}s`\n\n"

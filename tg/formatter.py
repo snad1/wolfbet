@@ -91,7 +91,7 @@ def format_status(s: dict) -> str:
         f"  Best: `W+{_fmti(s['max_win_streak'])}` / `L-{_fmti(s['max_loss_streak'])}`",
         "",
         "\u2699\ufe0f *Config*",
-        f"  Strategy: `{s['strategy']}` {s['multiplier']}x",
+        f"  Strategy: `{s['strategy']}` {s['multiplier']:.2f}x",
     ]
 
     detail = s.get("strategy_detail", "")
@@ -272,7 +272,7 @@ def format_session_row(row) -> str:
     tag_line = f"  `{' | '.join(tags)}`\n" if tags else ""
 
     return (
-        f"{pe} *#{sid}* `{(game or 'dice').upper()}`  `{(strat or '?')}`  {(mult or 0)}x  {(cur or '?')}\n"
+        f"{pe} *#{sid}* `{(game or 'dice').upper()}`  `{(strat or '?')}`  {float(mult or 0):.2f}x  {(cur or '?')}\n"
         f"  {_fmt_ts(started)} \u2192 {_fmt_ts(ended, 'running')}\n"
         f"  Bets: `{_fmti(bets)}` W: `{_fmti(wins)}` L: `{_fmti(losses)}` WR: `{wr}`\n"
         f"  P/L: `{ps}{profit:.8f}`  Wag: `{wagered:.8f}`\n"
@@ -351,9 +351,9 @@ def format_session_detail(sess, streak_dist: dict, recent_bets: list) -> str:
             snap = json.loads(config_snap)
             sk = snap.get("strategy_key", "")
             if sk in ("2", "7"):
-                lines.append(f"  Loss mult: `{snap.get('loss_mult', 2.0)}x`")
+                lines.append(f"  Loss mult: `{float(snap.get('loss_mult', 2.0)):.2f}x`")
             if sk in ("3", "5"):
-                lines.append(f"  Win mult: `{snap.get('win_mult', 1.0)}x`")
+                lines.append(f"  Win mult: `{float(snap.get('win_mult', 1.0)):.2f}x`")
             if sk == "7":
                 lines.append(f"  Delay threshold: `{snap.get('delay_threshold', 3)}`")
             if "bet_rule" in snap:

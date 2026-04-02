@@ -10,7 +10,7 @@ from datetime import datetime
 from collections import deque
 from typing import Optional, List
 
-from .config import API_BASE, logger
+from .config import API_BASE, APP_ENV, logger
 from core.database import init_db, migrate_db, db_connect, cleanup_old_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
@@ -215,6 +215,15 @@ class BettingEngine:
             }
         return {}
 
+    def _set_error(self, friendly: str, technical: str = ""):
+        """Set last_error: friendly message in production, technical details in dev."""
+        if APP_ENV != "production" and technical:
+            self.last_error = technical
+        else:
+            self.last_error = friendly
+        if technical:
+            logger.warning("User %d: %s", self.user_id, technical)
+
     def _update_rate_limit(self, resp):
         try:
             ep = GAME_ENDPOINTS.get(self.game, ("", 1, 480, None))
@@ -240,7 +249,7 @@ class BettingEngine:
         """Start an auto-bet session on WolfBet, returns True on success."""
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
-            self.last_error = f"No auto-bet endpoint for {self.game}"
+            self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
             return False
         url = f"{API_BASE}{endpoints['start']}"
         payload = self._build_auto_start_payload()
@@ -255,11 +264,11 @@ class BettingEngine:
                     self._auto_uuid = uuid
                     logger.info("User %d: Auto-bet started, uuid=%s", self.user_id, uuid)
                     return True
-                self.last_error = f"No UUID in auto/start response: {data}"
+                self._set_error("Auto-bet start failed", f"No UUID in response: {data}")
             else:
-                self.last_error = f"Auto start HTTP {r.status_code}: {r.text[:120]}"
+                self._set_error("Auto-bet start failed", f"HTTP {r.status_code}: {r.text[:120]}")
         except Exception as e:
-            self.last_error = f"Auto start failed: {e}"
+            self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
         return False
 
     async def _auto_stop(self):
@@ -397,10 +406,10 @@ class BettingEngine:
                 if "error" in data:
                     err_msg = data["error"].get("message", "") if isinstance(data["error"], dict) else str(data["error"])
                     if "insufficient balance" in err_msg.lower():
-                        self.last_error = "Insufficient balance"
+                        self._set_error("Insufficient balance")
                         self._insufficient_balance = True
                         return None
-                    self.last_error = f"API error: {err_msg[:120]}"
+                    self._set_error("Bet rejected by API", f"API error: {err_msg[:120]}")
                     return None
                 self._api_ms_total += self._last_api_ms
                 self._api_ms_count += 1
@@ -408,12 +417,12 @@ class BettingEngine:
             elif r.status_code == 429:
                 self.rate_wait = True
                 self.rate_backoff = 2.0
-                self.last_error = "Rate limit 429"
+                self._set_error("Rate limit reached — cooling down")
             else:
-                self.last_error = f"HTTP {r.status_code}: {r.text[:120]}"
+                self._set_error("Bet request failed", f"HTTP {r.status_code}: {r.text[:120]}")
         except (httpx.TimeoutException, httpx.ConnectError):
             self._consecutive_timeouts += 1
-            self.last_error = f"Request timeout (#{self._consecutive_timeouts})"
+            self._set_error("Connection timeout — retrying")
             if self._consecutive_timeouts >= MAX_TIMEOUT_STREAK:
                 logger.warning("User %d: %d consecutive timeouts — recreating HTTP client",
                                self.user_id, self._consecutive_timeouts)
@@ -422,10 +431,10 @@ class BettingEngine:
         except Exception as e:
             err_str = str(e).lower()
             if "insufficient" in err_str or "balance" in err_str:
-                self.last_error = "Insufficient balance"
+                self._set_error("Insufficient balance")
                 self._insufficient_balance = True
             else:
-                self.last_error = str(e)[:120]
+                self._set_error("Unexpected error", str(e)[:120])
         return None
 
     # ── DB ───────────────────────────────────────────────
@@ -631,6 +640,87 @@ class BettingEngine:
             return True, f"Balance floor: {b:.8f}"
         return False, ""
 
+    def _process_bet_result(self, result: dict) -> str:
+        """Process a bet result — update stats, queue DB write. Returns bet_state."""
+        bet_data = result.get("bet", {})
+        balance_data = result.get("userBalance", {})
+        bet_state = bet_data.get("state", "loss")
+        result_value = float(bet_data.get("result_value", 0))
+        amount_used = float(bet_data.get("amount", self.current_bet))
+        new_balance = float(balance_data.get("amount", self.current_balance))
+        raw_profit = float(bet_data.get("profit", 0))
+
+        self.consecutive_errors = 0
+        self.backoff_delay = 1.0
+        self.total_bets += 1
+        self.wagered += amount_used
+        self.profit += raw_profit
+        self.current_balance = new_balance
+
+        if bet_state == "win":
+            self.wins += 1
+            if raw_profit > self.highest_win:
+                self.highest_win = raw_profit
+            self.current_streak = max(self.current_streak, 0) + 1
+            self.max_win_streak = max(self.max_win_streak, self.current_streak)
+        else:
+            self.losses += 1
+            if amount_used > self.biggest_loss:
+                self.biggest_loss = amount_used
+            self.current_streak = min(self.current_streak, 0) - 1
+            self.max_loss_streak = max(self.max_loss_streak, abs(self.current_streak))
+
+        if amount_used > self.highest_bet:
+            self.highest_bet = amount_used
+        if new_balance > self.highest_balance:
+            self.highest_balance = new_balance
+        if new_balance < self.lowest_balance:
+            self.lowest_balance = new_balance
+
+        if self.total_bets % 5 == 0:
+            self.profit_history.append(self.profit)
+
+        self.recent_bets.append({
+            "n": self.total_bets, "time": datetime.now().isoformat(),
+            "amt": amount_used, "roll": result_value,
+            "state": bet_state, "pnl": raw_profit, "bal": new_balance,
+        })
+
+        self._update_speed_stats()
+
+        sign = "+" if raw_profit >= 0 else ""
+        emoji = "W" if bet_state == "win" else "L"
+        self.status = f"{emoji} {'WIN' if bet_state == 'win' else 'LOSS'} | Roll: {result_value:.2f} | P/L: {sign}{raw_profit:.8f}"
+        self.last_error = ""
+
+        self._queue_bet(bet_data, raw_profit, new_balance)
+        return bet_state
+
+    async def _session_cleanup(self):
+        """Shared cleanup for both betting loops."""
+        if self._auto_uuid:
+            try:
+                await self._auto_stop()
+            except Exception as e:
+                logger.error("User %d: auto_stop failed: %s", self.user_id, e)
+        self._flush_bets()
+        if self.session_id:
+            self._db_save_session(final=True)
+        self._close_conn()
+        if self._http:
+            try:
+                await self._http.aclose()
+            except Exception:
+                pass
+        logger.info("User %d: Session #%d ended — %s (bets=%d, P/L=%+.8f)",
+                    self.user_id, self.session_id, self.stop_reason or "stopped",
+                    self.total_bets, self.profit)
+        if self.on_stop:
+            try:
+                self.on_stop(self.stop_reason or "Stopped by user")
+            except Exception:
+                pass
+
     def _update_speed_stats(self):
         """Update BPS/BPM tracking — called after each bet result."""
         now = time.time()
@@ -691,7 +781,7 @@ class BettingEngine:
         try:
             balances = await self.api_get_balances()
         except Exception as e:
-            self.last_error = f"Connection failed: {e}"
+            self._set_error("Connection failed", f"Connection failed: {e}")
             return False
 
         bal = 0.0
@@ -700,7 +790,7 @@ class BettingEngine:
                 bal = float(b.get("amount", 0))
                 break
         if bal <= 0 and self.base_bet > 0:
-            self.last_error = f"No {self.currency.upper()} balance found"
+            self._set_error(f"No {self.currency.upper()} balance found")
             return False
 
         init_db(self.db_path)
@@ -821,7 +911,7 @@ class BettingEngine:
         try:
             await self.api_get_balances()
         except Exception as e:
-            self.last_error = f"Resume connection failed: {e}"
+            self._set_error("Resume connection failed", f"Resume connection failed: {e}")
             return False
 
         self.running = True
@@ -837,7 +927,7 @@ class BettingEngine:
         if self._is_auto_game():
             self._auto_uuid = None  # clear stale UUID
             if not await self._auto_start():
-                self.last_error = f"Auto-bet resume failed: {self.last_error}"
+                self._set_error("Auto-bet resume failed", f"Auto-bet resume failed: {self.last_error}")
                 self.running = False
                 return False
 
@@ -895,10 +985,10 @@ class BettingEngine:
         # Profit increment — instant
         if "profit_increment" in changes:
             self.profit_increment = changes["profit_increment"]
-            msgs.append(f"Profit increment: {self.profit_increment}")
+            msgs.append(f"Profit increment: {float(self.profit_increment):.8f}" if self.profit_increment else "Profit increment: off")
         if "profit_threshold" in changes:
             self.profit_threshold = changes["profit_threshold"]
-            msgs.append(f"Profit threshold: {self.profit_threshold}")
+            msgs.append(f"Profit threshold: {float(self.profit_threshold):.8f}" if self.profit_threshold else "Profit threshold: off")
 
         # ── Changes that require auto-bet restart ──
         needs_restart = False
@@ -909,15 +999,15 @@ class BettingEngine:
             needs_restart = True
         if "multiplier" in changes:
             self.multiplier = float(changes["multiplier"])
-            msgs.append(f"Multiplier: {self.multiplier}")
+            msgs.append(f"Multiplier: {self.multiplier:.2f}")
             needs_restart = True
         if "loss_mult" in changes:
             self.loss_mult = float(changes["loss_mult"])
-            msgs.append(f"Loss mult: {self.loss_mult}")
+            msgs.append(f"Loss mult: {self.loss_mult:.2f}")
             needs_restart = True
         if "win_mult" in changes:
             self.win_mult = float(changes["win_mult"])
-            msgs.append(f"Win mult: {self.win_mult}")
+            msgs.append(f"Win mult: {self.win_mult:.2f}")
             needs_restart = True
         if "strategy_key" in changes:
             self.strategy_key = changes["strategy_key"]
@@ -959,9 +1049,9 @@ class BettingEngine:
         # strategy detail
         strat_detail = ""
         if self.strategy_key in ("2", "6", "7"):
-            strat_detail = f"loss_mult: {self.loss_mult}x"
+            strat_detail = f"loss_mult: {self.loss_mult:.2f}x"
         elif self.strategy_key in ("3", "5"):
-            strat_detail = f"win_mult: {self.win_mult}x"
+            strat_detail = f"win_mult: {self.win_mult:.2f}x"
 
         # rule descriptions
         rule_descs = []
@@ -1090,58 +1180,13 @@ class BettingEngine:
                     self.consecutive_errors += 1
                     continue
 
-                bet_data = result.get("bet", {})
-                balance_data = result.get("userBalance", {})
-                bet_state = bet_data.get("state", "loss")
-
                 stop_reason = result.get("stopReason")
                 if stop_reason:
                     should_stop = True
                     self.stop_reason = f"WolfBet auto-stop: {stop_reason}"
                     break
 
-                result_value = float(bet_data.get("result_value", 0))
-                amount_used = float(bet_data.get("amount", self.current_bet))
-                new_balance = float(balance_data.get("amount", self.current_balance))
-                raw_profit = float(bet_data.get("profit", 0))
-
-                self.consecutive_errors = 0
-                self.total_bets += 1
-                self.wagered += amount_used
-                self.profit += raw_profit
-                self.current_balance = new_balance
-
-                if bet_state == "win":
-                    self.wins += 1
-                    if raw_profit > self.highest_win:
-                        self.highest_win = raw_profit
-                    self.current_streak = max(self.current_streak, 0) + 1
-                    self.max_win_streak = max(self.max_win_streak, self.current_streak)
-                else:
-                    self.losses += 1
-                    if amount_used > self.biggest_loss:
-                        self.biggest_loss = amount_used
-                    self.current_streak = min(self.current_streak, 0) - 1
-                    self.max_loss_streak = max(self.max_loss_streak, abs(self.current_streak))
-
-                if amount_used > self.highest_bet:
-                    self.highest_bet = amount_used
-                if new_balance > self.highest_balance:
-                    self.highest_balance = new_balance
-                if new_balance < self.lowest_balance:
-                    self.lowest_balance = new_balance
-
-                if self.total_bets % 5 == 0:
-                    self.profit_history.append(self.profit)
-
-                self._update_speed_stats()
-
-                sign = "+" if raw_profit >= 0 else ""
-                emoji = "W" if bet_state == "win" else "L"
-                self.status = f"{emoji} {'WIN' if bet_state == 'win' else 'LOSS'} | Roll: {result_value:.2f} | P/L: {sign}{raw_profit:.8f}"
-                last_bet_state = bet_state
-
-                self._queue_bet(bet_data, raw_profit, new_balance)
+                last_bet_state = self._process_bet_result(result)
 
                 # Check stop conditions after each result
                 stop, reason = self._should_stop()
@@ -1185,29 +1230,7 @@ class BettingEngine:
                             self.user_id, game_label, self.session_id,
                             self.total_bets, self.bets_per_second, self.profit)
 
-        # cleanup
-        try:
-            if self._auto_uuid:
-                await self._auto_stop()
-        except Exception as e:
-            logger.error("User %d: auto_stop failed: %s", self.user_id, e)
-        self._flush_bets()
-        if self.session_id:
-            self._db_save_session(final=True)
-        self._close_conn()
-        if self._http:
-            try:
-                await self._http.aclose()
-            except Exception:
-                pass
-        logger.info("User %d: Session #%d ended — %s (bets=%d, P/L=%+.8f)",
-                    self.user_id, self.session_id, self.stop_reason or "stopped",
-                    self.total_bets, self.profit)
-        if self.on_stop:
-            try:
-                self.on_stop(self.stop_reason or "Stopped by user")
-            except Exception:
-                pass
+        await self._session_cleanup()
 
     # ── BETTING LOOP ─────────────────────────────────────
     async def _betting_loop(self):
@@ -1284,78 +1307,9 @@ class BettingEngine:
                 self.running = False
                 self.stop_reason = f"WolfBet auto-stop: {stop_reason}"
                 self.status = f"STOPPED: {self.stop_reason}"
-                self._flush_bets()
-                self._db_save_session(final=True)
                 break
-            result_value = float(bet_data.get("result_value", 0))
-            amount_used  = float(bet_data.get("amount", self.current_bet))
-            new_balance  = float(balance_data.get("amount", self.current_balance))
-            raw_profit   = float(bet_data.get("profit", 0))
 
-            with self.lock:
-                self.consecutive_errors = 0
-                self.backoff_delay = 1.0
-                self.total_bets += 1
-                self.wagered    += amount_used
-                self.profit     += raw_profit
-                self.current_balance = new_balance
-
-                if bet_state == "win":
-                    self.wins += 1
-                    if raw_profit > self.highest_win: self.highest_win = raw_profit
-                    self.current_streak = max(self.current_streak, 0) + 1
-                    self.max_win_streak = max(self.max_win_streak, self.current_streak)
-                else:
-                    self.losses += 1
-                    if amount_used > self.biggest_loss: self.biggest_loss = amount_used
-                    self.current_streak = min(self.current_streak, 0) - 1
-                    self.max_loss_streak = max(self.max_loss_streak, abs(self.current_streak))
-
-                if amount_used > self.highest_bet: self.highest_bet = amount_used
-                if new_balance > self.highest_balance: self.highest_balance = new_balance
-                if new_balance < self.lowest_balance: self.lowest_balance = new_balance
-
-                if self.total_bets % 5 == 0:
-                    self.profit_history.append(self.profit)
-
-                self.recent_bets.append({
-                    "n": self.total_bets, "time": datetime.now().isoformat(),
-                    "amt": amount_used, "roll": result_value,
-                    "state": bet_state, "pnl": raw_profit, "bal": new_balance,
-                })
-
-                now = time.time()
-                elapsed = now - self.session_start
-                if elapsed > 0:
-                    self.bets_per_second = self.total_bets / elapsed
-                    self.bets_per_minute = self.bets_per_second * 60
-
-                sec_key = int(now)
-                min_key = int(now) // 60
-                if sec_key != self._current_sec:
-                    if self._current_sec > 0 and self._bets_this_sec > 0:
-                        if self._bets_this_sec > self.peak_bps: self.peak_bps = self._bets_this_sec
-                        if self._bets_this_sec < self.low_bps: self.low_bps = self._bets_this_sec
-                    self._current_sec = sec_key
-                    self._bets_this_sec = 1
-                else:
-                    self._bets_this_sec += 1
-                if min_key != self._current_min:
-                    if self._current_min > 0 and self._bets_this_min > 0:
-                        if self._bets_this_min > self.peak_bpm: self.peak_bpm = self._bets_this_min
-                        if self._bets_this_min < self.low_bpm: self.low_bpm = self._bets_this_min
-                    self._current_min = min_key
-                    self._bets_this_min = 1
-                else:
-                    self._bets_this_min += 1
-
-                sign  = "+" if raw_profit >= 0 else ""
-                emoji = "W" if bet_state == "win" else "L"
-                self.status = f"{emoji} {'WIN' if bet_state=='win' else 'LOSS'} | Roll: {result_value:.2f} | P/L: {sign}{raw_profit:.8f}"
-                self.last_error = ""
-
-            # queue bet for batched DB write
-            self._queue_bet(bet_data, raw_profit, new_balance)
+            bet_state = self._process_bet_result(result)
 
             # periodic progress log (every 500 bets)
             if self.total_bets % 500 == 0:
@@ -1407,18 +1361,4 @@ class BettingEngine:
                     except Exception as e:
                         logger.error("User %d: Milestone callback failed: %s", self.user_id, e)
 
-        # session ended — stop auto-bet if active, flush DB
-        if self._auto_uuid:
-            await self._auto_stop()
-        self._flush_bets()
-        if self.session_id:
-            self._db_save_session(final=True)
-        self._close_conn()
-        if self._http:
-            await self._http.aclose()
-        logger.info("User %d: Session #%d ended — %s", self.user_id, self.session_id, self.stop_reason or "stopped")
-        if self.on_stop:
-            try:
-                self.on_stop(self.stop_reason or "Stopped by user")
-            except Exception:
-                pass
+        await self._session_cleanup()
