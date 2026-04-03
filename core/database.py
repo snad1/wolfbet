@@ -57,6 +57,7 @@ def migrate_db(db_path: str):
         ("peak_bpm",        "REAL DEFAULT 0"),
         ("low_bpm",         "REAL DEFAULT 0"),
         ("config_snapshot", "TEXT DEFAULT ''"),
+        ("chart_snapshots", "TEXT DEFAULT '[]'"),
     ]:
         try:
             c.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")
