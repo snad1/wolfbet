@@ -153,7 +153,8 @@ def format_status(s: dict) -> str:
     auto_uuid = s.get("auto_uuid")
     if auto_uuid:
         lines.append("")
-        lines.append(f"\U0001f517 UUID: `{auto_uuid}`")
+        pending = " (restart pending — waiting for win)" if s.get("pending_restart") else ""
+        lines.append(f"\U0001f517 UUID: `{auto_uuid}`{pending}")
 
     lines += ["", f"`{s['status']}`"]
 

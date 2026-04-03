@@ -174,6 +174,7 @@ class BettingEngine:
 
         # ── auto-bet state ──
         self._auto_uuid: Optional[str] = None
+        self._pending_restart: bool = False  # restart auto-bet on next win
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -1007,13 +1008,13 @@ class BettingEngine:
         if "base_bet" in changes:
             self.base_bet = float(changes["base_bet"])
             if self._is_auto_game():
-                # Auto-bet: restart resets everything on server side
-                self.current_bet = self.base_bet
-                msgs.append(f"Base bet: {self.base_bet:.8f}")
+                # Auto-bet: defer restart until next win (safe recovery)
+                self._pending_restart = True
+                msgs.append(f"Base bet: {self.base_bet:.8f} (restarts on next win)")
             else:
                 # Local strategy: don't kill recovery — applies on next win
                 msgs.append(f"Base bet: {self.base_bet:.8f} (applies on next win)")
-            needs_restart = True
+            needs_restart = False  # don't restart immediately
         if "multiplier" in changes:
             self.multiplier = float(changes["multiplier"])
             msgs.append(f"Multiplier: {self.multiplier:.2f}")
@@ -1032,14 +1033,10 @@ class BettingEngine:
             msgs.append(f"Strategy: {self.strategy}")
             needs_restart = True
 
-        # Restart auto-bet if strategy/bet params changed
+        # Auto-bet: defer restart until next win (safe recovery)
         if needs_restart and self._is_auto_game() and self._auto_uuid:
-            old_uuid = self._auto_uuid
-            await self._auto_stop()
-            if await self._auto_start():
-                msgs.append(f"Auto-bet restarted ({old_uuid[:8]} → {self._auto_uuid[:8]})")
-            else:
-                msgs.append(f"Auto-bet restart failed: {self.last_error}")
+            self._pending_restart = True
+            msgs.append("Changes queued — auto-bet restarts on next win")
 
         return "; ".join(msgs) if msgs else "No changes applied"
 
@@ -1118,6 +1115,7 @@ class BettingEngine:
             "game": self.game,
             "game_label": GAME_LABELS.get(self.game, self.game),
             "auto_uuid": self._auto_uuid,
+            "pending_restart": self._pending_restart,
             "pipeline": self.pipeline,
             "proxy": bool(self.proxy),
             "status": self.status,
@@ -1204,6 +1202,19 @@ class BettingEngine:
                     break
 
                 last_bet_state = self._process_bet_result(result)
+
+                # Pending restart: wait for win before restarting auto-bet
+                if self._pending_restart and last_bet_state == "win" and self._auto_uuid:
+                    self._pending_restart = False
+                    old_uuid = self._auto_uuid
+                    await self._auto_stop()
+                    if await self._auto_start():
+                        logger.info("User %d: Deferred auto-bet restart on win: %s → %s",
+                                    self.user_id, old_uuid[:8], self._auto_uuid[:8])
+                    else:
+                        should_stop = True
+                        self.stop_reason = "Auto-bet restart failed"
+                        break
 
                 # Check stop conditions after each result
                 stop, reason = self._should_stop()
@@ -1327,6 +1338,19 @@ class BettingEngine:
                 break
 
             bet_state = self._process_bet_result(result)
+
+            # Pending restart: wait for win before restarting auto-bet with new config
+            if self._pending_restart and bet_state == "win" and self._is_auto_game() and self._auto_uuid:
+                self._pending_restart = False
+                old_uuid = self._auto_uuid
+                await self._auto_stop()
+                if await self._auto_start():
+                    logger.info("User %d: Deferred auto-bet restart on win: %s → %s (base=%.8f)",
+                                self.user_id, old_uuid[:8], self._auto_uuid[:8], self.base_bet)
+                else:
+                    self.running = False
+                    self.stop_reason = "Auto-bet restart failed"
+                    break
 
             # periodic progress log (every 500 bets)
             if self.total_bets % 500 == 0:
