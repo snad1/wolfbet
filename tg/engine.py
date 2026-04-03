@@ -1006,8 +1006,13 @@ class BettingEngine:
         needs_restart = False
         if "base_bet" in changes:
             self.base_bet = float(changes["base_bet"])
-            self.current_bet = self.base_bet
-            msgs.append(f"Base bet: {self.base_bet:.8f}")
+            if self._is_auto_game():
+                # Auto-bet: restart resets everything on server side
+                self.current_bet = self.base_bet
+                msgs.append(f"Base bet: {self.base_bet:.8f}")
+            else:
+                # Local strategy: don't kill recovery — applies on next win
+                msgs.append(f"Base bet: {self.base_bet:.8f} (applies on next win)")
             needs_restart = True
         if "multiplier" in changes:
             self.multiplier = float(changes["multiplier"])
