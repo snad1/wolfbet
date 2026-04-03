@@ -66,6 +66,7 @@ def main():
             BotCommand("strategies",  "List strategies"),
             BotCommand("bet",         "Start betting session"),
             BotCommand("stop",        "Stop session"),
+            BotCommand("tweak",      "Change settings on running session"),
             BotCommand("pause",       "Pause betting"),
             BotCommand("resume",      "Resume betting"),
             BotCommand("status",      "Live status with refresh button"),
