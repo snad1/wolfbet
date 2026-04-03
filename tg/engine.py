@@ -11,7 +11,7 @@ from collections import deque
 from typing import Optional, List
 
 from .config import API_BASE, APP_ENV, logger
-from core.database import init_db, migrate_db, db_connect, cleanup_old_bets
+from core.database import init_db, migrate_db, db_connect, cleanup_old_bets, cleanup_live_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
 
@@ -168,6 +168,8 @@ class BettingEngine:
         # ── batching state ──
         self._bet_queue: list = []             # pending bet rows
         self._last_session_save = 0.0          # last time session was saved
+        self._last_cleanup = 0.0               # last time live bet cleanup ran
+        self.purge_days = int(config.get("purge_days") or 1)  # delete bets older than N days
         self._db_connection: Optional[sqlite3.Connection] = None  # persistent connection
 
         # ── auto-bet state ──
@@ -593,6 +595,16 @@ class BettingEngine:
         if now - self._last_session_save >= SESSION_SAVE_SECS:
             self._flush_bets()
             self._db_save_session()
+        # Live cleanup: purge old bets every hour to prevent DB bloat
+        if now - self._last_cleanup >= 3600:
+            try:
+                deleted = cleanup_live_bets(self.db_path, self.purge_days)
+                if deleted > 0:
+                    logger.info("User %d: Live cleanup: deleted %d old bets (>%dd)",
+                                self.user_id, deleted, self.purge_days)
+            except Exception as e:
+                logger.warning("User %d: Live cleanup failed: %s", self.user_id, e)
+            self._last_cleanup = now
 
     # ── STRATEGY (delegates to core.engine) ────────────────
     def _compute_next_bet(self, last_result: str) -> float:

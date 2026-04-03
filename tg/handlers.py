@@ -447,6 +447,12 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown")
                 return
             config["proxy"] = value
+        elif param in ("purgedays", "purge_days"):
+            val = int(value)
+            if val < 1 or val > 30:
+                await update.message.reply_text("Purge days must be 1-30.")
+                return
+            config["purge_days"] = val
         elif param == "pipeline":
             val = int(value)
             if val < 1 or val > 50:
