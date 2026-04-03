@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.10.1 — Safety, Cleanup, Charts (2026-04-03)
+
+### Added
+
+- **Deferred auto-bet restart** — `/tweak basebet`, multiplier, lossmult changes on auto-bet sessions wait for the next WIN before restarting, preventing Martingale recovery loss
+- **Live bet cleanup** — Bets older than N days auto-deleted every hour during running sessions. Configurable via `/set purgedays 1` (default 1, range 1-30). Prevents DB bloat for long-running sessions
+- **Chart snapshots** — Profit/balance saved every 100 bets in session row. Web dashboard charts now survive bet cleanup
+- **Profit increment = 0** — Setting `/set profitincrement 0` creates new auto-bet sessions at profit threshold without increasing base bet
+- **Pipeline safety** — Pipeline > 1 forced to 1 for non-Flat strategies (prevents Martingale loss from concurrent bets)
+- **Strategy aliases** — `/set strategy flat` now works (was requiring 'flat bet')
+
+### Fixed
+
+- **CK audit** — 65 scientific notation violations, production error message gating, DRY refactoring
+- **`/tweak basebet` safety** — No longer kills Martingale recovery during loss streak (applies on next win)
+- **`/tweak` in Telegram menu** — Added missing BotCommand registration
+
+---
+
 ## v2.10.0 — Pipeline Mode & Live Mutation (2026-04-01)
 
 ### Added
