@@ -599,8 +599,8 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("profitincrement", "pi"):
             if value.lower() != "off":
                 val = float(value)
-                if val <= 0:
-                    await update.message.reply_text("Profit increment must be > 0 (or 'off').")
+                if val < 0:
+                    await update.message.reply_text("Profit increment must be >= 0 (or 'off').")
                     return
                 config["profit_increment"] = val
             else:

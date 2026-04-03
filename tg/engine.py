@@ -1197,7 +1197,7 @@ class BettingEngine:
 
             # periodic save + profit increment (between batches)
             self._periodic_save()
-            if (self.profit_increment and self.profit_threshold
+            if (self.profit_increment is not None and self.profit_threshold
                     and self.profit >= self.next_profit_milestone):
                 self.base_bet += self.profit_increment
                 self.next_profit_milestone += self.profit_threshold
@@ -1322,7 +1322,7 @@ class BettingEngine:
             self._periodic_save()
 
             # profit-based base bet increment
-            if (self.profit_increment and self.profit_threshold
+            if (self.profit_increment is not None and self.profit_threshold
                     and self.profit >= self.next_profit_milestone):
                 self.base_bet += self.profit_increment
                 self.next_profit_milestone += self.profit_threshold
