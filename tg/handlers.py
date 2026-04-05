@@ -732,17 +732,21 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wc = round(99.0 / engine.multiplier, 2)
     slot_info = f" (slot {slot})" if len(_get_running(user_id)) > 1 else ""
     rec_info = f"\nRecurring: `{int(config.get('recurring_delay') or 60)}s`" if config.get("recurring") else ""
-    await msg.edit_text(
-        f"Session #{engine.session_id}{slot_info} started!\n\n"
-        f"Game: `{game_label}`\n"
-        f"Strategy: `{engine.strategy}`\n"
-        f"Multiplier: `{engine.multiplier:.2f}x` ({wc}%)\n"
-        f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
-        f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
-        f"{rec_info}\n\n"
-        f"Use /status to check progress.{rate_warn}",
-        parse_mode="Markdown",
-    )
+    try:
+        await msg.edit_text(
+            f"Session #{engine.session_id}{slot_info} started!\n\n"
+            f"Game: `{game_label}`\n"
+            f"Strategy: `{engine.strategy}`\n"
+            f"Multiplier: `{engine.multiplier:.2f}x` ({wc}%)\n"
+            f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
+            f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
+            f"{rec_info}\n\n"
+            f"Use /status to check progress.{rate_warn}",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        # Telegram timeout — session is already running, just couldn't send confirmation
+        logger.warning("User %d: Session started but Telegram confirmation timed out", user_id)
 
 
 async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
