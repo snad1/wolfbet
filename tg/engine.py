@@ -154,7 +154,7 @@ class BettingEngine:
         self.next_profit_milestone = float(self.profit_threshold) if self.profit_threshold else 0.0
 
         # ── milestone config ──
-        self.milestone_bets   = int(config.get("milestone_bets") or 100)
+        self.milestone_bets   = int(config.get("milestone_bets")) if config.get("milestone_bets") is not None else 100
         self.milestone_wins   = int(config.get("milestone_wins") or 0)
         self.milestone_losses = int(config.get("milestone_losses") or 0)
         self.milestone_profit = float(config.get("milestone_profit") or 0)
