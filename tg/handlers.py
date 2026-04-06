@@ -292,7 +292,8 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Fetching balances…")
     try:
         engine = BettingEngine(user_id, "", api_key, {})
-        balances = engine.api_get_balances()
+        await engine._recreate_http()
+        balances = await engine.api_get_balances()
         if not balances:
             await update.message.reply_text("No balances found or API key invalid.")
             return
