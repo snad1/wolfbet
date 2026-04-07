@@ -81,6 +81,11 @@ class BettingEngine:
         self.bet_delay      = float(config.get("bet_delay") or 0)
         self.delay_martin_threshold = int(config.get("delay_martin_threshold") or 3)
 
+        # ── streak delay: pause after N consecutive wins/losses ──
+        # Format: "N:seconds" e.g. "5:1.0" = after every 5 losses, delay 1s
+        self.streak_delay_loss = self._parse_streak_delay(config.get("streak_delay_loss"))
+        self.streak_delay_win  = self._parse_streak_delay(config.get("streak_delay_win"))
+
         # ── rules ──
         self.custom_rules: List[StrategyRule] = []
         rules_text = config.get("custom_rules_text", "")
@@ -218,6 +223,32 @@ class BettingEngine:
                 "x-client-type": "Web-Application",
             }
         return {}
+
+    @staticmethod
+    def _parse_streak_delay(value) -> tuple:
+        """Parse 'N:seconds' streak delay config. Returns (streak_count, delay_seconds) or (0, 0)."""
+        if not value:
+            return (0, 0.0)
+        try:
+            parts = str(value).split(":")
+            return (int(parts[0]), float(parts[1]))
+        except (IndexError, ValueError):
+            return (0, 0.0)
+
+    def _get_streak_delay(self) -> float:
+        """Check if current streak triggers a delay. Returns delay in seconds or 0."""
+        streak = self.current_streak
+        # Loss streak (negative)
+        if streak < 0 and self.streak_delay_loss[0] > 0:
+            count, delay = self.streak_delay_loss
+            if abs(streak) > 0 and abs(streak) % count == 0:
+                return delay
+        # Win streak (positive)
+        if streak > 0 and self.streak_delay_win[0] > 0:
+            count, delay = self.streak_delay_win
+            if streak % count == 0:
+                return delay
+        return 0.0
 
     def _set_error(self, friendly: str, technical: str = ""):
         """Set last_error: friendly message in production, technical details in dev."""
@@ -973,6 +1004,12 @@ class BettingEngine:
         if "bet_delay" in changes:
             self.bet_delay = float(changes["bet_delay"])
             msgs.append(f"Delay: {self.bet_delay}s")
+        if "streak_delay_loss" in changes:
+            self.streak_delay_loss = self._parse_streak_delay(changes["streak_delay_loss"])
+            msgs.append(f"Streak delay loss: {self.streak_delay_loss[0]}x → {self.streak_delay_loss[1]}s")
+        if "streak_delay_win" in changes:
+            self.streak_delay_win = self._parse_streak_delay(changes["streak_delay_win"])
+            msgs.append(f"Streak delay win: {self.streak_delay_win[0]}x → {self.streak_delay_win[1]}s")
 
         # Stop conditions — instant, checked every bet
         if "max_profit" in changes:
@@ -1212,6 +1249,12 @@ class BettingEngine:
 
                 last_bet_state = self._process_bet_result(result)
 
+                # Streak delay
+                streak_pause = self._get_streak_delay()
+                if streak_pause > 0:
+                    self.status = f"Streak delay {streak_pause}s (streak {self.current_streak})"
+                    await asyncio.sleep(streak_pause)
+
                 # Pending restart: wait for win before restarting auto-bet
                 if self._pending_restart and last_bet_state == "win" and self._auto_uuid:
                     self._pending_restart = False
@@ -1347,6 +1390,12 @@ class BettingEngine:
                 break
 
             bet_state = self._process_bet_result(result)
+
+            # Streak delay: pause after N consecutive wins/losses
+            streak_pause = self._get_streak_delay()
+            if streak_pause > 0:
+                self.status = f"Streak delay {streak_pause}s (streak {self.current_streak})"
+                await asyncio.sleep(streak_pause)
 
             # Pending restart: wait for win before restarting auto-bet with new config
             if self._pending_restart and bet_state == "win" and self._is_auto_game() and self._auto_uuid:
