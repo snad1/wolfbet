@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.10.2 — Bug Fixes (2026-04-07)
+
+### Fixed
+
+- **Live bet cleanup** — ISO timestamp `T` separator caused comparison failure with SQLite's `datetime()`. Bets older than purge_days now correctly deleted during running sessions
+- **`/balance` command** — Missing `await` on async `api_get_balances()` caused "coroutine object is not iterable" error
+- **Telegram timeout on session start** — Session start confirmation message wrapped in try/except. Session continues running even if Telegram API times out
+- **Milestone bets=0** — Setting `milestonebets` to 0 now properly disables bet milestones (Python falsy `0` was falling through to default 100)
+- **Help text** — Added missing cleanup, delsession, purgedays commands
+
+---
+
 ## v2.10.1 — Safety, Cleanup, Charts (2026-04-03)
 
 ### Added
