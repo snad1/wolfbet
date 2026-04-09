@@ -1006,10 +1006,10 @@ class BettingEngine:
             msgs.append(f"Delay: {self.bet_delay}s")
         if "streak_delay_loss" in changes:
             self.streak_delay_loss = self._parse_streak_delay(changes["streak_delay_loss"])
-            msgs.append(f"Streak delay loss: {self.streak_delay_loss[0]}x → {self.streak_delay_loss[1]}s")
+            msgs.append(f"Streak delay loss: {self.streak_delay_loss[0]}x → {self.streak_delay_loss[1]:.3f}s")
         if "streak_delay_win" in changes:
             self.streak_delay_win = self._parse_streak_delay(changes["streak_delay_win"])
-            msgs.append(f"Streak delay win: {self.streak_delay_win[0]}x → {self.streak_delay_win[1]}s")
+            msgs.append(f"Streak delay win: {self.streak_delay_win[0]}x → {self.streak_delay_win[1]:.3f}s")
 
         # Stop conditions — instant, checked every bet
         if "max_profit" in changes:
@@ -1252,7 +1252,7 @@ class BettingEngine:
                 # Streak delay
                 streak_pause = self._get_streak_delay()
                 if streak_pause > 0:
-                    self.status = f"Streak delay {streak_pause}s (streak {self.current_streak})"
+                    self.status = f"Streak delay {streak_pause:.3f}s (streak {self.current_streak})"
                     await asyncio.sleep(streak_pause)
 
                 # Pending restart: wait for win before restarting auto-bet
@@ -1394,7 +1394,7 @@ class BettingEngine:
             # Streak delay: pause after N consecutive wins/losses
             streak_pause = self._get_streak_delay()
             if streak_pause > 0:
-                self.status = f"Streak delay {streak_pause}s (streak {self.current_streak})"
+                self.status = f"Streak delay {streak_pause:.3f}s (streak {self.current_streak})"
                 await asyncio.sleep(streak_pause)
 
             # Pending restart: wait for win before restarting auto-bet with new config
