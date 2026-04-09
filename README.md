@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.10.2 + Telegram Bot v1.9.2
+# WolfBet AutoBot v2.10.3 + Telegram Bot v1.9.3
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Auto-bet), per-session proxy routing, async I/O, and live dashboard + Telegram bot. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
