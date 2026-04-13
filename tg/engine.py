@@ -425,6 +425,10 @@ class BettingEngine:
         return {}
 
     async def _api_place_bet(self, amount: float) -> Optional[dict]:
+        if self.current_balance > 0 and amount > self.current_balance:
+            self._set_error("Insufficient balance", f"bet {amount:.8f} > balance {self.current_balance:.8f}")
+            self._insufficient_balance = True
+            return None
         payload = self._build_bet_payload(amount)
         ep = GAME_ENDPOINTS.get(self.game, ("/v1/bet/place", 1, 480, False))
         url = f"{API_BASE}{ep[0]}"
@@ -454,7 +458,12 @@ class BettingEngine:
                 self.rate_backoff = 2.0
                 self._set_error("Rate limit reached — cooling down")
             else:
-                self._set_error("Bet request failed", f"HTTP {r.status_code}: {r.text[:120]}")
+                body = r.text or ""
+                if "insufficient" in body.lower() or "balance" in body.lower():
+                    self._set_error("Insufficient balance")
+                    self._insufficient_balance = True
+                else:
+                    self._set_error("Bet request failed", f"HTTP {r.status_code}: {body[:120]}")
         except (httpx.TimeoutException, httpx.ConnectError):
             self._consecutive_timeouts += 1
             self._set_error("Connection timeout — retrying")

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.10.4 — Insufficient Balance Stop (2026-04-13)
+
+### Fixed
+
+- **Insufficient balance now always stops session** — Added pre-bet balance guard (`current_bet > current_balance`) and broadened non-200 HTTP response detection to catch insufficient balance across all bet paths (manual, auto-bet, pipelined). Previously, deep Martingale streaks could drive `current_bet` above balance without the session stopping when the server response format didn't match the narrow detection pattern
+
 ## v2.10.3 — Streak Delay & Recurring Bet Fixes (2026-04-09)
 
 ### Added
