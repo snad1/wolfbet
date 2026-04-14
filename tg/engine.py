@@ -241,6 +241,20 @@ class BettingEngine:
         except (IndexError, ValueError):
             return (0, 0.0)
 
+    @staticmethod
+    def _fmt_stop_reason(sr) -> str:
+        """Turn WolfBet's auto-stop payload into a human message."""
+        if isinstance(sr, dict):
+            tmpl = sr.get("message") or ""
+            for k, v in (sr.get("values") or {}).items():
+                try:
+                    v_fmt = f"{float(v):.8f}" if "." in str(v) or "e" in str(v).lower() else str(v)
+                except (TypeError, ValueError):
+                    v_fmt = str(v)
+                tmpl = tmpl.replace("{{" + str(k) + "}}", v_fmt)
+            return tmpl.strip() or str(sr)
+        return str(sr)
+
     def _apply_basebet_pct(self) -> bool:
         """If basebet_pct configured, recompute base_bet from current balance. Returns True if changed."""
         if self.basebet_pct <= 0 or self.current_balance <= 0:
@@ -1318,7 +1332,7 @@ class BettingEngine:
                 stop_reason = result.get("stopReason")
                 if stop_reason:
                     should_stop = True
-                    self.stop_reason = f"WolfBet auto-stop: {stop_reason}"
+                    self.stop_reason = f"WolfBet auto-stop: {self._fmt_stop_reason(stop_reason)}"
                     break
 
                 last_bet_state = self._process_bet_result(result)
@@ -1462,7 +1476,7 @@ class BettingEngine:
             stop_reason = result.get("stopReason")
             if stop_reason and self._is_auto_game():
                 self.running = False
-                self.stop_reason = f"WolfBet auto-stop: {stop_reason}"
+                self.stop_reason = f"WolfBet auto-stop: {self._fmt_stop_reason(stop_reason)}"
                 self.status = f"STOPPED: {self.stop_reason}"
                 break
 
