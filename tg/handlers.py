@@ -476,6 +476,27 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             else:
                 config["streak_delay_win"] = value
+        elif param in ("streakbet_loss", "sbloss"):
+            if value.lower() == "off":
+                config["streakbet_loss"] = None
+            elif ":" not in value:
+                await update.message.reply_text("Format: `/set streakbet_loss 10:0.5` (every 10 losses → halve bet)\nUse `off` to disable.", parse_mode="Markdown")
+                return
+            else:
+                config["streakbet_loss"] = value
+        elif param in ("basebet_pct", "bbpct"):
+            if value.lower() == "off":
+                config["basebet_pct"] = None
+            else:
+                try:
+                    val = float(value)
+                except ValueError:
+                    await update.message.reply_text("basebet_pct must be a fraction (e.g. `0.001` = 0.1% of balance)", parse_mode="Markdown")
+                    return
+                if val < 0 or val > 1:
+                    await update.message.reply_text("basebet_pct must be between 0 and 1.")
+                    return
+                config["basebet_pct"] = val
         elif param in ("purgedays", "purge_days"):
             val = int(value)
             if val < 1 or val > 30:
@@ -758,17 +779,15 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(_get_running(user_id)) > 1:
         rate_warn = f"\n\n⚠️ WolfBet rate limit: {ep[2]}/min. Multiple sessions share this."
 
-    wc = round(99.0 / engine.multiplier, 2)
     slot_info = f" (slot {slot})" if len(_get_running(user_id)) > 1 else ""
     rec_info = f"\nRecurring: `{int(config.get('recurring_delay') or 60)}s`" if config.get("recurring") else ""
+    from .formatter import format_full_config
+    cfg_lines = "\n".join(format_full_config(engine.get_status()))
     try:
         await msg.edit_text(
             f"Session #{engine.session_id}{slot_info} started!\n\n"
-            f"Game: `{game_label}`\n"
-            f"Strategy: `{engine.strategy}`\n"
-            f"Multiplier: `{engine.multiplier:.2f}x` ({wc}%)\n"
-            f"Base bet: `{engine.base_bet:.8f} {engine.currency.upper()}`\n"
-            f"Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
+            f"\u2699\ufe0f *Config*\n{cfg_lines}\n\n"
+            f"\U0001f4b0 Balance: `{engine.current_balance:.8f} {engine.currency.upper()}`"
             f"{rec_info}\n\n"
             f"Use /status to check progress.{rate_warn}",
             parse_mode="Markdown",
@@ -1051,6 +1070,10 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             changes["streak_delay_loss"] = None if off else value
         elif param in ("sdwin", "streakdelay_win"):
             changes["streak_delay_win"] = None if off else value
+        elif param in ("sbloss", "streakbet_loss"):
+            changes["streakbet_loss"] = None if off else value
+        elif param in ("bbpct", "basebet_pct"):
+            changes["basebet_pct"] = None if off else float(value)
         elif param == "multiplier":
             changes["multiplier"] = float(value)
         elif param in ("lossmult", "loss_mult"):

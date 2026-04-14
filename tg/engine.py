@@ -86,6 +86,12 @@ class BettingEngine:
         self.streak_delay_loss = self._parse_streak_delay(config.get("streak_delay_loss"))
         self.streak_delay_win  = self._parse_streak_delay(config.get("streak_delay_win"))
 
+        # ── adaptive base bet ──
+        # basebet_pct: base_bet = balance * pct, recomputed on session start + profit-increment
+        self.basebet_pct       = float(config.get("basebet_pct") or 0)
+        # streakbet_loss "N:multiplier" — after every N consecutive losses, current_bet *= multiplier
+        self.streakbet_loss    = self._parse_streak_delay(config.get("streakbet_loss"))
+
         # ── rules ──
         self.custom_rules: List[StrategyRule] = []
         rules_text = config.get("custom_rules_text", "")
@@ -234,6 +240,27 @@ class BettingEngine:
             return (int(parts[0]), float(parts[1]))
         except (IndexError, ValueError):
             return (0, 0.0)
+
+    def _apply_basebet_pct(self) -> bool:
+        """If basebet_pct configured, recompute base_bet from current balance. Returns True if changed."""
+        if self.basebet_pct <= 0 or self.current_balance <= 0:
+            return False
+        new_base = round(self.current_balance * self.basebet_pct, 8)
+        if new_base <= 0:
+            return False
+        if abs(new_base - self.base_bet) < 1e-12:
+            return False
+        self.base_bet = new_base
+        self.current_bet = new_base
+        return True
+
+    def _get_streakbet_loss_factor(self) -> float:
+        """Return current_bet multiplier when on a qualifying loss streak. 1.0 = no change."""
+        streak = self.current_streak
+        count, mult = self.streakbet_loss
+        if count > 0 and streak < 0 and abs(streak) > 0 and abs(streak) % count == 0:
+            return mult
+        return 1.0
 
     def _get_streak_delay(self) -> float:
         """Check if current streak triggers a delay. Returns delay in seconds or 0."""
@@ -505,6 +532,13 @@ class BettingEngine:
             "win_mult": self.win_mult,
             "bet_delay": self.bet_delay,
             "rule": self.rule,
+            "bet_value": self.bet_value,
+            "basebet_pct": self.basebet_pct or None,
+            "streak_delay_loss": f"{self.streak_delay_loss[0]}:{self.streak_delay_loss[1]}" if self.streak_delay_loss[0] > 0 else None,
+            "streak_delay_win": f"{self.streak_delay_win[0]}:{self.streak_delay_win[1]}" if self.streak_delay_win[0] > 0 else None,
+            "streakbet_loss": f"{self.streakbet_loss[0]}:{self.streakbet_loss[1]}" if self.streakbet_loss[0] > 0 else None,
+            "milestone_bets": self.milestone_bets,
+            "pipeline": self.pipeline,
         }
         if self.strategy_key == "7":  # Delay Martingale
             snap["delay_threshold"] = self.delay_martin_threshold
@@ -862,6 +896,9 @@ class BettingEngine:
         self.current_balance = bal
         self.highest_balance = bal
         self.lowest_balance  = bal
+        if self._apply_basebet_pct():
+            logger.info("User %d: basebet_pct=%.6f → base_bet=%.8f (balance=%.8f)",
+                        self.user_id, self.basebet_pct, self.base_bet, bal)
         self.session_start   = time.time()
         self._last_session_save = time.time()
         self.session_id      = self._db_start_session()
@@ -907,6 +944,10 @@ class BettingEngine:
             "milestone_wins": self.milestone_wins,
             "milestone_losses": self.milestone_losses,
             "milestone_profit": self.milestone_profit,
+            "streak_delay_loss": f"{self.streak_delay_loss[0]}:{self.streak_delay_loss[1]}" if self.streak_delay_loss[0] > 0 else None,
+            "streak_delay_win":  f"{self.streak_delay_win[0]}:{self.streak_delay_win[1]}" if self.streak_delay_win[0] > 0 else None,
+            "streakbet_loss":    f"{self.streakbet_loss[0]}:{self.streakbet_loss[1]}" if self.streakbet_loss[0] > 0 else None,
+            "basebet_pct":       self.basebet_pct or None,
         }
         return {
             "user_id": self.user_id,
@@ -1019,6 +1060,20 @@ class BettingEngine:
         if "streak_delay_win" in changes:
             self.streak_delay_win = self._parse_streak_delay(changes["streak_delay_win"])
             msgs.append(f"Streak delay win: {self.streak_delay_win[0]}x → {self.streak_delay_win[1]:.3f}s")
+        if "streakbet_loss" in changes:
+            self.streakbet_loss = self._parse_streak_delay(changes["streakbet_loss"])
+            if self.streakbet_loss[0] > 0:
+                msgs.append(f"Streak bet loss: every {self.streakbet_loss[0]} losses → x{self.streakbet_loss[1]:.3f}")
+            else:
+                msgs.append("Streak bet loss: off")
+        if "basebet_pct" in changes:
+            v = changes["basebet_pct"]
+            self.basebet_pct = float(v) if v is not None else 0.0
+            if self.basebet_pct > 0 and self.current_balance > 0:
+                self._apply_basebet_pct()
+                msgs.append(f"Basebet pct: {self.basebet_pct*100:.4f}% → base={self.base_bet:.8f}")
+            else:
+                msgs.append("Basebet pct: off")
 
         # Stop conditions — instant, checked every bet
         if "max_profit" in changes:
@@ -1166,6 +1221,16 @@ class BettingEngine:
             "stop_conditions": stops,
             "profit_increment": self.profit_increment,
             "profit_threshold": self.profit_threshold,
+            "next_profit_milestone": self.next_profit_milestone,
+            "milestone_bets": self.milestone_bets,
+            "streak_delay_loss": self.streak_delay_loss,
+            "streak_delay_win": self.streak_delay_win,
+            "streakbet_loss": self.streakbet_loss,
+            "basebet_pct": self.basebet_pct,
+            "rule": self.rule,
+            "bet_value": self.bet_value,
+            "win_mult": self.win_mult,
+            "loss_mult": self.loss_mult,
             "rules": rule_descs,
             "game": self.game,
             "game_label": GAME_LABELS.get(self.game, self.game),
@@ -1288,7 +1353,10 @@ class BettingEngine:
             self._periodic_save()
             if (self.profit_increment is not None and self.profit_threshold
                     and self.profit >= self.next_profit_milestone):
-                self.base_bet += self.profit_increment
+                if self.basebet_pct > 0 and self.current_balance > 0:
+                    self.base_bet = round(self.current_balance * self.basebet_pct, 8)
+                else:
+                    self.base_bet += self.profit_increment
                 self.next_profit_milestone += self.profit_threshold
                 logger.info("User %d: PROFIT INCREMENT base_bet → %.8f", self.user_id, self.base_bet)
                 if self._auto_uuid:
@@ -1432,7 +1500,10 @@ class BettingEngine:
             # profit-based base bet increment
             if (self.profit_increment is not None and self.profit_threshold
                     and self.profit >= self.next_profit_milestone):
-                self.base_bet += self.profit_increment
+                if self.basebet_pct > 0 and self.current_balance > 0:
+                    self.base_bet = round(self.current_balance * self.basebet_pct, 8)
+                else:
+                    self.base_bet += self.profit_increment
                 self.next_profit_milestone += self.profit_threshold
                 logger.info("User %d: PROFIT INCREMENT base_bet → %.8f (next at %.8f profit)",
                             self.user_id, self.base_bet, self.next_profit_milestone)
@@ -1455,6 +1526,9 @@ class BettingEngine:
 
             raw_next = self._compute_next_bet(bet_state)
             self.current_bet = max(self.base_bet, raw_next)
+            sbl_factor = self._get_streakbet_loss_factor()
+            if sbl_factor != 1.0:
+                self.current_bet = self.current_bet * sbl_factor
             last_result = bet_state
 
             # milestone callbacks
