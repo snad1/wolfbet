@@ -35,9 +35,6 @@ def format_full_config(s: dict) -> list:
     lines = []
     lines.append(f"  Game: `{s.get('game_label', s.get('game', '?'))}`")
     lines.append(f"  Strategy: `{s.get('strategy', '?')}` `{s.get('multiplier', 0):.2f}x`")
-    detail = s.get("strategy_detail", "")
-    if detail:
-        lines.append(f"  `{detail}`")
     sk = s.get("strategy_key", "")
     if sk in ("2", "6", "7"):
         lines.append(f"  Loss mult: `{s.get('loss_mult', 0):.2f}x`")
