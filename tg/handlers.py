@@ -358,10 +358,16 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"Bet delay: `{float(config.get('bet_delay') or 0)}s`")
         sdl = config.get("streak_delay_loss")
         sdw = config.get("streak_delay_win")
+        sbl = config.get("streakbet_loss")
+        bbp = config.get("basebet_pct")
         if sdl:
             lines.append(f"Streak delay loss: `{sdl}`")
         if sdw:
             lines.append(f"Streak delay win: `{sdw}`")
+        if sbl:
+            lines.append(f"Streak bet loss: `{sbl}`")
+        if bbp:
+            lines.append(f"Basebet pct: `{float(bbp)*100:.4f}%` of balance")
 
         # Stop conditions
         stops = []
