@@ -157,6 +157,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`recurringdelay` — Seconds before restart (default 60)\n"
         "`streakdelay_loss` — Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
         "`streakdelay_win` — Delay after N wins (`10:0.5` = every 10 wins → 0.5s)\n"
+        "`streakbet_loss` — Scale bet after N losses (`10:0.5` = every 10 losses → halve)\n"
+        "`basebet_pct` — Base bet as fraction of balance (`0.001` = 0.1%, `off` to disable)\n"
         "`purgedays` — Auto-delete bets older than N days (1-30, default 1)\n\n"
         "*Session* _(up to 5 concurrent)_\n"
         "/bet — Start session\n"
