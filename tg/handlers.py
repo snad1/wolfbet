@@ -314,9 +314,16 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"`{cur:>6}  {amt:.8f}`")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
+        from telegram.error import RetryAfter, NetworkError, TimedOut
+        if isinstance(e, (RetryAfter, NetworkError, TimedOut)):
+            logger.warning("cmd_balance send failed: %s", e)
+            return
         logger.error("cmd_balance error: %s", e, exc_info=True)
         msg = f"Error: `{e}`" if APP_ENV != "production" else "Something went wrong. Please try again."
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        try:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 # ── /config ──────────────────────────────────────────────
