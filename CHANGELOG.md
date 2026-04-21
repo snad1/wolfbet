@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.11.1 — Recurring Reliability Fixes (2026-04-21)
+
+### Fixed
+
+- **Recurring stops after N cycles** — `_notify_stop` now wraps formatting in try/except so a bad status snapshot never crashes before the recurring restart block. All fire-and-forget tasks converted from `ensure_future` to `create_task` with `add_done_callback` so exceptions are logged instead of silently swallowed
+- **Recurring restart retries on transient failure** — When `engine.start()` fails during a recurring restart (e.g. transient API error), the recurring state is kept alive and a retry is scheduled after the same delay instead of permanently stopping the cycle
+- **/monitor stops between recurring cycles** — Monitor loop now checks for a pending recurring restart (non-done `timer_task`) and shows "⏳ Recurring restart pending…" while waiting, then resumes live status updates once the new engine starts
+- **/status Refresh button breaks during inter-session gap** — When Refresh is pressed while a recurring restart is pending, the message now shows "⏳ Recurring restart pending…" with buttons intact instead of "Session ended." (which permanently removed the inline keyboard)
+
 ## v2.11.0 — Adaptive Base Bet & Full Config Visibility (2026-04-14)
 
 ### Added
