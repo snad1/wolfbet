@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.11.2 — Recurring Notification Throttle (2026-04-21)
+
+### Fixed
+
+- **Telegram flood ban on fast recurring sessions** — Stop and start notifications are now rate-limited to at most one of each per 30 seconds per user during recurring cycles. Losses, errors, insufficient balance, and manual stops are always sent immediately regardless of throttle. This prevents WolfBet's 23 bps speed from generating 20+ messages/minute and triggering Telegram's flood ban
+
 ## v2.11.1 — Recurring Reliability Fixes (2026-04-21)
 
 ### Fixed

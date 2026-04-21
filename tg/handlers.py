@@ -45,6 +45,22 @@ recurring_state: Dict[int, Dict[int, dict]] = {}
 # user_id → {slot: asyncio.Task}
 active_monitors: Dict[int, Dict[int, asyncio.Task]] = {}
 
+# ── Recurring notification throttle ──────────────────────
+# Prevents Telegram flood bans during fast recurring cycles.
+# user_id → {"stop": float, "start": float}  (unix timestamps)
+_recurring_notify_ts: Dict[int, Dict[str, float]] = {}
+RECURRING_NOTIFY_THROTTLE = 30  # max one stop + one start notification per 30s per user
+
+
+def _throttle_recurring(user_id: int, kind: str) -> bool:
+    """Return True (and record timestamp) if enough time has passed to send this notification."""
+    now = time.time()
+    user_ts = _recurring_notify_ts.setdefault(user_id, {})
+    if now - user_ts.get(kind, 0) >= RECURRING_NOTIFY_THROTTLE:
+        user_ts[kind] = now
+        return True
+    return False
+
 
 def _get_running(user_id: int) -> Dict[int, BettingEngine]:
     """Return {slot: engine} for running engines only."""
@@ -843,17 +859,32 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     if not engine:
         return
 
-    # Send stop notification — wrapped so a formatting error never blocks the recurring restart
-    try:
-        s = engine.get_status()
-        text = format_stop(s, reason)
-        await _safe_send(app, chat_id, text, parse_mode="Markdown")
-    except Exception as exc:
-        logger.error("_notify_stop formatting error (slot %d): %s", slot, exc, exc_info=True)
-        await _safe_send(app, chat_id, f"Session #{engine.session_id} stopped: {reason}")
+    # Throttle stop notifications for fast recurring cycles to avoid Telegram flood bans.
+    # Always notify on: manual stop, errors, insufficient balance, or net loss.
+    # Throttle (max 1 per RECURRING_NOTIFY_THROTTLE seconds) for positive-profit condition stops.
+    user_rec = recurring_state.get(user_id, {})
+    is_recurring = bool(user_rec.get(slot))
+    is_notable = (
+        not is_recurring
+        or reason == "Stopped by user"
+        or "insufficient" in reason.lower()
+        or engine.profit < 0
+    )
+    send_stop = is_notable or _throttle_recurring(user_id, "stop")
+
+    if send_stop:
+        try:
+            s = engine.get_status()
+            text = format_stop(s, reason)
+            await _safe_send(app, chat_id, text, parse_mode="Markdown")
+        except Exception as exc:
+            logger.error("_notify_stop formatting error (slot %d): %s", slot, exc, exc_info=True)
+            await _safe_send(app, chat_id, f"Session #{engine.session_id} stopped: {reason}")
+    else:
+        logger.info("User %d slot %d: stop notification throttled (profit %.8f, reason: %s)",
+                    user_id, slot, engine.profit, reason)
 
     # Recurring bet: schedule restart if condition stop (not manual)
-    user_rec = recurring_state.get(user_id, {})
     rec = user_rec.get(slot)
     if rec and reason != "Stopped by user" and "insufficient" not in reason.lower():
         delay = rec["delay"]
@@ -945,11 +976,12 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
         user_rec[slot] = rec_data
         recurring_state.setdefault(user_id, {})[slot] = rec_data
 
-    await _safe_send(
-        app, chat_id,
-        f"Recurring #{engine.session_id} · base `{engine.base_bet:.8f}` · bal `{engine.current_balance:.8f} {engine.currency.upper()}`",
-        parse_mode="Markdown",
-    )
+    if _throttle_recurring(user_id, "start"):
+        await _safe_send(
+            app, chat_id,
+            f"Recurring #{engine.session_id} · base `{engine.base_bet:.8f}` · bal `{engine.current_balance:.8f} {engine.currency.upper()}`",
+            parse_mode="Markdown",
+        )
 
 
 async def _notify_milestone(chat_id: int, data: dict, app):
