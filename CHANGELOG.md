@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.12.0 — Streak Delay Bets (2026-04-21)
+
+### Added
+
+- **`streakdelay_bets`** — Delay every N total bets by X seconds, regardless of win/loss outcome. Format `N:seconds` (e.g. `/set streakdelay_bets 100:0.5` pauses 0.5s every 100 bets). Useful for throttling overall bet rate independent of streaks. Live-tweakable via `/tweak sdbets 100:0.5`. When multiple streak delays apply on the same bet (e.g. loss streak + bet count), the longest delay wins
+
 ## v2.11.2 — Recurring Notification Throttle (2026-04-21)
 
 ### Fixed

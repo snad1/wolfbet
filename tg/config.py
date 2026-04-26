@@ -30,7 +30,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # ── Config keys persisted per user ───────────────────────
 CONFIG_KEYS = [
-    "api_key", "proxy", "pipeline", "purge_days", "streak_delay_loss", "streak_delay_win",
+    "api_key", "proxy", "pipeline", "purge_days", "streak_delay_loss", "streak_delay_win", "streak_delay_bets",
     "currency", "game", "rule", "multiplier", "bet_value",
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
