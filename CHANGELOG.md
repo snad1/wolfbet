@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.12.2 — Auto-recompute bet_value to absorb stale configs (2026-04-21)
+
+### Fixed
+
+- **Stale `bet_value` in saved user configs persisted v2.12.1 fix never took effect** — Even after the formula fix, users whose config was saved under the old formula still had `bet_value=50.49` stored, which the engine read on every session start and sent to WolfBet, triggering the same HTTP 422. Engine now derives `bet_value` from `multiplier + rule` on init and ignores any stored value, so stale configs self-correct on the first `/bet`
+
 ## v2.12.1 — Fix "Incorrect win chance given" for whole multipliers (2026-04-21)
 
 ### Fixed

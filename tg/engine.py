@@ -71,7 +71,10 @@ class BettingEngine:
         self.rule           = config.get("rule") or "over"
         self.multiplier     = float(config.get("multiplier") or 2.01)
         self.initial_multiplier = self.multiplier
-        self.bet_value      = float(config.get("bet_value") or 50.49)
+        # bet_value is fully derived from multiplier + rule (99% RTP); always recompute to
+        # avoid stale configs causing WolfBet's "Incorrect win chance given" rejection
+        wc = 99.0 / self.multiplier if self.multiplier > 0 else 49.5
+        self.bet_value      = round(100.0 - wc, 2) if self.rule == "over" else round(wc, 2)
         self.base_bet       = float(config.get("base_bet") or 0.0001)
         self.current_bet    = self.base_bet
         self.strategy       = config.get("strategy") or "Martingale"
