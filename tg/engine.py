@@ -74,7 +74,7 @@ class BettingEngine:
         # bet_value is fully derived from multiplier + rule (99% RTP); always recompute to
         # avoid stale configs causing WolfBet's "Incorrect win chance given" rejection
         wc = 99.0 / self.multiplier if self.multiplier > 0 else 49.5
-        self.bet_value      = round(100.0 - wc, 2) if self.rule == "over" else round(wc, 2)
+        self.bet_value      = round(100.0 - wc - 0.01, 2) if self.rule == "over" else round(wc, 2)
         self.base_bet       = float(config.get("base_bet") or 0.0001)
         self.current_bet    = self.base_bet
         self.strategy       = config.get("strategy") or "Martingale"
@@ -377,12 +377,18 @@ class BettingEngine:
     def _is_auto_game(self) -> bool:
         return self.game in AUTO_ENDPOINTS
 
+    @staticmethod
+    def _fmt_mult(m: float) -> str:
+        """Format multiplier as WolfBet expects: no trailing zeros ('2' not '2.0', '2.01' kept)."""
+        s = f"{m:.4f}".rstrip("0").rstrip(".")
+        return s or "0"
+
     def _build_auto_start_payload(self) -> dict:
         """Build the payload for auto/start — includes strategy config."""
         base = {
             "currency":   self.currency,
             "amount":     f"{self.base_bet:.8f}",
-            "multiplier": f"{self.multiplier}",
+            "multiplier": self._fmt_mult(self.multiplier),
             "config":     self._build_auto_config(),
         }
         if self.game == "limbo-auto":
@@ -390,7 +396,7 @@ class BettingEngine:
         elif self.game == "dice-auto":
             base["game"] = "dice"
             base["rule"] = self.rule
-            base["bet_value"] = f"{self.bet_value}"
+            base["bet_value"] = f"{self.bet_value:.2f}"
         return base
 
     def _build_auto_config(self) -> list:
@@ -451,8 +457,8 @@ class BettingEngine:
                 "game":       "dice",
                 "amount":     f"{amount:.8f}",
                 "rule":       self.rule,
-                "multiplier": f"{self.multiplier}",
-                "bet_value":  f"{self.bet_value}",
+                "multiplier": self._fmt_mult(self.multiplier),
+                "bet_value":  f"{self.bet_value:.2f}",
             }
         elif gk == "dice-manual":
             return {
@@ -460,8 +466,8 @@ class BettingEngine:
                 "game":       "dice",
                 "amount":     f"{amount:.8f}",
                 "rule":       self.rule,
-                "multiplier": f"{self.multiplier}",
-                "bet_value":  f"{self.bet_value}",
+                "multiplier": self._fmt_mult(self.multiplier),
+                "bet_value":  f"{self.bet_value:.2f}",
                 "auto":       1,
             }
         elif gk == "limbo":
@@ -469,7 +475,7 @@ class BettingEngine:
                 "currency":   self.currency,
                 "game":       "limbo",
                 "amount":     f"{amount:.8f}",
-                "multiplier": f"{self.multiplier}",
+                "multiplier": self._fmt_mult(self.multiplier),
                 "auto":       1,
             }
         elif gk in ("limbo-auto", "dice-auto"):

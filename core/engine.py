@@ -72,7 +72,7 @@ def wolfrider_switch(total_bets: int, rule: str, multiplier: float) -> tuple:
         new_rule = "under" if rule == "over" else "over"
         wc = 99.0 / multiplier
         if new_rule == "over":
-            new_bet_value = round(100.0 - wc, 2)
+            new_bet_value = round(100.0 - wc - 0.01, 2)
         else:
             new_bet_value = round(wc, 2)
         return new_rule, new_bet_value
@@ -82,7 +82,7 @@ def wolfrider_switch(total_bets: int, rule: str, multiplier: float) -> tuple:
 def _update_bet_value(mutations: dict, bet_rule: str, wc: float, new_mult: float):
     """Helper: set multiplier and bet_value from win chance."""
     mutations["multiplier"] = new_mult
-    mutations["bet_value"] = round(100.0 - wc, 2) if bet_rule == "over" else round(wc, 2)
+    mutations["bet_value"] = round(100.0 - wc - 0.01, 2) if bet_rule == "over" else round(wc, 2)
 
 
 def apply_action(rule: StrategyRule, current_bet: float, base_bet: float,
@@ -121,7 +121,7 @@ def apply_action(rule: StrategyRule, current_bet: float, base_bet: float,
     elif a == "switch":
         new_rule = "under" if bet_rule == "over" else "over"
         mutations["rule"] = new_rule
-        mutations["bet_value"] = round(100.0 - wc, 2) if new_rule == "over" else round(wc, 2)
+        mutations["bet_value"] = round(100.0 - wc - 0.01, 2) if new_rule == "over" else round(wc, 2)
 
     # ── Stop ──
     elif a == "stop":

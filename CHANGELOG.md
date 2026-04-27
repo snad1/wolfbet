@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.12.3 — Real fix: WolfBet rejects "2.0" as multiplier string (2026-04-21)
+
+### Fixed
+
+- **"Incorrect win chance given" — true root cause was multiplier string format, not bet_value** — A real captured WolfBet payload showed the API expects `"multiplier": "2"` (no trailing zeros), not Python's default `f"{2.0}"` → `"2.0"`. WolfBet rejects "2.0" as the string and returns "Incorrect win chance given" even though `bet_value=50.49` is correct (which was always the right value — `100 - wc - 0.01` matches WolfBet's discrete `[0.00, 99.99]` roll boundary). Reverted v2.12.1's bet_value formula change. Multipliers are now formatted via a helper that strips trailing zeros: `2` not `2.0`, `2.01` kept, `2.5` kept. Applies to auto-start, manual bet, dice-manual, limbo, and the benchmark probe in /balance
+
+### Reverted
+
+- v2.12.1's removal of the `-0.01` term in the bet_value formula (it was correct all along)
+- v2.12.2 kept the engine-level `bet_value` recompute on init (still useful — ensures consistency from multiplier even if config drifts)
+
 ## v2.12.2 — Auto-recompute bet_value to absorb stale configs (2026-04-21)
 
 ### Fixed

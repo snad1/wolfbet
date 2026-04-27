@@ -259,7 +259,8 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.headers.update({"Authorization": f"Bearer {api_key}"})
     currency = config.get("currency") or "btc"
     multiplier = float(config.get("multiplier") or 2.0)
-    bet_value = round(100 - 99 / multiplier, 2)
+    bet_value = round(100 - 99 / multiplier - 0.01, 2)
+    mult_str = f"{multiplier:.4f}".rstrip("0").rstrip(".") or "0"
     times = []
 
     for i in range(count):
@@ -268,8 +269,8 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "game": "dice",
             "amount": "0",
             "rule": config.get("rule") or "over",
-            "multiplier": str(multiplier),
-            "bet_value": str(bet_value),
+            "multiplier": mult_str,
+            "bet_value": f"{bet_value:.2f}",
         }
         try:
             t0 = _time.time()
@@ -597,7 +598,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["multiplier"] = mult
             wc = 99.0 / mult
             rule = config.get("rule", "over")
-            config["bet_value"] = round(100.0 - wc, 2) if rule == "over" else round(wc, 2)
+            config["bet_value"] = round(100.0 - wc - 0.01, 2) if rule == "over" else round(wc, 2)
         elif param == "basebet":
             val = float(value)
             if val < 0:
@@ -612,7 +613,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["rule"] = value.lower()
             mult = config.get("multiplier", 2.01)
             wc = 99.0 / mult
-            config["bet_value"] = round(100.0 - wc, 2) if value.lower() == "over" else round(wc, 2)
+            config["bet_value"] = round(100.0 - wc - 0.01, 2) if value.lower() == "over" else round(wc, 2)
         elif param == "lossmult":
             val = float(value)
             if val <= 0:
