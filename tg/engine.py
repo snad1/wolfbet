@@ -402,6 +402,8 @@ class BettingEngine:
     @staticmethod
     def _custom_rule_to_wolfbet(r) -> dict | None:
         """Translate a StrategyRule into a WolfBet auto-bet rule dict, or None if unsupported."""
+        if r.cond_type != "sequence":
+            return None  # profit/bet conditions not supported for auto-bet
         # Trigger name: WolfBet uses "lose" not "loss"
         trigger_map = {"win": "win", "loss": "lose", "bet": "bet"}
         # Sequential mode → WolfBet condition type
@@ -411,23 +413,28 @@ class BettingEngine:
             "first_streak": "streak",
             "streak_above": "streakGreater",
         }
-        # Action → WolfBet command
+        wb_type = type_map.get(r.cond_mode)
+        wb_trigger = trigger_map.get(r.cond_trigger)
+        if not (wb_type and wb_trigger):
+            return None
+
+        # Build the command lazily — only the matching action evaluates action_value
+        try:
+            av = float(r.action_value) if r.action_value not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            av = 0.0
         action_map = {
             "reset_amount":    [{"name": "resetAmount"}],
-            "increase_amount": [{"name": "increaseAmountPercent", "value": float(r.action_value)}],
-            "decrease_amount": [{"name": "decreaseAmountPercent", "value": float(r.action_value)}],
-            "add_amount":      [{"name": "increaseAmountValue", "value": float(r.action_value)}],
-            "deduct_amount":   [{"name": "decreaseAmountValue", "value": float(r.action_value)}],
-            "set_amount":      [{"name": "setAmount", "value": float(r.action_value)}],
+            "increase_amount": [{"name": "increaseAmountPercent", "value": av}],
+            "decrease_amount": [{"name": "decreaseAmountPercent", "value": av}],
+            "add_amount":      [{"name": "increaseAmountValue", "value": av}],
+            "deduct_amount":   [{"name": "decreaseAmountValue", "value": av}],
+            "set_amount":      [{"name": "setAmount", "value": av}],
             "switch":          [{"name": "switch"}],
             "stop":            [{"name": "stop"}],
         }
-        if r.cond_type != "sequence":
-            return None  # profit/bet conditions not supported for auto-bet
-        wb_type = type_map.get(r.cond_mode)
-        wb_trigger = trigger_map.get(r.cond_trigger)
         wb_command = action_map.get(r.action)
-        if not (wb_type and wb_trigger and wb_command):
+        if not wb_command:
             return None
         return {
             "command": wb_command,

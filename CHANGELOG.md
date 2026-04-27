@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.13.1 — Fix crash on Rule-Based rules without action_value (2026-04-21)
+
+### Fixed
+
+- **`could not convert string to float: ''` crash on `/bet`** — `_custom_rule_to_wolfbet` built an `action_map` dict where every value entry called `float(r.action_value)` eagerly. For rules like `reset_amount` or `switch` that don't take a value, `action_value` is `""`, which crashed the whole map construction even though the eventually-matched key didn't need the float. Hoisted the float conversion to a single `av = float(...)` with empty-string guard, then referenced `av` inside the dict — only evaluated once and only fails fast if conversion is genuinely impossible
+
 ## v2.13.0 — Rule-Based strategy now sends custom rules to WolfBet auto-bet (2026-04-21)
 
 ### Fixed
