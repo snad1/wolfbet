@@ -399,6 +399,41 @@ class BettingEngine:
             base["bet_value"] = f"{self.bet_value:.2f}"
         return base
 
+    @staticmethod
+    def _custom_rule_to_wolfbet(r) -> dict | None:
+        """Translate a StrategyRule into a WolfBet auto-bet rule dict, or None if unsupported."""
+        # Trigger name: WolfBet uses "lose" not "loss"
+        trigger_map = {"win": "win", "loss": "lose", "bet": "bet"}
+        # Sequential mode → WolfBet condition type
+        type_map = {
+            "every": "every",
+            "every_streak": "streak",
+            "first_streak": "streak",
+            "streak_above": "streakGreater",
+        }
+        # Action → WolfBet command
+        action_map = {
+            "reset_amount":    [{"name": "resetAmount"}],
+            "increase_amount": [{"name": "increaseAmountPercent", "value": float(r.action_value)}],
+            "decrease_amount": [{"name": "decreaseAmountPercent", "value": float(r.action_value)}],
+            "add_amount":      [{"name": "increaseAmountValue", "value": float(r.action_value)}],
+            "deduct_amount":   [{"name": "decreaseAmountValue", "value": float(r.action_value)}],
+            "set_amount":      [{"name": "setAmount", "value": float(r.action_value)}],
+            "switch":          [{"name": "switch"}],
+            "stop":            [{"name": "stop"}],
+        }
+        if r.cond_type != "sequence":
+            return None  # profit/bet conditions not supported for auto-bet
+        wb_type = type_map.get(r.cond_mode)
+        wb_trigger = trigger_map.get(r.cond_trigger)
+        wb_command = action_map.get(r.action)
+        if not (wb_type and wb_trigger and wb_command):
+            return None
+        return {
+            "command": wb_command,
+            "when": [{"name": wb_trigger, "value": int(r.cond_value), "type": wb_type}],
+        }
+
     def _build_auto_config(self) -> list:
         """Translate our strategy + stop conditions into WolfBet auto-bet config."""
         rules = []
@@ -434,6 +469,17 @@ class BettingEngine:
         elif self.strategy_key == "7":  # Delay Martingale
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
             rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": self.delay_martin_threshold, "type": "streakGreater"}]})
+        elif self.strategy_key == "8":  # Rule-Based — translate user's custom rules
+            for r in self.custom_rules:
+                wb_rule = self._custom_rule_to_wolfbet(r)
+                if wb_rule:
+                    rules.append(wb_rule)
+                else:
+                    logger.warning("User %d: rule '%s' cannot be expressed in WolfBet auto-bet format — skipped",
+                                   self.user_id, r.description or r.action)
+            if not rules:
+                # Fallback: no translatable rules → flat behavior so the session can still start
+                rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
         else:  # Default flat
             rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
 

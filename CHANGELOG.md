@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.13.0 — Rule-Based strategy now sends custom rules to WolfBet auto-bet (2026-04-21)
+
+### Fixed
+
+- **Rule-Based custom rules silently dropped on auto-bet sessions** — `_build_auto_config` had no branch for `strategy_key == "8"`, so user-defined custom rules fell through to the default flat fallback (only "reset on win"). The WolfBet auto-bet UI showed only that fallback rule — none of the user's actual rules executed server-side. Added a `_custom_rule_to_wolfbet` translator that converts each `StrategyRule` (from the shared rule engine) into WolfBet's auto-bet schema:
+  - Sequence conditions (`every`, `every_streak`, `first_streak`, `streak_above`) map to WolfBet types `every`, `streak`, `streak`, `streakGreater`
+  - Triggers `win`/`loss`/`bet` map to WolfBet's `win`/`lose`/`bet` (note WolfBet uses "lose" not "loss")
+  - Actions: `reset_amount`, `increase_amount`, `decrease_amount`, `add_amount`, `deduct_amount`, `set_amount`, `switch`, `stop` all translated to their WolfBet command equivalents
+  - Profit/bet-threshold conditions are not yet supported by WolfBet's auto-bet schema, so they're skipped with a warning log (and still enforced client-side via the engine's normal stop-condition checks)
+  - If no rules can be translated, falls back to flat (reset on win) so the session still starts
+
 ## v2.12.3 — Real fix: WolfBet rejects "2.0" as multiplier string (2026-04-21)
 
 ### Fixed
