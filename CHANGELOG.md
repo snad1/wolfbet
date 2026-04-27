@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.12.1 — Fix "Incorrect win chance given" for whole multipliers (2026-04-21)
+
+### Fixed
+
+- **Multiplier 2.00 (and other whole-number multipliers) rejected with HTTP 422 "Incorrect win chance given"** — `bet_value` formula for "over" rule was `round(100 - wc - 0.01, 2)`, producing `50.49` for multiplier `2.00` (wc 49.5). WolfBet's API derives win_chance back from bet_value (`100 - 50.49 = 49.51%`) and compared it to the multiplier-derived win_chance (`99/2.00 = 49.5%`); the 0.01 mismatch failed validation. Removed the `-0.01` so `bet_value = 100 - wc` matches `99/multiplier` exactly. Affects both the manual `/set multiplier`, `/set rule` paths and the rule-engine `switch` action
+
 ## v2.12.0 — Streak Delay Bets (2026-04-21)
 
 ### Added
