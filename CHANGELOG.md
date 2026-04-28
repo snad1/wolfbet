@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.14.0 — Recurring honors live config across all running sessions (2026-04-28)
+
+### Fixed
+
+- **Recurring only applied to sessions started AFTER `/set recurring on`** — Previously, `recurring_state` was registered at `/bet` time only if `config.get("recurring")` was true at that moment. If a user started a Limbo session, then later toggled recurring on and started a Dice session, only Dice would auto-restart on stop — Limbo had no recurring entry. Now `recurring_state` is registered for every session unconditionally (per-slot snapshot of game/strategy preserved). At stop time the engine re-reads the user's saved config to decide whether to actually fire the restart, so toggling `/set recurring on/off` applies instantly to **every** running session regardless of game type.
+- **Recurring lost across bot restart** — `load_resume_state` now also registers `recurring_state` for each resumed session so a stop after a bot update still triggers the configured restart.
+- **Notification throttle now driven by live config** — The "is this a recurring session" check used for stop-message rate-limiting now reads the live `recurring` flag instead of the snapshot, matching the new behavior.
+
+Per-session game/strategy isolation is preserved: each session's snapshot keeps its own `game`, `strategy`, `multiplier`, `rule`, `bet_value` etc., so a Limbo restart stays Limbo and a Dice restart stays Dice — even with both running concurrently.
+
 ## v2.13.1 — Fix crash on Rule-Based rules without action_value (2026-04-21)
 
 ### Fixed
