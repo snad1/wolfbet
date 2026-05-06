@@ -4,10 +4,10 @@
 
 ### Fixed
 
-- **Profit-increment restart killed sessions when WolfBet returned 429** — `_auto_stop` followed by `_auto_start` runs in ~130ms; WolfBet caps `auto/start` at 20 (window length undocumented — appears to be ~20s rather than 60s based on observed behavior). The tight stop→start often hit the cap, returning HTTP 429 ("Too Many Attempts."), which ended the session entirely.
-  - Engine now enforces a **1s floor between starts** — well under the cap.
-  - Tracks `x-ratelimit-remaining` from every response. If the previous response said `remaining=0`, the next start gets a 2s pre-wait to avoid a guaranteed 429.
-  - On 429, retries with tight backoffs **1s / 2s / 3s / 5s / 10s / 15s** (~36s total budget) — probes the actual rate-limit window instead of assuming a fixed 60s.
+- **Profit-increment restart killed sessions when WolfBet returned 429** — `_auto_stop` followed by `_auto_start` runs in ~130ms; WolfBet caps `auto/start` at 20 per window (length undocumented). The tight stop→start often hit the cap, returning HTTP 429 ("Too Many Attempts."), which ended the session entirely. Even after a first round of fixes, sessions still died on long runs because the bot wanted more restarts/min than the cap allows (e.g. threshold=0.001 + ~13 bps yields ~43 restart attempts/min vs 20/min cap).
+  - Engine enforces a **1s floor between starts**.
+  - Tracks `x-ratelimit-remaining`. As quota drops, the pre-wait scales up: 0 → 6s, 1 → 4s, 2 → 2s. Spreads bursts evenly across the window.
+  - On 429, retries with backoffs **1 / 2 / 3 / 5 / 10 / 15 / 25 / 60 s** (~120s total budget) — long enough to outlast even a 60s window from any starting point. Probes the actual window rather than assuming a fixed length.
   - Honors `Retry-After` when the server provides it.
 
 ## v2.14.1 — Profit increment = 0 now visible in /config and works in CLI (2026-05-06)

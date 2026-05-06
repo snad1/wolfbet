@@ -344,19 +344,20 @@ class BettingEngine:
         """Start an auto-bet session on WolfBet, returns True on success.
 
         Pacing strategy (window length is undocumented — could be 20s or 60s):
-        1. Enforce a 1s floor between calls — keeps normal flow well under cap.
-        2. If the last response said remaining=0, add a short pre-wait so we
-           don't immediately burn a guaranteed 429.
-        3. On 429, retry with tight backoffs (1/2/3/5/10/15s, ~36s budget) to
-           probe the window rather than assume any fixed length.
+        1. Enforce a 1s floor between calls.
+        2. As remaining quota drops, scale up the pre-wait — at 0 we wait 6s,
+           at 1 we wait 4s, at 2 we wait 2s. Spreads bursts across the window.
+        3. On 429, retry with backoffs that span up to ~120s — long enough to
+           outlast a 60s window, regardless of where in the window we hit it.
         """
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
             self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
             return False
         wait = (self._auto_start_last_time + AUTO_START_MIN_INTERVAL) - time.monotonic()
-        if self._auto_start_remaining == 0:
-            wait = max(wait, 2.0)
+        if self._auto_start_remaining is not None:
+            quota_floor = {0: 6.0, 1: 4.0, 2: 2.0}.get(self._auto_start_remaining, 0.0)
+            wait = max(wait, quota_floor)
         if wait > 0:
             logger.info("User %d: Pacing auto-bet start, waiting %.2fs (remaining=%s)",
                         self.user_id, wait, self._auto_start_remaining)
@@ -365,7 +366,7 @@ class BettingEngine:
         payload = self._build_auto_start_payload()
         body_str = json.dumps(payload, separators=(",", ":"))
         extra_headers = self._request_headers(body_str)
-        backoffs = [1.0, 2.0, 3.0, 5.0, 10.0, 15.0]
+        backoffs = [1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 25.0, 60.0]
         for attempt in range(len(backoffs) + 1):
             self._auto_start_last_time = time.monotonic()
             try:
