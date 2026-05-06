@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.3 — Auto-bet start retries on transient network errors (2026-05-06)
+
+### Fixed
+
+- **Session killed by HTTP timeout during auto/start** — observed log showed `Auto start exception:` (empty `str(e)`) followed by session end. Cause was an `httpx.ReadTimeout` (15s response timeout) being caught by a generic `except Exception` that bailed immediately without retrying. Now `httpx.TimeoutException` / `NetworkError` / `RemoteProtocolError` are caught and retried with the same backoff schedule as 429 (~120s budget). Exception type and `repr()` are logged so future failures aren't invisible.
+
 ## v2.14.2 — Auto-bet starts paced + probing on 429 (2026-05-06)
 
 ### Fixed

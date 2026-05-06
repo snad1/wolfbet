@@ -390,8 +390,17 @@ class BettingEngine:
                     continue
                 self._set_error("Auto-bet start failed", f"HTTP {r.status_code}: {r.text[:120]}")
                 return False
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
+                if attempt < len(backoffs):
+                    delay = backoffs[attempt]
+                    logger.warning("User %d: Auto-bet start network error (%s), retrying in %.1fs (attempt %d/%d)",
+                                   self.user_id, type(e).__name__, delay, attempt + 1, len(backoffs))
+                    await asyncio.sleep(delay)
+                    continue
+                self._set_error("Auto-bet start failed", f"Network error after retries: {type(e).__name__}: {e!r}")
+                return False
             except Exception as e:
-                self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
+                self._set_error("Auto-bet start failed", f"Auto start exception: {type(e).__name__}: {e!r}")
                 return False
         return False
 
