@@ -333,7 +333,12 @@ class BettingEngine:
         return r.json().get("balances", [])
 
     async def _auto_start(self) -> bool:
-        """Start an auto-bet session on WolfBet, returns True on success."""
+        """Start an auto-bet session on WolfBet, returns True on success.
+
+        Retries on HTTP 429 (rate-limit) — WolfBet throttles tight stop→start
+        sequences, so the profit-increment restart often hits 429 on the first
+        try. Honors Retry-After when present, else uses exponential backoff.
+        """
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
             self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
@@ -342,20 +347,30 @@ class BettingEngine:
         payload = self._build_auto_start_payload()
         body_str = json.dumps(payload, separators=(",", ":"))
         extra_headers = self._request_headers(body_str)
-        try:
-            r = await self._http.post(url, json=payload, headers=extra_headers)
-            if r.status_code == 200:
-                data = r.json()
-                uuid = data.get("autoBet", {}).get("uuid")
-                if uuid:
-                    self._auto_uuid = uuid
-                    logger.info("User %d: Auto-bet started, uuid=%s", self.user_id, uuid)
-                    return True
-                self._set_error("Auto-bet start failed", f"No UUID in response: {data}")
-            else:
+        backoffs = [1.0, 2.0, 4.0]
+        for attempt in range(len(backoffs) + 1):
+            try:
+                r = await self._http.post(url, json=payload, headers=extra_headers)
+                if r.status_code == 200:
+                    data = r.json()
+                    uuid = data.get("autoBet", {}).get("uuid")
+                    if uuid:
+                        self._auto_uuid = uuid
+                        logger.info("User %d: Auto-bet started, uuid=%s", self.user_id, uuid)
+                        return True
+                    self._set_error("Auto-bet start failed", f"No UUID in response: {data}")
+                    return False
+                if r.status_code == 429 and attempt < len(backoffs):
+                    delay = float(r.headers.get("Retry-After", backoffs[attempt]))
+                    logger.warning("User %d: Auto-bet start 429, retrying in %.1fs (attempt %d/%d)",
+                                   self.user_id, delay, attempt + 1, len(backoffs))
+                    await asyncio.sleep(delay)
+                    continue
                 self._set_error("Auto-bet start failed", f"HTTP {r.status_code}: {r.text[:120]}")
-        except Exception as e:
-            self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
+                return False
+            except Exception as e:
+                self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
+                return False
         return False
 
     async def _auto_stop(self):
