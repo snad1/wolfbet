@@ -40,6 +40,9 @@ AUTO_ENDPOINTS = {
     "dice-auto":  {"start": "/v2/dice/auto/start",  "stop": "/v2/dice/auto/stop"},
 }
 
+# WolfBet caps auto/start at 20/min — pace 60/20 = 3s between starts.
+AUTO_START_MIN_INTERVAL = 3.0
+
 
 def _wolfbet_hash(body_str: str = "") -> str:
     """Generate WolfBet x-hash-api: interleave(md5(body), md5(nonce))."""
@@ -192,8 +195,7 @@ class BettingEngine:
         self._auto_uuid: Optional[str] = None
         self._pending_restart: bool = False  # restart auto-bet on next win
         self._chart_snapshots: list = []    # [[bet_num, profit, balance], ...]
-        self._auto_start_quota_remaining: Optional[int] = None  # from x-ratelimit-remaining
-        self._auto_start_quota_reset_at: float = 0.0            # monotonic seconds
+        self._auto_start_last_time: float = 0.0  # monotonic ts of last auto/start (for pacing)
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -337,31 +339,30 @@ class BettingEngine:
     async def _auto_start(self) -> bool:
         """Start an auto-bet session on WolfBet, returns True on success.
 
-        WolfBet caps auto/start at 20/min. We track remaining quota from the
-        x-ratelimit-remaining header on success and proactively sleep before
-        the next call when we're at the cap. On 429 we still retry with
-        backoffs that span a full minute (the rate window length).
+        WolfBet caps auto/start at 20/min. The engine self-paces by enforcing
+        a minimum gap of 60/20 = 3 seconds between starts, so requests are
+        smoothed evenly across the rate window — never causing a 429. Retries
+        on 429 are kept as a safety net only.
         """
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
             self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
             return False
-        if self._auto_start_quota_remaining is not None and self._auto_start_quota_remaining <= 0:
-            wait = max(0.0, self._auto_start_quota_reset_at - time.monotonic())
-            if wait > 0:
-                logger.info("User %d: Auto-bet quota exhausted, waiting %.1fs for reset",
-                            self.user_id, wait)
-                await asyncio.sleep(wait + 0.5)
+        wait = (self._auto_start_last_time + AUTO_START_MIN_INTERVAL) - time.monotonic()
+        if wait > 0:
+            logger.info("User %d: Pacing auto-bet start, waiting %.2fs (rate cap 20/min)",
+                        self.user_id, wait)
+            await asyncio.sleep(wait)
         url = f"{API_BASE}{endpoints['start']}"
         payload = self._build_auto_start_payload()
         body_str = json.dumps(payload, separators=(",", ":"))
         extra_headers = self._request_headers(body_str)
-        backoffs = [2.0, 8.0, 20.0, 35.0]
+        backoffs = [3.5, 7.0]
         for attempt in range(len(backoffs) + 1):
+            self._auto_start_last_time = time.monotonic()
             try:
                 r = await self._http.post(url, json=payload, headers=extra_headers)
                 if r.status_code == 200:
-                    self._update_auto_start_quota(r.headers)
                     data = r.json()
                     uuid = data.get("autoBet", {}).get("uuid")
                     if uuid:
@@ -372,7 +373,7 @@ class BettingEngine:
                     return False
                 if r.status_code == 429 and attempt < len(backoffs):
                     delay = float(r.headers.get("Retry-After", backoffs[attempt]))
-                    logger.warning("User %d: Auto-bet start 429, retrying in %.1fs (attempt %d/%d)",
+                    logger.warning("User %d: Auto-bet start 429 despite pacing, retrying in %.1fs (attempt %d/%d)",
                                    self.user_id, delay, attempt + 1, len(backoffs))
                     await asyncio.sleep(delay)
                     continue
@@ -382,16 +383,6 @@ class BettingEngine:
                 self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
                 return False
         return False
-
-    def _update_auto_start_quota(self, headers) -> None:
-        """Track WolfBet's per-minute auto/start quota from response headers."""
-        try:
-            remaining = headers.get("x-ratelimit-remaining")
-            if remaining is not None:
-                self._auto_start_quota_remaining = int(remaining)
-                self._auto_start_quota_reset_at = time.monotonic() + 60.0
-        except (ValueError, TypeError):
-            pass
 
     async def _auto_stop(self):
         """Stop the auto-bet session on WolfBet."""
