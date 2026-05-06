@@ -40,8 +40,8 @@ AUTO_ENDPOINTS = {
     "dice-auto":  {"start": "/v2/dice/auto/start",  "stop": "/v2/dice/auto/stop"},
 }
 
-# WolfBet caps auto/start at 20/min — pace 60/20 = 3s between starts.
-AUTO_START_MIN_INTERVAL = 3.0
+# Default auto/start rate cap (req/min) — refined live from x-ratelimit-limit.
+DEFAULT_AUTO_START_RATE_LIMIT = 20
 
 
 def _wolfbet_hash(body_str: str = "") -> str:
@@ -196,6 +196,7 @@ class BettingEngine:
         self._pending_restart: bool = False  # restart auto-bet on next win
         self._chart_snapshots: list = []    # [[bet_num, profit, balance], ...]
         self._auto_start_last_time: float = 0.0  # monotonic ts of last auto/start (for pacing)
+        self._auto_start_rate_limit: int = DEFAULT_AUTO_START_RATE_LIMIT  # learned from x-ratelimit-limit
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -339,19 +340,20 @@ class BettingEngine:
     async def _auto_start(self) -> bool:
         """Start an auto-bet session on WolfBet, returns True on success.
 
-        WolfBet caps auto/start at 20/min. The engine self-paces by enforcing
-        a minimum gap of 60/20 = 3 seconds between starts, so requests are
-        smoothed evenly across the rate window — never causing a 429. Retries
-        on 429 are kept as a safety net only.
+        Self-paces from the live x-ratelimit-limit header: min gap = 60 / limit
+        (e.g. 20/min → 3s, 40/min → 1.5s). Adapts automatically if WolfBet
+        bumps the cap. Falls back to the default until the first response
+        teaches us the actual limit. 429 retry kept as safety net.
         """
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
             self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
             return False
-        wait = (self._auto_start_last_time + AUTO_START_MIN_INTERVAL) - time.monotonic()
+        min_interval = 60.0 / self._auto_start_rate_limit
+        wait = (self._auto_start_last_time + min_interval) - time.monotonic()
         if wait > 0:
-            logger.info("User %d: Pacing auto-bet start, waiting %.2fs (rate cap 20/min)",
-                        self.user_id, wait)
+            logger.info("User %d: Pacing auto-bet start, waiting %.2fs (cap %d/min)",
+                        self.user_id, wait, self._auto_start_rate_limit)
             await asyncio.sleep(wait)
         url = f"{API_BASE}{endpoints['start']}"
         payload = self._build_auto_start_payload()
@@ -362,6 +364,7 @@ class BettingEngine:
             self._auto_start_last_time = time.monotonic()
             try:
                 r = await self._http.post(url, json=payload, headers=extra_headers)
+                self._update_auto_start_rate_limit(r.headers)
                 if r.status_code == 200:
                     data = r.json()
                     uuid = data.get("autoBet", {}).get("uuid")
@@ -383,6 +386,17 @@ class BettingEngine:
                 self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
                 return False
         return False
+
+    def _update_auto_start_rate_limit(self, headers) -> None:
+        """Learn the live auto/start rate limit from x-ratelimit-limit."""
+        try:
+            limit = int(headers.get("x-ratelimit-limit", 0))
+            if limit > 0 and limit != self._auto_start_rate_limit:
+                logger.info("User %d: auto/start rate limit updated %d → %d /min",
+                            self.user_id, self._auto_start_rate_limit, limit)
+                self._auto_start_rate_limit = limit
+        except (ValueError, TypeError):
+            pass
 
     async def _auto_stop(self):
         """Stop the auto-bet session on WolfBet."""
