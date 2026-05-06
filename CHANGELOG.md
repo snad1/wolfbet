@@ -1,10 +1,13 @@
 # Changelog
 
-## v2.14.2 — Auto-bet restart retries on 429 rate-limit (2026-05-06)
+## v2.14.2 — Auto-bet restart honors WolfBet's 20/min rate-limit (2026-05-06)
 
 ### Fixed
 
-- **Profit-increment restart killed sessions when WolfBet returned 429** — `_auto_stop` followed by `_auto_start` runs in ~130ms, and WolfBet rate-limits that tight sequence ("Too Many Attempts."). The first 429 ended the session entirely. `_auto_start` now retries on 429 with up to 3 backoffs (1s/2s/4s, or `Retry-After` if the server provides one), so the profit-increment new-section flow is resilient to the throttle.
+- **Profit-increment restart killed sessions when WolfBet returned 429** — `_auto_stop` followed by `_auto_start` runs in ~130ms; WolfBet caps `auto/start` at **20/min** and the tight stop→start often hits the cap, returning HTTP 429 ("Too Many Attempts."). The first 429 ended the session entirely.
+  - `_auto_start` now retries on 429 with backoffs of 2s/8s/20s/35s (~65s total — long enough to span the per-minute window).
+  - On every successful start, the engine reads the `x-ratelimit-remaining` header and, if quota hits 0, **proactively sleeps until the window resets** before the next start attempt — avoiding the 429 entirely instead of relying on retries.
+  - Honors `Retry-After` when the server provides it.
 
 ## v2.14.1 — Profit increment = 0 now visible in /config and works in CLI (2026-05-06)
 

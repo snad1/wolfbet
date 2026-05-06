@@ -192,6 +192,8 @@ class BettingEngine:
         self._auto_uuid: Optional[str] = None
         self._pending_restart: bool = False  # restart auto-bet on next win
         self._chart_snapshots: list = []    # [[bet_num, profit, balance], ...]
+        self._auto_start_quota_remaining: Optional[int] = None  # from x-ratelimit-remaining
+        self._auto_start_quota_reset_at: float = 0.0            # monotonic seconds
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -335,23 +337,31 @@ class BettingEngine:
     async def _auto_start(self) -> bool:
         """Start an auto-bet session on WolfBet, returns True on success.
 
-        Retries on HTTP 429 (rate-limit) — WolfBet throttles tight stop→start
-        sequences, so the profit-increment restart often hits 429 on the first
-        try. Honors Retry-After when present, else uses exponential backoff.
+        WolfBet caps auto/start at 20/min. We track remaining quota from the
+        x-ratelimit-remaining header on success and proactively sleep before
+        the next call when we're at the cap. On 429 we still retry with
+        backoffs that span a full minute (the rate window length).
         """
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
             self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
             return False
+        if self._auto_start_quota_remaining is not None and self._auto_start_quota_remaining <= 0:
+            wait = max(0.0, self._auto_start_quota_reset_at - time.monotonic())
+            if wait > 0:
+                logger.info("User %d: Auto-bet quota exhausted, waiting %.1fs for reset",
+                            self.user_id, wait)
+                await asyncio.sleep(wait + 0.5)
         url = f"{API_BASE}{endpoints['start']}"
         payload = self._build_auto_start_payload()
         body_str = json.dumps(payload, separators=(",", ":"))
         extra_headers = self._request_headers(body_str)
-        backoffs = [1.0, 2.0, 4.0]
+        backoffs = [2.0, 8.0, 20.0, 35.0]
         for attempt in range(len(backoffs) + 1):
             try:
                 r = await self._http.post(url, json=payload, headers=extra_headers)
                 if r.status_code == 200:
+                    self._update_auto_start_quota(r.headers)
                     data = r.json()
                     uuid = data.get("autoBet", {}).get("uuid")
                     if uuid:
@@ -372,6 +382,16 @@ class BettingEngine:
                 self._set_error("Auto-bet start failed", f"Auto start exception: {e}")
                 return False
         return False
+
+    def _update_auto_start_quota(self, headers) -> None:
+        """Track WolfBet's per-minute auto/start quota from response headers."""
+        try:
+            remaining = headers.get("x-ratelimit-remaining")
+            if remaining is not None:
+                self._auto_start_quota_remaining = int(remaining)
+                self._auto_start_quota_reset_at = time.monotonic() + 60.0
+        except (ValueError, TypeError):
+            pass
 
     async def _auto_stop(self):
         """Stop the auto-bet session on WolfBet."""
