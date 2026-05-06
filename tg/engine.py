@@ -635,7 +635,7 @@ class BettingEngine:
         if self.stop_on_balance is not None: stops["min_balance"] = self.stop_on_balance
         if stops:
             snap["stops"] = stops
-        if self.profit_threshold and self.profit_increment:
+        if self.profit_threshold and self.profit_increment is not None:
             snap["profit_threshold"] = self.profit_threshold
             snap["profit_increment"] = self.profit_increment
         if self.custom_rules:
@@ -1200,7 +1200,7 @@ class BettingEngine:
         # Profit increment — instant
         if "profit_increment" in changes:
             self.profit_increment = changes["profit_increment"]
-            msgs.append(f"Profit increment: {float(self.profit_increment):.8f}" if self.profit_increment else "Profit increment: off")
+            msgs.append(f"Profit increment: {float(self.profit_increment):.8f}" if self.profit_increment is not None else "Profit increment: off")
         if "profit_threshold" in changes:
             self.profit_threshold = changes["profit_threshold"]
             msgs.append(f"Profit threshold: {float(self.profit_threshold):.8f}" if self.profit_threshold else "Profit threshold: off")

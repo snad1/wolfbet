@@ -168,7 +168,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`milestonelosses` — Notify every N losses (0=off)\n"
         "`milestoneprofit` — Notify every X profit (0=off)\n"
         "`profitthreshold` — Auto-raise base bet every X profit (`off` to disable)\n"
-        "`profitincrement` — Amount to add to base bet (`off` to disable)\n"
+        "`profitincrement` — Amount to add to base bet (`0` = restart only, `off` to disable)\n"
         "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
         "`recurringdelay` — Seconds before restart (default 60)\n"
         "`streakdelay_loss` — Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
@@ -412,7 +412,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Profit increment
         pi = config.get("profit_increment")
         pt = config.get("profit_threshold")
-        if pi and pt:
+        if pi is not None and pt:
             lines.append(f"Profit increment: `+{float(pi):.8f} every {float(pt):.8f} profit`")
 
         # Milestones

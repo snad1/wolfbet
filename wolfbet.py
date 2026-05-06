@@ -69,7 +69,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.14.0"
+VERSION      = "2.14.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -637,7 +637,7 @@ def betting_loop():
                 state.lowest_balance = new_balance
 
             # ── profit-based base bet increment ──
-            if (state.profit_increment and state.profit_threshold
+            if (state.profit_increment is not None and state.profit_threshold
                     and state.profit >= state.next_profit_milestone):
                 state.base_bet += state.profit_increment
                 state.next_profit_milestone += state.profit_threshold
@@ -1013,7 +1013,7 @@ def build_dashboard_screen() -> str:
     rl_c = "green" if rl > 100 else ("yellow" if rl > 20 else "red")
 
     s4 = (f" {_a('dim', 'Bet')} {_a('yellow', f'{state.current_bet:.8f}')}")
-    if state.profit_increment and state.profit_threshold:
+    if state.profit_increment is not None and state.profit_threshold:
         s4 += f"  {_a('dim', 'Base')} {_a('bold_green', f'{state.base_bet:.8f}')}"
     s4 += (f"  {_a('dim', 'Hi')} {_a('white', f'{state.highest_bet:.8f}')}"
            f"  {_a('cyan', state.strategy)}"
@@ -1950,7 +1950,7 @@ def setup_wizard():
             ("Max wins",        str(state.max_wins)   if state.max_wins   else "Unlimited"),
             ("Min balance",     str(state.stop_on_balance) if state.stop_on_balance else "—"),
             ("Profit increment", f"+{state.profit_increment:.8f} every {state.profit_threshold} profit"
-                if state.profit_increment and state.profit_threshold else "—"),
+                if state.profit_increment is not None and state.profit_threshold else "—"),
         ]
         for k, val in rows:
             console.print(f"  [dim]{k:18s}[/] [yellow]{val}[/]")

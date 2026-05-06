@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.14.1 — Profit increment = 0 now visible in /config and works in CLI (2026-05-06)
+
+### Fixed
+
+- **`/config` hid `profit_increment = 0` setting** — Telegram `/config` line guarded by `if pi and pt:` treated `0` as falsy, so users who set `profitincrement 0` (restart-only mode, no bet bump) saw nothing under their config and assumed the feature was missing. Switched to `is not None`. Same fix applied to the snapshot builder used for session DB rows and to the `/tweak` reply that confirms the change.
+- **CLI bot ignored `profit_increment = 0`** — `wolfbet.py` engine, TUI, and config display all guarded on truthy `profit_increment`, so the milestone never advanced and the section never restarted when the increment was set to 0. Aligned with the Telegram engine's `is not None` check (the latter was fixed in v2.10 via commit 1d2e187).
+- **`/help` clarified** — `profitincrement` line now notes that `0` means "restart only" and `off` disables.
+
 ## v2.14.0 — Recurring honors live config across all running sessions (2026-04-28)
 
 ### Fixed
