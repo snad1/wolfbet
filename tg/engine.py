@@ -40,8 +40,11 @@ AUTO_ENDPOINTS = {
     "dice-auto":  {"start": "/v2/dice/auto/start",  "stop": "/v2/dice/auto/stop"},
 }
 
-# Default auto/start rate cap (req/min) — refined live from x-ratelimit-limit.
-DEFAULT_AUTO_START_RATE_LIMIT = 20
+# Auto/start pacing — the rate-limit window length isn't documented (could be
+# 20s or 60s), so we don't compute pace from x-ratelimit-limit. Instead we
+# enforce a small floor between requests and rely on tight 429 retries to
+# probe the actual window when we hit the cap.
+AUTO_START_MIN_INTERVAL = 1.0
 
 
 def _wolfbet_hash(body_str: str = "") -> str:
@@ -196,7 +199,7 @@ class BettingEngine:
         self._pending_restart: bool = False  # restart auto-bet on next win
         self._chart_snapshots: list = []    # [[bet_num, profit, balance], ...]
         self._auto_start_last_time: float = 0.0  # monotonic ts of last auto/start (for pacing)
-        self._auto_start_rate_limit: int = DEFAULT_AUTO_START_RATE_LIMIT  # learned from x-ratelimit-limit
+        self._auto_start_remaining: Optional[int] = None  # last seen x-ratelimit-remaining
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -340,43 +343,47 @@ class BettingEngine:
     async def _auto_start(self) -> bool:
         """Start an auto-bet session on WolfBet, returns True on success.
 
-        Self-paces from the live x-ratelimit-limit header: min gap = 60 / limit
-        (e.g. 20/min → 3s, 40/min → 1.5s). Adapts automatically if WolfBet
-        bumps the cap. Falls back to the default until the first response
-        teaches us the actual limit. 429 retry kept as safety net.
+        Pacing strategy (window length is undocumented — could be 20s or 60s):
+        1. Enforce a 1s floor between calls — keeps normal flow well under cap.
+        2. If the last response said remaining=0, add a short pre-wait so we
+           don't immediately burn a guaranteed 429.
+        3. On 429, retry with tight backoffs (1/2/3/5/10/15s, ~36s budget) to
+           probe the window rather than assume any fixed length.
         """
         endpoints = AUTO_ENDPOINTS.get(self.game)
         if not endpoints:
             self._set_error("Auto-bet not available for this game", f"No auto-bet endpoint for {self.game}")
             return False
-        min_interval = 60.0 / self._auto_start_rate_limit
-        wait = (self._auto_start_last_time + min_interval) - time.monotonic()
+        wait = (self._auto_start_last_time + AUTO_START_MIN_INTERVAL) - time.monotonic()
+        if self._auto_start_remaining == 0:
+            wait = max(wait, 2.0)
         if wait > 0:
-            logger.info("User %d: Pacing auto-bet start, waiting %.2fs (cap %d/min)",
-                        self.user_id, wait, self._auto_start_rate_limit)
+            logger.info("User %d: Pacing auto-bet start, waiting %.2fs (remaining=%s)",
+                        self.user_id, wait, self._auto_start_remaining)
             await asyncio.sleep(wait)
         url = f"{API_BASE}{endpoints['start']}"
         payload = self._build_auto_start_payload()
         body_str = json.dumps(payload, separators=(",", ":"))
         extra_headers = self._request_headers(body_str)
-        backoffs = [3.5, 7.0]
+        backoffs = [1.0, 2.0, 3.0, 5.0, 10.0, 15.0]
         for attempt in range(len(backoffs) + 1):
             self._auto_start_last_time = time.monotonic()
             try:
                 r = await self._http.post(url, json=payload, headers=extra_headers)
-                self._update_auto_start_rate_limit(r.headers)
+                self._update_auto_start_remaining(r.headers)
                 if r.status_code == 200:
                     data = r.json()
                     uuid = data.get("autoBet", {}).get("uuid")
                     if uuid:
                         self._auto_uuid = uuid
-                        logger.info("User %d: Auto-bet started, uuid=%s", self.user_id, uuid)
+                        logger.info("User %d: Auto-bet started, uuid=%s (remaining=%s)",
+                                    self.user_id, uuid, self._auto_start_remaining)
                         return True
                     self._set_error("Auto-bet start failed", f"No UUID in response: {data}")
                     return False
                 if r.status_code == 429 and attempt < len(backoffs):
                     delay = float(r.headers.get("Retry-After", backoffs[attempt]))
-                    logger.warning("User %d: Auto-bet start 429 despite pacing, retrying in %.1fs (attempt %d/%d)",
+                    logger.warning("User %d: Auto-bet start 429, retrying in %.1fs (attempt %d/%d)",
                                    self.user_id, delay, attempt + 1, len(backoffs))
                     await asyncio.sleep(delay)
                     continue
@@ -387,14 +394,12 @@ class BettingEngine:
                 return False
         return False
 
-    def _update_auto_start_rate_limit(self, headers) -> None:
-        """Learn the live auto/start rate limit from x-ratelimit-limit."""
+    def _update_auto_start_remaining(self, headers) -> None:
+        """Learn live remaining quota from x-ratelimit-remaining."""
         try:
-            limit = int(headers.get("x-ratelimit-limit", 0))
-            if limit > 0 and limit != self._auto_start_rate_limit:
-                logger.info("User %d: auto/start rate limit updated %d → %d /min",
-                            self.user_id, self._auto_start_rate_limit, limit)
-                self._auto_start_rate_limit = limit
+            v = headers.get("x-ratelimit-remaining")
+            if v is not None:
+                self._auto_start_remaining = int(v)
         except (ValueError, TypeError):
             pass
 

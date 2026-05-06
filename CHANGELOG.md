@@ -1,13 +1,13 @@
 # Changelog
 
-## v2.14.2 — Auto-bet starts adaptively paced to WolfBet's rate-limit (2026-05-06)
+## v2.14.2 — Auto-bet starts paced + probing on 429 (2026-05-06)
 
 ### Fixed
 
-- **Profit-increment restart killed sessions when WolfBet returned 429** — `_auto_stop` followed by `_auto_start` runs in ~130ms; WolfBet caps `auto/start` at **20/min** and the tight stop→start often hit the cap, returning HTTP 429 ("Too Many Attempts."). The first 429 ended the session entirely.
-  - Engine now self-paces: minimum gap between starts = **60 / x-ratelimit-limit** (e.g. 20/min → 3s, 40/min → 1.5s). The cap is **read from the live response header** on every successful start, so if WolfBet raises (or lowers) the limit the bot adapts on the next response — no code change needed.
-  - Default of 20/min is used until the first response teaches us the actual cap.
-  - 429 retry kept as a safety net only (3.5s / 7s backoffs).
+- **Profit-increment restart killed sessions when WolfBet returned 429** — `_auto_stop` followed by `_auto_start` runs in ~130ms; WolfBet caps `auto/start` at 20 (window length undocumented — appears to be ~20s rather than 60s based on observed behavior). The tight stop→start often hit the cap, returning HTTP 429 ("Too Many Attempts."), which ended the session entirely.
+  - Engine now enforces a **1s floor between starts** — well under the cap.
+  - Tracks `x-ratelimit-remaining` from every response. If the previous response said `remaining=0`, the next start gets a 2s pre-wait to avoid a guaranteed 429.
+  - On 429, retries with tight backoffs **1s / 2s / 3s / 5s / 10s / 15s** (~36s total budget) — probes the actual rate-limit window instead of assuming a fixed 60s.
   - Honors `Retry-After` when the server provides it.
 
 ## v2.14.1 — Profit increment = 0 now visible in /config and works in CLI (2026-05-06)
