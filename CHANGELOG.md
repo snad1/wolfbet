@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.14.4 — bet_delay is now a minimum-interval, and applies to auto-bet (2026-05-11)
+
+### Changed
+
+- **`bet_delay` semantics** — Previously: `sleep(bet_delay)` before each bet, so cycle = `bet_delay + api_time`. Now: minimum interval since the previous bet *started*, so cycle = `max(bet_delay, api_time)`. With delay=1s and api=50ms, you now get a clean 1 bet/sec; with api=1500ms there's no extra sleep so the bot keeps up. More predictable pace.
+- **`bet_delay` now applies to auto-bet** — the pipelined auto-bet loop (Dice Auto v2 / Limbo Auto) was silently ignoring `bet_delay`. It now paces between batches with the same minimum-interval semantics.
+
 ## v2.14.3 — Auto-bet start retries on transient network errors (2026-05-06)
 
 ### Fixed
