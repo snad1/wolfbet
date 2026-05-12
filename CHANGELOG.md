@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.5 — Remove 5-session concurrency limit (2026-05-12)
+
+### Changed
+
+- **Unlimited concurrent sessions per user** — `MAX_SESSIONS = 5` cap removed from `/bet` and from the recurring-restart path. Users can now run as many concurrent sessions as they want (limited only by the casino's own API rate limits, which are shared across sessions).
+
 ## v2.14.4 — bet_delay is now a minimum-interval, and applies to auto-bet (2026-05-11)
 
 ### Changed
