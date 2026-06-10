@@ -349,6 +349,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /config ──────────────────────────────────────────────
 CTL_NAME = "wolfctl"
+REPO_DIR = os.environ.get("BOT_REPO_DIR", "/root/wolfbet")
 DEFAULT_OWNER_ID = 680974641
 
 
@@ -378,7 +379,7 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "systemd-run", "--user", "--collect", "--no-block",
         "--", "bash", "-c",
         f"echo \"=== Update via /update at $(date -Is) ===\" >> {log_file} 2>&1; "
-        f"sleep 2; {ctl_path} update >> {log_file} 2>&1",
+        f"sleep 2; cd {REPO_DIR} && {ctl_path} update >> {log_file} 2>&1",
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)

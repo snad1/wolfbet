@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.10 — /update cd's into repo dir before running ctl (2026-06-11)
+
+### Fixed
+
+- **/update failed with "No wolfbet.py in current directory"** — `systemd-run` spawns the bash command with cwd=/ (not the bot's repo dir). The `wolfctl update` script looks for `wolfbet.py` in cwd to copy. Now `cd /root/wolfbet && wolfctl update` is the bash command. Override via `BOT_REPO_DIR` env var if your layout is different.
+
 ## v2.14.9 — /update reports real errors + writes update log (2026-06-10)
 
 ### Fixed
