@@ -108,6 +108,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Setup:*\n"
         "/setkey — Set your WolfBet API key\n"
         "/balance — Check your balances\n"
+        "/seed — Rotate WolfBet server seed\n"
         "/config — View current configuration\n\n"
         "*Configure:*\n"
         "/set currency usdt\n"
@@ -141,6 +142,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Setup*\n"
         "/setkey — API key (message auto-deleted)\n"
         "/balance — Show all balances\n"
+        "/seed — Rotate WolfBet server seed\n"
         "/config — Show current config\n"
         "/set — Set parameter\n"
         "/strategies — List strategies\n\n"
@@ -344,6 +346,30 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /config ──────────────────────────────────────────────
+async def cmd_seed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Rotate the WolfBet server seed via /v1/game/seed/refresh."""
+    user_id = update.effective_user.id
+    config = load_user_config(user_id)
+    api_key = config.get("api_key")
+    if not api_key:
+        await update.message.reply_text(
+            "Set your API key first: /setkey <token>", parse_mode="Markdown")
+        return
+    try:
+        engine = BettingEngine(user_id, "", api_key, {})
+        await engine._recreate_http()
+        ok = await engine._rotate_server_seed()
+        await update.message.reply_text(
+            "Server seed rotated." if ok else "Seed rotation failed — check /balance / api key.")
+    except Exception as e:
+        logger.error("cmd_seed error: %s", e, exc_info=True)
+        msg = f"Error: `{e}`" if APP_ENV != "production" else "Something went wrong. Please try again."
+        try:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except Exception:
+            pass
+
+
 async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     config = load_user_config(user_id)

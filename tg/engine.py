@@ -201,6 +201,7 @@ class BettingEngine:
         self._chart_snapshots: list = []    # [[bet_num, profit, balance], ...]
         self._auto_start_last_time: float = 0.0  # monotonic ts of last auto/start (for pacing)
         self._auto_start_remaining: Optional[int] = None  # last seen x-ratelimit-remaining
+        self._session_expired: bool = False  # server-side auto-bet UUID no longer valid
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -414,6 +415,30 @@ class BettingEngine:
         except (ValueError, TypeError):
             pass
 
+    async def _recover_expired_session(self) -> bool:
+        """Recover from 'Session has ended' — rotate seed, stop dead UUID, start new one."""
+        logger.warning("User %d: Auto-bet session expired — rotating seed + restarting", self.user_id)
+        await self._rotate_server_seed()
+        await self._auto_stop()  # best-effort; UUID is already dead
+        return await self._auto_start()
+
+    async def _rotate_server_seed(self) -> bool:
+        """Rotate the WolfBet server seed via /v1/game/seed/refresh. Returns True on 200."""
+        url = f"{API_BASE}/v1/game/seed/refresh"
+        body_str = "{}"
+        extra_headers = self._request_headers(body_str)
+        try:
+            r = await self._http.post(url, json={}, headers=extra_headers)
+            if r.status_code == 200:
+                logger.info("User %d: Server seed rotated", self.user_id)
+                return True
+            logger.warning("User %d: seed/refresh HTTP %d: %s",
+                           self.user_id, r.status_code, (r.text or "")[:120])
+        except Exception as e:
+            logger.warning("User %d: seed/refresh exception: %s: %r",
+                           self.user_id, type(e).__name__, e)
+        return False
+
     async def _auto_stop(self):
         """Stop the auto-bet session on WolfBet."""
         endpoints = AUTO_ENDPOINTS.get(self.game)
@@ -626,9 +651,14 @@ class BettingEngine:
                 self._set_error("Rate limit reached — cooling down")
             else:
                 body = r.text or ""
-                if "insufficient" in body.lower() or "balance" in body.lower():
+                body_lower = body.lower()
+                if "insufficient" in body_lower or "balance" in body_lower:
                     self._set_error("Insufficient balance")
                     self._insufficient_balance = True
+                elif "session has ended" in body_lower or "not exists" in body_lower:
+                    self._session_expired = True
+                    self._set_error("Auto-bet session expired — restarting",
+                                    f"HTTP {r.status_code}: {body[:120]}")
                 else:
                     self._set_error("Bet request failed", f"HTTP {r.status_code}: {body[:120]}")
         except (httpx.TimeoutException, httpx.ConnectError):
@@ -1468,6 +1498,15 @@ class BettingEngine:
                         break
                     if self.rate_wait:
                         break  # will handle in next loop iteration
+                    if self._session_expired:
+                        self._session_expired = False
+                        if await self._recover_expired_session():
+                            self.consecutive_errors = 0
+                            break  # restart loop iteration with fresh UUID
+                        should_stop = True
+                        self.running = False
+                        self.stop_reason = "Auto-bet session expired — recovery failed"
+                        break
                     self.consecutive_errors += 1
                     continue
 

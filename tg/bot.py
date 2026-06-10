@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from .config import BOT_TOKEN, DATA_DIR, logger
 from . import VERSION
 from .handlers import (
-    cmd_start, cmd_help, cmd_setkey, cmd_benchmark, cmd_balance, cmd_config,
+    cmd_start, cmd_help, cmd_setkey, cmd_benchmark, cmd_balance, cmd_seed, cmd_config,
     cmd_set, cmd_strategies, cmd_bet, cmd_stop, cmd_tweak, cmd_pause, cmd_resume,
     cmd_status, cmd_monitor, cmd_stats, cmd_lastbets,
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
@@ -62,6 +62,7 @@ def main():
             BotCommand("help",        "Full command reference"),
             BotCommand("setkey",      "Set WolfBet API key"),
             BotCommand("balance",     "Check balances"),
+            BotCommand("seed",        "Rotate WolfBet server seed"),
             BotCommand("config",      "View current config"),
             BotCommand("set",         "Set a parameter"),
             BotCommand("strategies",  "List strategies"),
@@ -106,6 +107,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("setkey", cmd_setkey))
     app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("seed", cmd_seed))
     app.add_handler(CommandHandler("config", cmd_config))
     app.add_handler(CommandHandler("set", cmd_set))
     app.add_handler(CommandHandler("strategies", cmd_strategies))

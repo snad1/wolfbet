@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.14.6 — Auto-recover from "Session has ended" + /seed command (2026-06-10)
+
+### Added
+
+- **`/seed` Telegram command** — Manually rotate the WolfBet server seed via `/v1/game/seed/refresh`.
+- **Auto-recovery on expired auto-bet session** — When auto/play returns HTTP 400 `"Session has ended or not exists."` (often happens after long-running sessions, or when WolfBet expires the UUID server-side), the engine now:
+  1. Rotates the server seed via `/v1/game/seed/refresh`.
+  2. Stops the dead UUID (best-effort).
+  3. Starts a new auto-bet session with a fresh UUID — using the same paced restart path as profit-increment switching.
+  
+  Previously the bot logged the 400 repeatedly until manually stopped (observed: 4 minutes of failed requests across 4 concurrent sessions). Recovery is now automatic and transparent.
+
 ## v2.14.5 — Remove 5-session concurrency limit (2026-05-12)
 
 ### Changed
