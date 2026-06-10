@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.7 — /update Telegram command for self-update (2026-06-10)
+
+### Added
+
+- **`/update` Telegram command (owner-only)** — Pull latest code from git, copy files, reinstall `casino-shared`, restart the bot. Equivalent to running `wolfctl update` over SSH, but triggered from Telegram. Owner gate via `TG_OWNER_ID` env var (defaults to your user ID if unset). Implementation spawns `wolfctl update` via `systemd-run --user --collect` so the update survives the bot getting killed by the restart.
+
 ## v2.14.6 — Auto-recover from "Session has ended" + /seed command (2026-06-10)
 
 ### Added
