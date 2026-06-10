@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.8 — Fix /seed: endpoint is GET, not POST (2026-06-10)
+
+### Fixed
+
+- **`/seed` returned 405 "method not supported"** — WolfBet's `/v1/game/seed/refresh` only accepts GET/HEAD, but the bot was sending POST (assumed from the "change" wording in the API docs). Changed to `await self._http.get(url)`. `/seed` Telegram command and the auto-recovery seed rotation both fixed.
+
 ## v2.14.7 — /update Telegram command for self-update (2026-06-10)
 
 ### Added

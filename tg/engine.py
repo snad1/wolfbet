@@ -423,12 +423,10 @@ class BettingEngine:
         return await self._auto_start()
 
     async def _rotate_server_seed(self) -> bool:
-        """Rotate the WolfBet server seed via /v1/game/seed/refresh. Returns True on 200."""
+        """Rotate the WolfBet server seed via GET /v1/game/seed/refresh. Returns True on 200."""
         url = f"{API_BASE}/v1/game/seed/refresh"
-        body_str = "{}"
-        extra_headers = self._request_headers(body_str)
         try:
-            r = await self._http.post(url, json={}, headers=extra_headers)
+            r = await self._http.get(url)
             if r.status_code == 200:
                 logger.info("User %d: Server seed rotated", self.user_id)
                 return True
