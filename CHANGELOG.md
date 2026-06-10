@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.9 — /update reports real errors + writes update log (2026-06-10)
+
+### Fixed
+
+- **/update silently failed when systemd-run errored** — Previous version used `subprocess.Popen` with `stderr=DEVNULL`, so any failure (dbus issues, transient unit conflicts, etc.) was invisible. The bot replied "Update started" even when `systemd-run` returned non-zero. Now uses `subprocess.run --no-block` synchronously, captures stdout/stderr, and surfaces real errors to Telegram. Update output goes to `/tmp/wolfctl-update.log` so you can review what happened: `cat /tmp/wolfctl-update.log`.
+
 ## v2.14.8 — Fix /seed: endpoint is GET, not POST (2026-06-10)
 
 ### Fixed
