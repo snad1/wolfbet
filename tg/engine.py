@@ -653,7 +653,8 @@ class BettingEngine:
                 if "insufficient" in body_lower or "balance" in body_lower:
                     self._set_error("Insufficient balance")
                     self._insufficient_balance = True
-                elif "session has ended" in body_lower or "not exists" in body_lower:
+                elif ("session has ended" in body_lower or "not exists" in body_lower
+                      or "no query results" in body_lower or "betsession" in body_lower):
                     self._session_expired = True
                     self._set_error("Auto-bet session expired — restarting",
                                     f"HTTP {r.status_code}: {body[:120]}")
@@ -1501,9 +1502,10 @@ class BettingEngine:
                         if await self._recover_expired_session():
                             self.consecutive_errors = 0
                             break  # restart loop iteration with fresh UUID
-                        should_stop = True
-                        self.running = False
-                        self.stop_reason = "Auto-bet session expired — recovery failed"
+                        # Recovery failed — keep session alive, retry on next loop
+                        logger.warning("User %d: Recovery failed; will retry on next iteration",
+                                       self.user_id)
+                        await asyncio.sleep(5.0)
                         break
                     self.consecutive_errors += 1
                     continue

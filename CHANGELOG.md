@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.14.11 — Broader dead-session detection + recovery doesn't kill session (2026-06-12)
+
+### Fixed
+
+- **Recovery missed `"No query results for model [App\BetSession]."`** — Same root cause as `"Session has ended or not exists."` (server-side BetSession deleted/expired), different error message. Bot kept retrying the dead UUID forever, never triggering seed-rotate + auto-bet restart. Detection now also matches `"no query results"` and `"betsession"` substrings so all Laravel variations of "dead UUID" route through `_recover_expired_session`.
+- **Recovery failure killed the session** — If `_auto_start` failed during recovery (e.g. rate-limited), the session was marked `STOPPED: Auto-bet session expired — recovery failed` and the user had to manually `/bet` again. Now recovery failure logs a warning, sleeps 5s, and the next loop iteration retries automatically. Session keeps running until recovery succeeds.
+
 ## v2.14.10 — /update cd's into repo dir before running ctl (2026-06-11)
 
 ### Fixed
