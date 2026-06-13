@@ -1647,6 +1647,16 @@ class BettingEngine:
                     self._flush_bets()
                     self._db_save_session(final=True)
                     break
+                if self._session_expired:
+                    self._session_expired = False
+                    if await self._recover_expired_session():
+                        self.consecutive_errors = 0
+                        self.backoff_delay = 1.0
+                        continue
+                    logger.warning("User %d: Recovery failed; will retry on next iteration",
+                                   self.user_id)
+                    await asyncio.sleep(5.0)
+                    continue
                 self.consecutive_errors += 1
                 self.backoff_delay = min(self.backoff_delay * 2, 30.0)
                 await asyncio.sleep(self.backoff_delay)

@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.14.12 — Add session-expired recovery to the regular betting loop (2026-06-13)
+
+### Fixed
+
+- **Recovery only worked in the pipelined loop** — `_pipelined_betting_loop` is only used when `pipeline > 1`. Rule-Based strategy forces `pipeline = 1`, so the user's auto-bet sessions ran through the regular `_betting_loop`, which had NO recovery code. Result: 56+ hours of session #321-#324 spinning on dead UUIDs, never auto-recovering. Now `_betting_loop` has the same `_session_expired` check + `_recover_expired_session` call + retry-on-failure logic as the pipelined version.
+
 ## v2.14.11 — Broader dead-session detection + recovery doesn't kill session (2026-06-12)
 
 ### Fixed
