@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.16.7 — Fix: `/status` silently failing on Markdown parse error (2026-06-17)
+
+### Fixed
+
+- **`/status` returns nothing in Telegram** — server logs showed `[WARNING] Telegram network: Can't parse entities: can't find end of the entity starting at byte offset 1218–1235` on every `/status`. The custom-rules section and trailing engine-status line in `format_status` wrap user/external strings inside Markdown V1 code spans (`` `…` ``); a single stray backtick in a rule description or in an engine status message (e.g. `_fmt_stop_reason` rendering a WolfBet API template verbatim) produces three backticks on the line, splits the entity, and Telegram rejects the entire message. The bot's `_error_handler` swallows the `NetworkError` so the user just sees… nothing. Fixed at the render boundary:
+  - `formatter.py` — new `_safe_code(s)` helper replaces backticks with `'` in the two dynamic fields wrapped in code spans (rule descriptions, trailing status).
+  - `handlers.py` — new `safe_reply_markdown(reply_target, text, ...)` wrapper for the `/status` and `/monitor` `reply_text` paths. Existing `_safe_send` (engine-driven notifications) and the monitor-refresh `edit_text` paths now retry as plain text on `BadRequest` with a parse-error message. The user always sees the content; formatting falls back to literal `*foo*`/`` `foo` `` on the rare case the fallback fires. Technical detail is logged server-side only.
+
 ## v2.16.6 — Fix: SQLite cross-thread error in _get_conn (defensive) (2026-06-17)
 
 ### Fixed
