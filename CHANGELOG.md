@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.14.13 — Watchdog: kill or force-recover hung auto-bet sessions (2026-06-17)
+
+### Added
+
+- **Stall watchdog for auto-bet sessions** — Tracks `_last_successful_bet_time` per engine. In the betting loop:
+  - At **3 min** of no successful bet: log `Watchdog — Xs since last bet (still trying)` so you see it in logs without action.
+  - At **10 min**: force a full recovery (rotate seed + stop dead UUID + start new auto-bet). If recovery succeeds, reset and continue. If recovery fails, **kill the session** with `Session abandoned — no successful bet for Xs and recovery failed` so you know which bots need manual attention instead of them silently spinning forever.
+
+  This catches the case the user reported: 5+ minutes of network timeouts where the bot's existing timeout-recovery (recreate HTTP client) kept firing but bets never resumed. After this fix, sessions either recover or fail loudly.
+
 ## v2.14.12 — Add session-expired recovery to the regular betting loop (2026-06-13)
 
 ### Fixed

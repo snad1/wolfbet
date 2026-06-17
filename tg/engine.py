@@ -202,6 +202,7 @@ class BettingEngine:
         self._auto_start_last_time: float = 0.0  # monotonic ts of last auto/start (for pacing)
         self._auto_start_remaining: Optional[int] = None  # last seen x-ratelimit-remaining
         self._session_expired: bool = False  # server-side auto-bet UUID no longer valid
+        self._last_successful_bet_time: float = 0.0  # monotonic ts of last good bet; watchdog uses this
 
         # ── async HTTP client (reuses TCP/TLS connections) ──
         self._http: Optional[httpx.AsyncClient] = None
@@ -1592,12 +1593,38 @@ class BettingEngine:
 
         last_result = "none"
         logger.info("User %d: Session #%d started", self.user_id, self.session_id)
+        self._last_successful_bet_time = time.monotonic()
+        watchdog_warned = False
 
         while self.running:
             if self.paused:
                 self.status = "PAUSED"
                 await asyncio.sleep(0.3)
                 continue
+
+            # Watchdog: no successful bet for too long → force-recover or kill
+            stale = time.monotonic() - self._last_successful_bet_time
+            if self._is_auto_game() and stale > 600:  # 10 min
+                logger.warning("User %d: Watchdog — no bet for %.0fs, forcing recovery",
+                               self.user_id, stale)
+                if await self._recover_expired_session():
+                    self._last_successful_bet_time = time.monotonic()
+                    watchdog_warned = False
+                    continue
+                self.running = False
+                self.stop_reason = (
+                    f"Session abandoned — no successful bet for {stale:.0f}s "
+                    f"and recovery failed")
+                self.status = f"STOPPED: {self.stop_reason}"
+                self._flush_bets()
+                self._db_save_session(final=True)
+                break
+            elif self._is_auto_game() and stale > 180 and not watchdog_warned:
+                logger.warning("User %d: Watchdog — %.0fs since last bet (still trying)",
+                               self.user_id, stale)
+                watchdog_warned = True
+            elif stale < 60 and watchdog_warned:
+                watchdog_warned = False
 
             # rate limit recovery — wait then resume betting
             if self.rate_wait:
@@ -1675,6 +1702,7 @@ class BettingEngine:
                 break
 
             bet_state = self._process_bet_result(result)
+            self._last_successful_bet_time = time.monotonic()
 
             # Streak delay: pause after N consecutive wins/losses
             streak_pause = self._get_streak_delay()
