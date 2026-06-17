@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.16.6 — Fix: SQLite cross-thread error in _get_conn (defensive) (2026-06-17)
+
+### Fixed
+
+- **`DB flush_bets failed: SQLite objects created in a thread can only be used in that same thread.`** — `_get_conn` returned a connection created on the main event-loop thread; calling it from inside `asyncio.to_thread(self._flush_bets)` violated SQLite's thread-confinement. The fix WAS shipped on the shared-library side (`check_same_thread=False` in `db_connect`, commit `2c499d0`), but the pip-installed casino-shared on the server was stale (the `*ctl update` script silences pip errors with `2>/dev/null`, so a transient install failure goes unnoticed). `_get_conn` now opens the connection directly via `sqlite3.connect(..., check_same_thread=False)` — bypassing the shared library for this property so a stale install can't reintroduce the bug.
+
+Bets that failed to flush during the broken window are unrecoverable (they were in the in-memory `_bet_queue` when the error fired); but going forward, persistence works again.
+
 ## v2.16.5 — API stable: median + on-target % (2026-06-17)
 
 ### Added
