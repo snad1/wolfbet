@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.16.0 — Sliding-window BPS + non-blocking SQLite writes (2026-06-17)
+
+### Added
+
+- **`Now` bps (sliding 60s window)** alongside the existing cumulative `Avg`. Dashboard now shows BOTH so you can tell what the bot is doing RIGHT NOW vs. the lifetime average — answers "why is my bps dropping over a long session?" (the average drags down forever after any slow period; `Now` doesn't).
+
+### Changed
+
+- **DB writes no longer block the event loop.** `_flush_bets`, `_db_save_session`, and the hourly `cleanup_live_bets` now run via `asyncio.to_thread`. Previously a single `_periodic_save` could stall the event loop for 10-50ms; with 6 concurrent sessions all saving every 30s, the loop spent a large fraction of time in DB I/O. Each engine still owns its own `sqlite3.Connection`; shared `db_connect` now opens with `check_same_thread=False` (safe — engines never write concurrently to their own connection). Bet flush is now driven exclusively by `_periodic_save` (every 30s) — the inline batch-size trigger was removed because it would still block the loop. Queue holding up to ~900 rows between saves (~115 KB) is harmless.
+
+Result: 6 concurrent sessions should approach 6× single-session bps (still subject to WolfBet's per-account rate limits), and the dashboard's `Now` number stops gaslighting you about steady state.
+
 ## v2.15.0 — Auto-revive: systemd retry-forever + external stall watchdog (2026-06-17)
 
 ### Added
