@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.16.4 — Efficiency % + final audit close-out (2026-06-17)
+
+### Added
+
+- **`Efficiency: X%`** on the dashboard — bot's actual recent bps as a % of the theoretical max (= 1 / max(bet_delay, api_avg)). Closes the "is the bot at peak?" question with a single number. The line includes the theoretical max so the user can see the ceiling directly.
+
+### Benchmark (user-run, recorded for the project record)
+
+Three controlled sessions on the same account, same strategy, same WolfBet network, varying bet_delay and game type:
+
+| Session | Game | bet_delay | API avg | Cycle (smoothed) | Bps observed | Theoretical max |
+|---|---|---|---|---|---|---|
+| #335 | Dice Auto v2 | none | 77ms | 68ms | 12.1 bps | 13.0 bps |
+| #336 | Dice v1 | 0.125s | 80ms | 139–159ms | 6.4 bps | 8.0 bps |
+| #337 | Dice v1 | 0.320s | 69ms | **329ms** | **3.0 bps** | **3.13 bps (96%)** |
+
+Session #337 is the proof point: Cycle 329ms = bet_delay 320ms + 9ms residual = **96% of theoretical max**. The 9ms residual is `asyncio.sleep` wake-up + Python interpreter overhead and is **not removable** without leaving the asyncio model. No code-level delays remain to clean up.
+
+Earlier high-Cycle reports (378–449ms on Dice Auto v2) were a combination of the auto/play endpoint being slower on average AND sporadic 500–862ms API spikes — both external to the bot. Visible now in `API peak` (introduced in v2.16.3).
+
+How to read the diagnostics together:
+- `Efficiency 95%+` → bot doing all it can; residual is asyncio scheduler
+- `Efficiency 70–90% + Overhead 0–2ms + API peak high` → API variance is the cause
+- `Efficiency < 70% + Overhead > 20ms` → real concurrency/contention worth digging into
+
 ## v2.16.3 — API peak time on the dashboard (2026-06-17)
 
 ### Added
