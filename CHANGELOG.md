@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.16.5 — API stable: median + on-target % (2026-06-17)
+
+### Added
+
+- **`API stable: Xms median / Y% on-target`** under the existing `API:` line. `Median` is the typical API time (unbiased by spikes). `On-target %` is the fraction of bets whose API ≤ `bet_delay` — the bound on Efficiency.
+
+User question answered: "why can't I get exact bps if API is mostly below bet_delay?" Answer: bps deficit ≈ (100% − on_target%). With ~5% slow API responses (above bet_delay), bps stays ~5% below theoretical regardless of bot code. This is mathematically inherent to sequential strategies where bet N+1 needs bet N's result before firing.
+
+For genuine bps improvement the user has two levers (both their choice):
+- Raise `bet_delay` above the API p95 to absorb more variance
+- Use a faster endpoint (e.g. Dice v1 instead of Dice Auto v2 — already in the benchmark table)
+
 ## v2.16.4 — Efficiency % + final audit close-out (2026-06-17)
 
 ### Added
