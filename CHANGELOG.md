@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.16.2 — Cycle metric: full per-bet time (bps reciprocal) (2026-06-17)
+
+### Added
+
+- **`Cycle: Xms/bet`** on the dashboard — exp-smoothed time between consecutive bet starts. This is the bps reciprocal (`Cycle × bps ≈ 1000`), shown inline as `(1000/385 = 2.60 bps)` so the relationship is explicit.
+
+Why: the previous v2.16.1 `Overhead` metric only measures post-API processing (~2ms typical). It misses the time between `_process_bet_result` and the next iteration's pacing sleep — custom rules eval, periodic-save await, milestone callback, asyncio scheduler wake-up jitter, other engines competing for the loop. Users seeing `Overhead: 2ms` thought the engine was at peak while bps was still ~17% below theoretical. `Cycle` is the honest number — it can't lie because it IS what produces bps.
+
+How to read it:
+- `Cycle ≈ bet_delay + a few ms` → bot is at peak
+- `Cycle > bet_delay + 30ms` → the gap is scheduler/loop-sharing cost (visible, not hand-waved)
+
+`Overhead` is kept for surgical diagnosis of post-API processing.
+
 ## v2.16.1 — Per-cycle overhead diagnostic + get_status() cache (2026-06-17)
 
 ### Added

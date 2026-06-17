@@ -155,6 +155,9 @@ class BettingEngine:
         # Answers: "is something blocking the bot or is this normal Python overhead?"
         self._cycle_overhead_ms: float = 0.0
         self._iter_start_mono: float = 0.0  # set at top of loop iteration
+        # Full per-bet cycle time (T_start_N - T_start_N-1), exp-smoothed ms.
+        # This is the bps reciprocal — Cycle*bps ≈ 1000. Honest about scheduler jitter.
+        self._cycle_ms: float = 0.0
         # get_status() cache — milestone notifier + /status are often called within
         # ms of each other; cache the dict briefly to avoid rebuilding 50 fields twice
         self._status_cache: Optional[dict] = None
@@ -1469,6 +1472,7 @@ class BettingEngine:
             "api_ms": self._last_api_ms,
             "api_avg_ms": (self._api_ms_total / self._api_ms_count) if self._api_ms_count > 0 else 0,
             "overhead_ms": self._cycle_overhead_ms,
+            "cycle_ms": self._cycle_ms,
         }
         self._status_cache = status
         self._status_cache_ts = now_mono
@@ -1530,8 +1534,12 @@ class BettingEngine:
                 wait = (self._last_bet_start_time + self.bet_delay) - time.monotonic()
                 if wait > 0:
                     await asyncio.sleep(wait)
+            prev_bet_start = self._last_bet_start_time
             self._last_bet_start_time = time.monotonic()
             self._iter_start_mono = self._last_bet_start_time
+            if prev_bet_start > 0:
+                self._cycle_ms = (0.9 * self._cycle_ms
+                                  + 0.1 * (self._last_bet_start_time - prev_bet_start) * 1000)
 
             # Fire a batch of concurrent requests
             self.status = f"Betting (pipeline={depth})… #{self.total_bets + 1}"
@@ -1711,8 +1719,13 @@ class BettingEngine:
                 wait = (self._last_bet_start_time + self.bet_delay) - time.monotonic()
                 if wait > 0:
                     await asyncio.sleep(wait)
+            prev_bet_start = self._last_bet_start_time
             self._last_bet_start_time = time.monotonic()
             self._iter_start_mono = self._last_bet_start_time
+            # Full cycle = T_start_N - T_start_N-1 (= 1/bps). Skip first iter.
+            if prev_bet_start > 0:
+                self._cycle_ms = (0.9 * self._cycle_ms
+                                  + 0.1 * (self._last_bet_start_time - prev_bet_start) * 1000)
 
             # place bet
             self.status = f"Placing bet #{self.total_bets + 1}…"
