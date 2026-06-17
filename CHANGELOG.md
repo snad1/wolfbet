@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.16.1 — Per-cycle overhead diagnostic + get_status() cache (2026-06-17)
+
+### Added
+
+- **`Overhead: Xms/bet`** on the dashboard — exponentially-smoothed measurement of time spent per bet OUTSIDE of `bet_delay` and the API call. Answers "is something blocking the bot?" with hard data: ~5–15ms = healthy (Python + asyncio scheduler overhead); 50ms+ = something is wrong (DB lock contention, other engines stalling the loop, etc.).
+- **`get_status()` cache (250ms TTL)** — milestone notifier and `/status` handlers often call `get_status()` within ms of each other; both now hit the cache. Wins ~5–10ms per milestone (≈ every 33s) — small but eliminates the brief per-second bucket dip when milestones fire.
+
+Honest expectation: single-session bps will inch from ~2.9 to ~3.0 with `bet_delay=0.320s`; the remaining 4% gap is fundamental Python + asyncio overhead and is **not fixable** without leaving the asyncio model. Multi-session bps unchanged numerically — but `Overhead` now shows the cost of concurrency directly.
+
 ## v2.16.0 — Sliding-window BPS + non-blocking SQLite writes (2026-06-17)
 
 ### Added

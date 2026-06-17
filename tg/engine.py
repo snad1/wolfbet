@@ -151,6 +151,14 @@ class BettingEngine:
         self.recent_bps      = 0.0
         self.recent_bpm      = 0.0
         self._recent_bet_times: deque = deque(maxlen=2000)
+        # Per-cycle overhead (engine + event-loop scheduler), exp-smoothed ms
+        # Answers: "is something blocking the bot or is this normal Python overhead?"
+        self._cycle_overhead_ms: float = 0.0
+        self._iter_start_mono: float = 0.0  # set at top of loop iteration
+        # get_status() cache — milestone notifier + /status are often called within
+        # ms of each other; cache the dict briefly to avoid rebuilding 50 fields twice
+        self._status_cache: Optional[dict] = None
+        self._status_cache_ts: float = 0.0
         self.profit_history  = deque(maxlen=40)
         self.profit_history.append(0.0)
         self.recent_bets     = deque(maxlen=5)
@@ -1367,6 +1375,11 @@ class BettingEngine:
         self.paused = False
 
     def get_status(self) -> dict:
+        # Cache for ~250ms — milestone notifier and /status often fire within ms
+        # of each other; avoid rebuilding the 50-field dict every time.
+        now_mono = time.monotonic()
+        if self._status_cache is not None and (now_mono - self._status_cache_ts) < 0.25:
+            return self._status_cache
         elapsed = time.time() - self.session_start if self.session_start else 0
         h, rem = divmod(int(elapsed), 3600)
         m, s = divmod(rem, 60)
@@ -1393,7 +1406,7 @@ class BettingEngine:
             d = r.to_dict()
             rule_descs.append(f"{d.get('trigger','')} {d.get('condition','')} {d.get('threshold','')}: {d.get('action','')} {d.get('value','')}")
 
-        return {
+        status = {
             "running": self.running,
             "paused": self.paused,
             "session_id": self.session_id,
@@ -1455,7 +1468,11 @@ class BettingEngine:
             "last_error": self.last_error,
             "api_ms": self._last_api_ms,
             "api_avg_ms": (self._api_ms_total / self._api_ms_count) if self._api_ms_count > 0 else 0,
+            "overhead_ms": self._cycle_overhead_ms,
         }
+        self._status_cache = status
+        self._status_cache_ts = now_mono
+        return status
 
     # ── PIPELINED BETTING LOOP (auto-bet only) ─────────
     async def _pipelined_betting_loop(self):
@@ -1514,6 +1531,7 @@ class BettingEngine:
                 if wait > 0:
                     await asyncio.sleep(wait)
             self._last_bet_start_time = time.monotonic()
+            self._iter_start_mono = self._last_bet_start_time
 
             # Fire a batch of concurrent requests
             self.status = f"Betting (pipeline={depth})… #{self.total_bets + 1}"
@@ -1552,6 +1570,10 @@ class BettingEngine:
                     break
 
                 last_bet_state = self._process_bet_result(result)
+                # Per-cycle overhead = iteration time minus API. Exp-smoothed.
+                iter_ms = (time.monotonic() - self._iter_start_mono) * 1000
+                overhead = max(0.0, iter_ms - self._last_api_ms)
+                self._cycle_overhead_ms = 0.9 * self._cycle_overhead_ms + 0.1 * overhead
 
                 # Streak delay
                 streak_pause = self._get_streak_delay()
@@ -1690,6 +1712,7 @@ class BettingEngine:
                 if wait > 0:
                     await asyncio.sleep(wait)
             self._last_bet_start_time = time.monotonic()
+            self._iter_start_mono = self._last_bet_start_time
 
             # place bet
             self.status = f"Placing bet #{self.total_bets + 1}…"
@@ -1737,6 +1760,12 @@ class BettingEngine:
 
             bet_state = self._process_bet_result(result)
             self._last_successful_bet_time = time.monotonic()
+            # Per-cycle overhead = full iteration time minus the API call.
+            # Excludes bet_delay sleep (we measure from start of bet, after sleep).
+            # Exp-smoothed so transient spikes don't dominate the reading.
+            iter_ms = (self._last_successful_bet_time - self._iter_start_mono) * 1000
+            overhead = max(0.0, iter_ms - self._last_api_ms)
+            self._cycle_overhead_ms = 0.9 * self._cycle_overhead_ms + 0.1 * overhead
 
             # Streak delay: pause after N consecutive wins/losses
             streak_pause = self._get_streak_delay()
