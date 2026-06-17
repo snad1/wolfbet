@@ -99,12 +99,13 @@ cat > "$SYSTEMD_DIR/${SERVICE_NAME}.service" << SERVICEEOF
 Description=WolfBet AutoBot — Dice Auto-Betting Engine (CLI)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/wolfbet.py --resume --daemon
-Restart=on-failure
+Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
@@ -126,12 +127,13 @@ cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}.service" << TGSERVICEEOF
 Description=WolfBet AutoBot — Telegram Bot
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 -m tg.bot
-Restart=on-failure
+Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
@@ -147,13 +149,39 @@ EnvironmentFile=${ENV_FILE}
 WantedBy=default.target
 TGSERVICEEOF
 
+# Watchdog: restart TG bot if heartbeat file is stale (catches stuck-but-alive)
+cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}-watchdog.service" << WDSERVICEEOF
+[Unit]
+Description=WolfBet Telegram Bot — Stall Watchdog
+After=${TG_SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'f=/tmp/${TG_SERVICE_NAME}.heartbeat; if [ ! -f "\$f" ] || [ \$(( \$(date +%%s) - \$(stat -c %%Y "\$f") )) -gt 180 ]; then echo "Heartbeat stale, restarting ${TG_SERVICE_NAME}"; systemctl --user restart ${TG_SERVICE_NAME}.service; fi'
+WDSERVICEEOF
+
+cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}-watchdog.timer" << WDTIMEREOF
+[Unit]
+Description=WolfBet Telegram Bot — Stall Watchdog Timer (every 2 min)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=${TG_SERVICE_NAME}-watchdog.service
+
+[Install]
+WantedBy=timers.target
+WDTIMEREOF
+
 # Enable lingering so user services run after logout
 sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
 systemctl --user daemon-reload
+systemctl --user enable --now ${TG_SERVICE_NAME}-watchdog.timer 2>/dev/null || true
 echo "   Services installed:"
-echo "     ${SERVICE_NAME}.service     (CLI bot)"
-echo "     ${TG_SERVICE_NAME}.service  (Telegram bot)"
+echo "     ${SERVICE_NAME}.service              (CLI bot)"
+echo "     ${TG_SERVICE_NAME}.service           (Telegram bot)"
+echo "     ${TG_SERVICE_NAME}-watchdog.timer    (stall watchdog, fires every 2 min)"
 
 # ── 6. Management CLI ─────────────────────────────────
 echo "[6/7] Creating wolfctl management command…"
