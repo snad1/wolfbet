@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.16.3 — API peak time on the dashboard (2026-06-17)
+
+### Added
+
+- **`API: X last / Y avg / Z peak`** — third field tracks the slowest single API response observed this session. Today's data showed `API last 563ms` (visible only for one bet, gone the next refresh). With `peak` it's permanently recorded — directly explains why `Cycle` is elevated above `bet_delay`.
+
+### Audit (read-only)
+
+Reviewed every `await`/`sleep`/timing call added since v1.13.9. **No regressions.** All added awaits replace previously-blocking synchronous DB calls or are O(microsecond) timing measurements. The slower bps the user is seeing comes from elevated WolfBet API latency (avg ~200ms vs ~100ms previously) and occasional 500ms+ spikes — not from any client-side change. `Overhead: 0–2ms` confirms the engine itself is essentially free.
+
 ## v2.16.2 — Cycle metric: full per-bet time (bps reciprocal) (2026-06-17)
 
 ### Added
