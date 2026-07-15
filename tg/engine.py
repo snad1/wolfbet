@@ -1489,6 +1489,9 @@ class BettingEngine:
             "api_peak_ms": self.peak_api_ms,
             "overhead_ms": self._cycle_overhead_ms,
             "cycle_ms": self._cycle_ms,
+            "rate_remaining": self.rate_remaining,
+            "rate_limit": self.rate_limit,
+            "auto_start_remaining": self._auto_start_remaining,
         }
         # API median (p50) and on-target % (api ≤ bet_delay). Explains the
         # Efficiency ceiling: 95% on-target → ~95% efficiency is the upper bound.

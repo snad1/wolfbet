@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.16.10 — `/status` speed block trimmed + WolfBet rate-limit line added (2026-06-17)
+
+### Changed
+
+- **Removed `Overhead` line** from the `/status` speed block — rarely actionable at a glance, adds noise.
+- **`API stable` and `Efficiency` now render only when `bet_delay > 0`.** With no delay set, the theoretical-max reference is meaningless (efficiency = actual / (1/delay) blows up) and median-vs-target has no target — both lines were pure clutter. When the user does set a delay, both lines render as before.
+
+### Added
+
+- **`Rate limit: N/M play · K/20 start` line** in the `/status` speed block, placed between `API:` and `Cycle:`. Uses the `X-RateLimit-*` headers the engine already parses in `_update_rate_limit()` (engine.py:343-349) — no new engine state; three keys plumbed through `get_status()`. Answers "how much of the per-IP budget is left?" for users running multiple sessions on the same IP; same-IP sessions naturally converge on the same number without any cross-slot coordination.
+
+## v2.16.9 — Session-ended notification: green ✅ on profit, red 🛑 on loss (2026-06-17)
+
+### Changed
+
+- **`Session #X ended` notification now leads with `✅`** when the session ended with `profit >= 0`, keeping `🛑` for `profit < 0`. Previously every stop-notification opened with `🛑` regardless of outcome — hitting a `max_profit` target (a good outcome) still triggered a red-icon push, causing a moment of false-alarm on the phone before reading the body. Leading emoji is now driven by the sign of `s["profit"]`; every other line of the summary is unchanged.
+
 ## v2.16.8 — Fix: `/status` rendering as plain text — `bet_delay` opened an unclosed italic entity (2026-06-17)
 
 ### Fixed
