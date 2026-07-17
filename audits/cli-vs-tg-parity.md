@@ -7,7 +7,8 @@
 
 - **Phase 1** — landed in **CLI v2.15.0** (commit `aaf01d4`). Section 1 P0 items now Y.
 - **Phase 2** — landed in **CLI v2.16.0** (commit `683f6f3`). Section 3 recurring / streak delays / basebet_pct / streakbet_loss / milestones / 429 Retry-After now Y.
-- **Phase 3** — landed in **CLI v2.17.0** (this update). Section 4 API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line now Y. Wizard prompts + preset persistence for the new Phase 2/3 fields still TODO — tracked as follow-up (fields are honoured programmatically and via preset JSON edits).
+- **Phase 3** — landed in **CLI v2.17.0** (commit `3dc2b16`). Section 4 API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line now Y.
+- **Phase 4a** — landed in **CLI v2.18.0** (this update). Wizard prompts + preset persistence for the Phase 2 config fields (recurring / streak delays / streakbet_loss / basebet_pct / milestones). Follow-up debt from v2.16.0 / v2.17.0 is now **cleared** — new users reach every Phase 2 feature from the interactive wizard, and presets round-trip fully.
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
@@ -164,7 +165,9 @@ The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned 
 
 **Phase 3 (v2.17.0)** added `wolfbet/tests/test_phase3_metrics.py` — 22 tests covering `_compute_api_avg`, `_compute_api_p50`, `_compute_on_target_pct`, `_compute_theoretical_max_bps`, `_compute_efficiency_pct`, `_record_api_ms`, `_record_cycle_ms`.
 
-Combined: **51 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
+**Phase 4a (v2.18.0)** added `wolfbet/tests/test_phase4a_presets.py` — 9 tests covering preset round-trip for all Phase 2 fields, streak-tuple encoding, backward-compat with legacy presets, and malformed-value fallback.
+
+Combined: **60 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
 
 Still untested (Phase 1 debt + everything else):
 
@@ -180,7 +183,7 @@ Broader coverage is best added incrementally when a bug lands or when refactorin
 - **Phase 1** (v2.15.0, ✅ landed): Section 1 P0 items + audit doc.
 - **Phase 2** (v2.16.0, ✅ landed): Section 3 recurring / streak-delays / streakbet_loss / basebet_pct / milestones / 429 Retry-After. Testing scaffold introduced.
 - **Phase 3** (v2.17.0, ✅ landed): Section 4 observability parity — API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line.
-- **Phase 4** (next): `/tweak`-equivalent interactive commands, richer pause/resume, monitor loop polish.
+- **Phase 4a** (v2.18.0, ✅ landed): Wizard prompts + preset persistence for the Phase 2 config fields — follow-up debt cleared.
+- **Phase 4b** (next): `/tweak`-equivalent interactive commands for mid-session parameter edits, richer pause/resume, monitor loop polish.
 - **Phase 5**: pipelined betting, multi-slot, CLI-only "beyond TG" features.
 - **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2/3 helpers across TG and CLI.
-- **Follow-up debt**: wizard prompts + preset persistence for the Phase 2 & Phase 3 config fields (fields work programmatically today).

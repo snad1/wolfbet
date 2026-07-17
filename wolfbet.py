@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.17.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.18.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -293,7 +293,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.17.0"
+VERSION      = "2.18.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -378,6 +378,16 @@ _PRESET_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold",
+    # Phase 4a additions — JSON-native Phase 2 fields:
+    "recurring", "basebet_pct",
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+]
+
+# Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
+# Decoded on load via _parse_streak_delay (Phase 2 helper).
+_STREAK_TUPLE_KEYS = [
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets",
+    "streakbet_loss",
 ]
 
 def _load_all_presets() -> dict:
@@ -396,7 +406,12 @@ def _save_all_presets(presets: dict):
 
 def save_preset(name: str):
     presets = _load_all_presets()
-    presets[name] = {k: getattr(state, k) for k in _PRESET_KEYS}
+    data = {k: getattr(state, k) for k in _PRESET_KEYS}
+    # Encode streak-tuple fields as "N:X" (matching the snapshot format).
+    for k in _STREAK_TUPLE_KEYS:
+        n, x = getattr(state, k)
+        data[k] = f"{n}:{x}" if n > 0 else None
+    presets[name] = data
     _save_all_presets(presets)
 
 def load_preset(name: str) -> bool:
@@ -407,6 +422,10 @@ def load_preset(name: str) -> bool:
     for k in _PRESET_KEYS:
         if k in data:
             setattr(state, k, data[k])
+    # Decode streak-tuple fields via _parse_streak_delay (returns (0, 0.0) on empty/malformed).
+    for k in _STREAK_TUPLE_KEYS:
+        if k in data:
+            setattr(state, k, _parse_streak_delay(data[k]))
     state.current_bet = state.base_bet
     if state.profit_threshold:
         state.next_profit_milestone = state.profit_threshold
@@ -2567,6 +2586,87 @@ def setup_wizard():
         console.print()
         return True
 
+    def step_advanced_tuning():
+        """Optional Phase 2 session tuning: recurring, streak delays, basebet_pct, milestones."""
+        console.print(Rule("[bold cyan]Step 5b / 7 — Advanced session tuning (optional)[/]"))
+        gate = _ask("Configure advanced tuning? (y/N)",
+                    default="y" if (state.recurring or state.basebet_pct or state.streak_delay_loss[0] or
+                                    state.streak_delay_win[0] or state.streak_delay_bets[0] or
+                                    state.streakbet_loss[0]) else "n",
+                    choices=["y", "n"])
+        if gate.lower() != "y":
+            console.print()
+            return True
+
+        console.print("  [dim]Enter to keep current  |  'none' to clear  |  'back' for previous step[/]\n")
+
+        # Recurring — boolean gate; whitelisted stop-reasons drive the restart.
+        rec = _ask("Recurring restart on non-loss stop? (y/N)",
+                   default="y" if state.recurring else "n", choices=["y", "n"])
+        state.recurring = (rec.lower() == "y")
+
+        # basebet_pct — dynamic base bet as % of balance.
+        v = _ask_optional("Base bet as % of balance (0-1, blank/none to disable)",
+                          state.basebet_pct or None)
+        if v is _BACK:
+            return False
+        try:
+            state.basebet_pct = float(v) if v else 0.0
+        except ValueError:
+            state.basebet_pct = 0.0
+
+        # Four streak-format fields — all use "N:X" grammar via _parse_streak_delay.
+        def _ask_streak(prompt, current_tuple):
+            current_str = f"{current_tuple[0]}:{current_tuple[1]}" if current_tuple[0] > 0 else None
+            raw = _ask_optional(prompt, current_str)
+            if raw is _BACK:
+                return _BACK
+            return _parse_streak_delay(raw)  # (0, 0.0) on empty / malformed
+
+        for attr, prompt in [
+            ("streak_delay_loss", "Streak delay on losses (format 'N:sec')"),
+            ("streak_delay_win",  "Streak delay on wins (format 'N:sec')"),
+            ("streak_delay_bets", "Streak delay every N bets (format 'N:sec')"),
+            ("streakbet_loss",    "Streakbet loss reduction (format 'N:multiplier')"),
+        ]:
+            result = _ask_streak(prompt, getattr(state, attr))
+            if result is _BACK:
+                return False
+            setattr(state, attr, result)
+
+        # Milestone thresholds.
+        v = _ask_optional("Milestone every N bets (default 100)", state.milestone_bets or 100)
+        if v is _BACK:
+            return False
+        try:
+            state.milestone_bets = int(v) if v else 100
+        except ValueError:
+            state.milestone_bets = 100
+
+        for attr, prompt in [
+            ("milestone_wins",   "Milestone every N wins"),
+            ("milestone_losses", "Milestone every N losses"),
+        ]:
+            v = _ask_optional(prompt, getattr(state, attr) or None)
+            if v is _BACK:
+                return False
+            try:
+                setattr(state, attr, int(v) if v else 0)
+            except ValueError:
+                setattr(state, attr, 0)
+
+        v = _ask_optional(f"Milestone every {state.currency.upper()} profit crossed",
+                          state.milestone_profit or None)
+        if v is _BACK:
+            return False
+        try:
+            state.milestone_profit = float(v) if v else 0.0
+        except ValueError:
+            state.milestone_profit = 0.0
+
+        console.print()
+        return True
+
     def step_preset():
         console.print(Rule("[bold cyan]Step 6 / 7 — Presets[/]"))
         presets = list_presets()
@@ -2638,7 +2738,7 @@ def setup_wizard():
 
     # ── Run steps with back navigation ────────────────────
     steps = [step_api_key, step_currency, step_bet_config, step_strategy,
-             step_stop_conditions, step_preset, step_confirm]
+             step_stop_conditions, step_advanced_tuning, step_preset, step_confirm]
     i = 0
     while i < len(steps):
         ok = steps[i]()

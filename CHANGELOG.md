@@ -1,5 +1,34 @@
 # Changelog
 
+## CLI v2.18.0 — wizard prompts + preset persistence for Phase 2 fields (2026-07-17)
+
+Phase 4a of the CLI ↔ TG parity roadmap. Clears the follow-up debt from v2.16.0 / v2.17.0.
+
+### Added
+
+- **New wizard step: "Step 5b / 7 — Advanced session tuning (optional)".** Placed between Stop conditions and Presets. Umbrella prompt defaults to "N" so quick-start flows are unchanged. When enabled, prompts for the ten Phase 2 config fields with the existing `_ask_optional` grammar (`Enter` keeps current, `none`/`clear`/`off`/`0` disables, `back` returns).
+- **Preset schema extension.** `_PRESET_KEYS` gains six new plain fields (`recurring`, `basebet_pct`, `milestone_bets`, `milestone_wins`, `milestone_losses`, `milestone_profit`). New `_STREAK_TUPLE_KEYS` list identifies the four tuple fields (`streak_delay_loss`, `_win`, `_bets`, `streakbet_loss`) that round-trip through JSON as `"N:X"` strings — matches the format `_save_state_file` already uses for snapshots.
+- **`save_preset` / `load_preset` refactored** to handle the streak-tuple encoding. Load side reuses the Phase 2 `_parse_streak_delay(value)` helper, so malformed / hand-edited JSON falls back cleanly to `(0, 0.0)` (disabled) rather than crashing.
+
+### Behavioural notes
+
+- **Backward-compatible.** Legacy presets (v2.17.0 era) load with defaults for the new fields — no `KeyError`, no migration script.
+- **No new behaviour paths.** The fields already work as of v2.16.0; this release only adds discovery / entry surfaces.
+- **Preset file permissions unchanged** — still `os.open(..., 0o600)` restrictive.
+- **Malformed input safe.** Invalid streak strings (hand-edited or fat-fingered in the wizard) map to the disabled state; never crash.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase4a_presets.py` — 9 pure-function tests covering: full round-trip of all Phase 2 fields, empty streak encoding (→ `null`), populated streak encoding (→ `"N:X"`), backward-compat with legacy presets, malformed-value fallback, JSON-native `bool`/`float` serialisation for plain fields, preset name isolation.
+- Uses a `_tmp_preset_path()` context manager that swaps `wolfbet.PRESET_PATH` for a `tempfile.mkstemp` file for the duration of the test — no pollution of `~/.wolfbet_presets.json`.
+- Combined suite now: **60 tests (29 Phase 2 + 22 Phase 3 + 9 Phase 4a)** — all pass in `.venv` in < 200 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `60 passed`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.17.0` → `2.18.0` (minor bump — new user-visible wizard surface + preset schema extension).
+- Banner literal updated to match.
+
 ## CLI v2.17.0 — observability parity (API timing, rate-limit line, Cycle, Efficiency) (2026-07-17)
 
 Phase 3 of the CLI ↔ TG parity roadmap. Closes Section 4 "Observability" of `audits/cli-vs-tg-parity.md`.
