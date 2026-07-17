@@ -1,5 +1,41 @@
 # Changelog
 
+## CLI v2.16.0 — session robustness parity (recurring, streak delays, milestones, basebet_pct) (2026-07-17)
+
+Phase 2 of the CLI ↔ TG parity roadmap. Closes Section 3 "Session robustness" of `audits/cli-vs-tg-parity.md`.
+
+### Added
+
+- **Recurring restart** — set `state.recurring = True` and the session auto-restarts (counters cleared, new SQLite row, fresh `/auto/start` UUID for auto games) after a **safe** stop reason. Safe = `Profit target reached` OR `Max bets reached` OR `Max wins reached`, AND `state.profit >= 0`. **Loss-driven stops (`Max loss hit`, `Balance floor hit`) and `Insufficient balance` ALWAYS bail out** — recurring never chases losses. Positive-whitelist guard is at `_should_recurring_restart` (wolfbet.py). Mirrors TG's `_notify_stop` "is_notable" throttling logic.
+- **Streak delays** — pause N seconds after every N consecutive losses / wins / total-bets. Configured via `streak_delay_loss`, `streak_delay_win`, `streak_delay_bets` in `"N:seconds"` format. Parsed by `_parse_streak_delay`, applied by `_get_streak_delay` right before each bet.
+- **`streakbet_loss`** — cut current_bet by a factor after every N consecutive losses. Format `"N:multiplier"` (e.g. `"5:0.5"` halves the bet after every 5-loss streak). Applied by `_get_streakbet_loss_factor` to the computed next_bet.
+- **`basebet_pct`** — dynamic base_bet as % of current balance. Recomputed every 10 bets via `_apply_basebet_pct`. Compounds as balance grows; contracts as it shrinks. 0 disables (default).
+- **Milestone tracking** — dashboard signal at every N bets / N wins / N losses / X profit. Configured via `milestone_bets` (default 100) / `milestone_wins` / `milestone_losses` / `milestone_profit`. `_check_milestone` returns a reason string; the CLI logs it and updates `state.status` briefly.
+- **429 `Retry-After` respected** — when the WolfBet API returns 429 with a `Retry-After` header, the CLI now uses that value for `rate_backoff` instead of the fixed 2s probe. Falls back to 2s when the header is absent.
+
+### Behavioural notes
+
+- **No new external API surface.** Everything is a client-side config field or bet-loop hook.
+- **No new secrets, no auth changes, no PII.** New config fields are numeric / boolean / string tuples.
+- **No new module.** All Phase 2 helpers live in `wolfbet.py` alongside the existing helpers, mirroring the TG file's module layout. Phase 6 will de-duplicate via a shared library.
+- **`_save_state_file()` extended** with the new config fields so `--status` can display them and future `--resume` can re-hydrate them.
+- **Wizard prompts + preset persistence for the new fields are still TODO** — the fields are honoured whenever a caller sets them programmatically (or a preset JSON is hand-edited), but the interactive wizard doesn't prompt for them yet. Tracked as follow-up work; simplest CLI workflow today is `save_preset` → hand-edit `~/.wolfbet_presets.json` → `--resume`.
+
+### Testing
+
+- Manual smoke recommended:
+  1. **Recurring** — set `state.recurring=True`, `max_wins=5`; expect session #N ends at bet 5, session #N+1 auto-starts, betting continues.
+  2. **Recurring safety** — set `max_loss=0.001`; force it. Expect exit, no restart.
+  3. **Streak delay** — set `streak_delay_loss=(3, 0.5)`; force 3 losses; expect a 0.5s pause before bet #4.
+  4. **basebet_pct** — set `basebet_pct=0.001`, `current_balance=10`; after 10 bets, expect `base_bet ≈ 0.01`.
+  5. **Milestone** — set `milestone_bets=10`; expect `state.status` briefly reads "Milestone: 10 bets" every 10 bets.
+- Automated tests: pure-function unit tests for `_parse_streak_delay`, `_get_streak_delay`, `_get_streakbet_loss_factor`, `_apply_basebet_pct`, `_check_milestone` land in `wolfbet/tests/test_phase2_helpers.py` (see file). Run with `WOLFBET_ENV=testing pytest wolfbet/tests/test_phase2_helpers.py -q`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.15.0` → `2.16.0` (minor bump — new user-visible config surface).
+- Banner literal updated to match.
+
 ## CLI v2.15.0 — dice-auto / limbo-auto now supported in terminal (2026-07-17)
 
 ### Added

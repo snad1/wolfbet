@@ -3,6 +3,11 @@
 **Date**: 2026-07-17
 **Purpose**: Systematically enumerate every feature the Telegram bot (`tg/engine.py`) has, and mark whether the terminal CLI (`wolfbet.py` + `core/engine.py`) has it. This is the source of truth for Phase 2–5 of the CLI↔TG parity roadmap.
 
+**Phase completion log**:
+
+- **Phase 1** — landed in **CLI v2.15.0** (commit `aaf01d4`). Section 1 P0 items now Y.
+- **Phase 2** — landed in **CLI v2.16.0** (this update). Section 3 recurring / streak delays / basebet_pct / streakbet_loss / milestones / 429 Retry-After now Y. Wizard prompts + preset persistence for the new fields still TODO — tracked as follow-up (fields are honoured programmatically and via preset JSON edits).
+
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
 - **P1** — quality of life; parity feels "smooth" (recurring, milestones, dashboard metrics)
@@ -62,16 +67,16 @@
 |---|---|---|---|---|
 | Insufficient-balance detection → clean stop | tg/engine.py:1589 + earlier | Y | P0 | CLI has it (wolfbet.py:496-499). |
 | 429 rate-limit backoff | tg/engine.py:406-411 + tight loop | P | P0 | CLI has a simpler backoff (`rate_wait` + `rate_backoff`) but no exponential-with-jitter. Phase 2. |
-| `Retry-After` header respected on 429 | tg/engine.py:407 | N | P1 | CLI ignores it. Phase 2. |
+| `Retry-After` header respected on 429 | tg/engine.py:407 | Y (v2.16.0) | P1 | Landed in v2.16.0 — `api_place_bet` reads the header, floors at 2s. |
 | `_recover_expired_session` on 400 "Session has ended" | tg/engine.py:437-442 | N | P0 | Phase 1 (auto only). |
 | Timeout / NetworkError retry with backoff | tg/engine.py:414-421 (auto), similar in `_api_place_bet` | P | P0 | CLI catches Timeout → sleeps once then continues loop. TG has multi-step backoff. Phase 2. |
 | `MAX_TIMEOUT_STREAK` → recreate HTTP client | tg/engine.py:60 | N | P1 | CLI doesn't recreate `requests` sessions — it doesn't use a Session object. Phase 2. |
-| Recurring session (auto-restart on stop) | tg/handlers.py + engine `_pending_restart` | N | P1 | Phase 2. Big feature — needs config flag, restart-on-loss vs -on-win logic. |
-| `streak_delay_loss`, `streak_delay_win`, `streak_delay_bets` — pause N seconds after N consecutive losses/wins/bets | tg/engine.py:96-99 | N | P1 | Phase 2. |
-| `streakbet_loss` — reduce bet after N consecutive losses | tg/engine.py + `_get_streakbet_loss_factor` | N | P1 | Phase 2. |
-| `basebet_pct` — base bet as % of current balance | tg/engine.py:292-303 `_apply_basebet_pct` | N | P1 | Phase 2. |
+| Recurring session (auto-restart on stop) | tg/handlers.py + engine `_pending_restart` | Y (v2.16.0) | P1 | Landed in v2.16.0. Positive-whitelist guard (`_should_recurring_restart`) — restarts only on Profit target / Max bets / Max wins **and** `profit ≥ 0`. Loss / insufficient balance always exit. |
+| `streak_delay_loss`, `streak_delay_win`, `streak_delay_bets` — pause N seconds after N consecutive losses/wins/bets | tg/engine.py:96-99 | Y (v2.16.0) | P1 | Landed in v2.16.0. Format `"N:seconds"`. Applied by `_get_streak_delay` before each bet. |
+| `streakbet_loss` — reduce bet after N consecutive losses | tg/engine.py + `_get_streakbet_loss_factor` | Y (v2.16.0) | P1 | Landed in v2.16.0. Format `"N:multiplier"`. Applied to `next_bet` after each round. |
+| `basebet_pct` — base bet as % of current balance | tg/engine.py:292-303 `_apply_basebet_pct` | Y (v2.16.0) | P1 | Landed in v2.16.0. Recomputed every 10 bets from live balance. |
 | `profit_increment` + `profit_threshold` (increment base bet every N profit) | tg/engine.py:640-647 (visible in CLI!) | Y | P0 | **CLI already has this** — wolfbet.py:640-647. |
-| Milestone notifications (every N bets/wins/losses/profit) | tg/engine.py:200-202 + callbacks | N | P1 | Phase 2. |
+| Milestone notifications (every N bets/wins/losses/profit) | tg/engine.py:200-202 + callbacks | Y (v2.16.0) | P1 | Landed in v2.16.0. `_check_milestone` returns reason string; CLI logs via `logger.info` and briefly shows in `state.status`. Push notifications remain TG-only. |
 | Stop condition: `max_profit` | tg/engine.py:592-593 | Y | P0 | CLI has it. |
 | Stop condition: `max_loss` | tg/engine.py:594-595 | Y | P0 | |
 | Stop condition: `max_bets` | tg/engine.py:596-597 | Y | P0 | |
@@ -152,19 +157,25 @@
 
 ## 8. Testing gap (existing untested surface)
 
-The CLI has **zero automated tests** today (`find wolfbet -name 'test_*.py'` returns nothing; no `pytest.ini`, no `tests/` directory). Every feature above is verified by manual TUI runs. Phase 1 ships one thin `tests/test_auto_endpoints.py` covering:
+The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned `tests/test_auto_endpoints.py` but the port scope pushed it out.
 
-- `_build_auto_start_payload` — pure-function assertions on schema shape for known state fixtures.
-- `_build_auto_config` — one assertion per strategy_key branch (8 total) verifying WB rule structure.
-- `_custom_rule_to_wolfbet` — trigger/type/action mappings for the sequence-condition branch.
+**Phase 2 (v2.16.0)** stood up the test-suite scaffolding: `wolfbet/tests/` directory + `tests/__init__.py` + `wolfbet/tests/test_phase2_helpers.py` — 29 tests covering every new pure helper (`_parse_streak_delay`, `_get_streak_delay`, `_get_streakbet_loss_factor`, `_apply_basebet_pct`, `_check_milestone`, `_should_recurring_restart`). Run with `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` — passes in <100 ms in the wolfbet `.venv`.
 
-Everything else stays manual until Phase 2+ retrofits.
+Still untested (Phase 1 debt + everything else):
+
+- `_build_auto_start_payload` / `_build_auto_config` / `_custom_rule_to_wolfbet` — Phase 1 port. Deferred; low change-frequency.
+- The bet loop (`betting_loop`) itself — has no test seams; would need refactor to be unit-testable.
+- HTTP surfaces (`api_place_bet`, `api_auto_start`, `api_auto_stop`) — need mocked-`requests` tests.
+- Database layer (`_db_save_bet`, `_db_save_session`, `_db_start_session`).
+
+Broader coverage is best added incrementally when a bug lands or when refactoring — retrofitting all-at-once for a working script is low-ROI.
 
 ## Phase mapping — what lives where
 
-- **Phase 1 (this delivery)**: everything marked **P0** in sections 1 + the P0 items in section 3 (`_fmt_stop_reason`, `_recover_expired_session`, `_rotate_server_seed`) + the P0 auto-UUID snapshot in section 5. Plus the audit doc itself.
-- **Phase 2**: section 3 recurring / streak / basebet_pct / milestones / robustness gaps; section 6 tweak.
-- **Phase 3**: section 4 observability parity (API stats, cycle, efficiency, on-target, rate-limit line, auto_start_remaining line).
-- **Phase 4**: section 6 tweak commands / pause-and-resume polish, monitor loop.
+- **Phase 1** (v2.15.0, ✅ landed): Section 1 P0 items + audit doc.
+- **Phase 2** (v2.16.0, ✅ landed): Section 3 recurring / streak-delays / streakbet_loss / basebet_pct / milestones / 429 Retry-After. Testing scaffold introduced.
+- **Phase 3** (next): Section 4 observability parity — CLI dashboard renders `rate_remaining`, `auto_start_remaining`, `api_p50_ms`, `on_target_pct`, `cycle_ms`, `efficiency_pct` (values already computed and persisted; wire them into the rich Live layout).
+- **Phase 4**: `/tweak`-equivalent interactive commands, richer pause/resume, monitor loop polish.
 - **Phase 5**: pipelined betting, multi-slot, CLI-only "beyond TG" features.
-- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`.
+- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2 helpers across TG and CLI.
+- **Follow-up debt**: wizard prompts + preset persistence for the Phase 2 fields (fields work programmatically today).
