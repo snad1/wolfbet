@@ -1,5 +1,45 @@
 # Changelog
 
+## CLI v2.20.0 — session summary on exit + CSV/JSON export (2026-07-17)
+
+Phase 5a of the CLI ↔ TG parity roadmap — the first "beyond TG" release. Adds a rich end-of-session recap panel (native Rich, not Markdown) and full session-data export via a new CLI flag and hotkey.
+
+### Added
+
+- **`format_session_summary(reason)` — Rich Group of Panels.** Shown on `Q`, Ctrl+C, and SIGTERM. Green ✅ (profit ≥ 0) or red 🛑 (loss) leading emoji (matches v2.16.9 policy). Balance panel border colours from profit sign. Panels: Balance, Stats, Extremes, Config; footer with uptime + avg speed. Degrades cleanly on a zero-bet session (no `NaN`, no divide-by-zero).
+- **`--export <path>` CLI flag.** Exports the latest session (or `--export-session-id N` for a specific one) to CSV or JSON — format detected from the file extension. Unknown extension defaults to CSV.
+  - CSV: session metadata as leading `#` comment rows, then bet columns with a header row.
+  - JSON: `{ "session": {…all session columns…}, "bets": [{…all bet columns…}] }`.
+  - File permissions `0o600` (restrictive, matches other CLI-written files).
+- **`E` hotkey (live-session export).** Press `E` in a live session for a modal path prompt (default `~/wolfbet-session-<id>.csv`). Follows the `show_tweak` idiom — pause / prompt / resume. `back` / blank / EOF cancels; errors surface cleanly as `✗ <error>` without crashing the loop.
+- **Dashboard key legend updated** — `[P]ause [R]esume [T]weak [E]xport [H]istory [Q]uit`.
+
+### Helpers
+
+- `_read_session(session_id) -> dict` — sessions row as a dict via `sqlite3.Row`.
+- `_read_bets(session_id) -> list[dict]` — bets ordered by id.
+- `_latest_session_id() -> int` — highest session id, or 0 if the DB is empty.
+- `_export_session(session_id, path) -> (bet_count, format)` — orchestrator; raises `ValueError` on missing session or write failure.
+- `show_export()` — modal (mirrors `show_tweak` / `show_history`).
+
+### Behavioural notes
+
+- **No new external API surfaces.** No new secrets, no auth changes, no PII. Bet payloads are timestamped balances (no API keys, no auth tokens).
+- **Bet loop is untouched.** All new code is display + export layer. Zero risk to the sending path.
+- **Summary rendering is best-effort** — wrapped in try/except so a display bug never blocks the shutdown-save path.
+- **Export uses the shared `db_connect` helper** (post-v1.15.6 `check_same_thread=False`) — no cross-thread SQLite errors when the export runs from the hotkey while the bet loop still holds its persistent connection.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase5a_export.py` — 15 tests covering: DB seed round-trip, `_read_session` / `_read_bets` / `_latest_session_id`, format detection from `.csv` / `.CSV` / `.json` / unknown extension, CSV header + `#` metadata rows, JSON `{session, bets}` structure, file perms (`0o600`), missing-session raises `ValueError`, `format_session_summary` no-crash on both zero-bet and populated states.
+- Combined suite: **109 tests** (29 Phase 2 + 22 Phase 3 + 9 Phase 4a + 34 Phase 4b + 15 Phase 5a) — all pass in `.venv` in < 200 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `109 passed`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.19.0` → `2.20.0` (minor bump — new user-visible flag + hotkey + summary panel).
+- Banner literal updated to match.
+
 ## CLI v2.19.0 — runtime tweak surface (parity with TG /tweak) (2026-07-17)
 
 Phase 4b of the CLI ↔ TG parity roadmap. Full parity with `tg/handlers.cmd_tweak` — 22 tweakable params, same aliases, mid-session parameter edits without stopping the bet loop.

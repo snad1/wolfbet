@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.19.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.20.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib  # noqa: E401
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib, csv  # noqa: E401
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
@@ -440,7 +440,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.19.0"
+VERSION      = "2.20.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1500,6 +1500,68 @@ def betting_loop():
 def _db_conn():
     return db_connect(DB_PATH)
 
+
+# ── Phase 5a — session read + export helpers ───────────────────────
+def _read_session(session_id: int) -> dict:
+    """Return the sessions row as a dict, or {} if not found."""
+    conn = _db_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else {}
+
+
+def _read_bets(session_id: int) -> list:
+    """Return all bets for a session (ordered by id) as a list of dicts."""
+    conn = _db_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM bets WHERE session_id = ? ORDER BY id", (session_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def _latest_session_id() -> int:
+    """Return the highest session id in the DB, or 0 if none."""
+    conn = _db_conn()
+    try:
+        row = conn.execute("SELECT MAX(id) FROM sessions").fetchone()
+    finally:
+        conn.close()
+    return int(row[0]) if row and row[0] else 0
+
+
+def _export_session(session_id: int, path: str) -> tuple:
+    """Write a session + its bets to `path`. Format detected from extension.
+
+    Returns (bet_count, format). Raises ValueError if the session is missing
+    or if the file cannot be written.
+    """
+    path = os.path.expanduser(path)
+    fmt = "json" if path.lower().endswith(".json") else "csv"
+    session = _read_session(session_id)
+    if not session:
+        raise ValueError(f"Session #{session_id} not found")
+    bets = _read_bets(session_id)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", newline="") as f:
+        if fmt == "json":
+            json.dump({"session": session, "bets": bets}, f, indent=2, default=str)
+        else:
+            # CSV: session metadata as leading `#` comment rows, then bets table.
+            for k, v in session.items():
+                f.write(f"# {k}: {v}\n")
+            if bets:
+                w = csv.DictWriter(f, fieldnames=list(bets[0].keys()))
+                w.writeheader()
+                w.writerows(bets)
+    return (len(bets), fmt)
+
 def _db_start_session() -> int:
     conn = _db_conn()
     c = conn.cursor()
@@ -1913,7 +1975,7 @@ def build_dashboard_screen() -> str:
 
     # ── Row N: Status + controls ──────────────────────
     status_txt = state.status[:60]
-    keys = "[P]ause [R]esume [T]weak [H]istory [Q]uit"
+    keys = "[P]ause [R]esume [T]weak [E]xport [H]istory [Q]uit"
     add(f" {_a('white', status_txt)}  {_a('dim', keys)}")
 
     return "\r\n".join(lines)
@@ -1990,6 +2052,109 @@ def _print_tweak_help():
     console.print(t)
 
 
+def format_session_summary(reason: str = "") -> Group:
+    """Build a Rich Group with the end-of-session recap panels.
+
+    Mirrors tg/formatter.format_stop content shape but rendered as terminal-native
+    Rich (Panel/Table.grid) rather than Markdown. Green/red border on the balance
+    panel from the profit sign — matches the ✅/🛑 emoji policy from v2.16.9.
+    """
+    p = state.profit
+    ps = "+" if p >= 0 else ""
+    pe = "✅" if p >= 0 else "🛑"
+    bal_change = state.current_balance - state.start_balance
+    bc_s = "+" if bal_change >= 0 else ""
+    avg_pnl = p / state.total_bets if state.total_bets > 0 else 0.0
+    avg_s = "+" if avg_pnl >= 0 else ""
+    wr = (state.wins / state.total_bets * 100) if state.total_bets > 0 else 0.0
+
+    header = Rule(f"[bold]{pe} Session #{state.session_id} ended[/]  [dim]— {reason or 'Session ended'}[/]")
+
+    bal_c  = "green" if p >= 0 else "red"
+    bc_c   = "green" if bal_change >= 0 else "red"
+    avg_c  = "green" if avg_pnl >= 0 else "red"
+
+    bal = Table.grid(padding=(0, 2))
+    bal.add_row("Start balance:", f"{state.start_balance:.8f} {state.currency.upper()}")
+    bal.add_row("End balance:",   f"{state.current_balance:.8f}  ([{bc_c}]{bc_s}{bal_change:.8f}[/])")
+    bal.add_row("P/L:",           f"[{bal_c}]{ps}{p:.8f}[/]")
+    bal.add_row("Wagered:",       f"{state.wagered:.8f}")
+
+    stats = Table.grid(padding=(0, 2))
+    stats.add_row("Bets:",     f"{state.total_bets:,}   W: {state.wins:,}   L: {state.losses:,}")
+    stats.add_row("Win rate:", f"{wr:.1f}%")
+    stats.add_row("Avg P/L:",  f"[{avg_c}]{avg_s}{avg_pnl:.8f}[/]")
+
+    low_bal = state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance
+    extremes = Table.grid(padding=(0, 2))
+    extremes.add_row("Peak balance:", f"{state.highest_balance:.8f}")
+    extremes.add_row("Low balance:",  f"{low_bal:.8f}")
+    extremes.add_row("Best win:",     f"+{state.highest_win:.8f}")
+    extremes.add_row("Worst loss:",   f"-{state.biggest_loss:.8f}")
+    extremes.add_row("Max streaks:",  f"W+{state.max_win_streak}  /  L-{state.max_loss_streak}")
+
+    cfg = Table.grid(padding=(0, 2))
+    cfg.add_row("Game:",     GAME_LABELS.get(state.game, state.game))
+    cfg.add_row("Strategy:", f"{state.strategy}  ({state.multiplier}x, {state.rule})")
+    cfg.add_row("Base bet:", f"{state.base_bet:.8f}")
+    if state.bet_delay > 0:
+        cfg.add_row("Bet delay:", f"{state.bet_delay:.3f}s")
+    if state.strategy_key == "8" and state.custom_rules:
+        cfg.add_row("Rules:", f"{len(state.custom_rules)} custom")
+    if state.recurring:
+        cfg.add_row("Recurring:", "on")
+
+    uptime_s = int(time.time() - state.session_start) if state.session_start else 0
+    h, rem = divmod(uptime_s, 3600)
+    m, s = divmod(rem, 60)
+    footer = Text.from_markup(
+        f"[dim]Uptime[/] [bold]{h}h {m}m {s}s[/]   "
+        f"[dim]Avg speed[/] [bold]{state.bets_per_second:.1f} bps / {state.bets_per_minute:.0f} bpm[/]"
+    )
+
+    return Group(
+        header,
+        Panel(bal,      title="[bold]💰 Balance[/]",  border_style=bal_c),
+        Panel(stats,    title="[bold]📊 Stats[/]",    border_style="cyan"),
+        Panel(extremes, title="[bold]📈 Extremes[/]", border_style="cyan"),
+        Panel(cfg,      title="[bold]⚙️  Config[/]",  border_style="dim"),
+        footer,
+    )
+
+
+def show_export():
+    """Modal export prompt: mirrors show_tweak idiom."""
+    was_paused = state.paused
+    state.paused = True
+    time.sleep(0.15)
+    console.clear()
+    console.print(Rule("[bold cyan]Export session[/]"))
+    default_path = os.path.expanduser(f"~/wolfbet-session-{state.session_id}.csv")
+    console.print(f"  [dim]Default[/] [cyan]{default_path}[/]")
+    console.print("  [dim]Blank or 'back' cancels.  '.json' switches format.[/]\n")
+    try:
+        raw = input("  Path: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        state.paused = was_paused
+        return
+    if raw.lower() in ("back", "cancel", "q", "quit"):
+        state.paused = was_paused
+        return
+    path = raw or default_path
+    try:
+        n, fmt = _export_session(state.session_id, path)
+        console.print(f"  [green]✓[/] Exported [bold]{n}[/] bets to [cyan]{path}[/] ({fmt.upper()})")
+        logger.info("EXPORT: session=%d format=%s bets=%d path=%s", state.session_id, fmt, n, path)
+    except Exception as e:
+        console.print(f"  [red]✗ {e}[/]")
+        logger.warning("EXPORT FAILED: session=%d path=%s: %s", state.session_id, path, e)
+    console.print("\n[dim]  Press any key to return…[/]")
+    _getch()
+    console.clear()
+    state.paused = was_paused
+
+
 def show_tweak():
     """Modal runtime tweak surface — parity with tg/handlers.cmd_tweak.
 
@@ -2064,6 +2229,14 @@ def input_handler():
             logger.warning("SESSION END (user quit)  bets=%d  profit=%+.8f  balance=%.8f",
                         state.total_bets, state.profit, state.current_balance)
             _db_save_session()
+            # Phase 5a — session summary before exit
+            try:
+                console.clear()
+                console.print(format_session_summary("Stopped by user"))
+                console.print("\n[dim]  Press any key to close…[/]")
+                _getch()
+            except Exception as e:
+                logger.warning("Could not render session summary: %s", e)
         elif ch == "p":
             state.paused = True
             state.status = "PAUSED"
@@ -2074,6 +2247,8 @@ def input_handler():
             show_history()
         elif ch == "t":
             show_tweak()
+        elif ch == "e":
+            show_export()
 
 # ══════════════════════════════════════════════════════════
 #  SETUP WIZARD  (step-based, supports "back" and "none")
@@ -3925,6 +4100,10 @@ def main():
     group.add_argument("--session-bets", type=int, metavar="ID", help="Show bets for a specific session")
     parser.add_argument("--preset", type=str, metavar="NAME",
                         help="Load a named preset and start (skips wizard)")
+    parser.add_argument("--export", type=str, metavar="PATH",
+                        help="Export a session to CSV or JSON (format from extension) and exit")
+    parser.add_argument("--export-session-id", type=int, metavar="ID",
+                        help="Session ID for --export (default: latest)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable debug logging (dev mode)")
 
@@ -3939,6 +4118,20 @@ def main():
         args.resume = True
 
     # ── Quick commands (no DB/state needed) ───────────────
+    if args.export:
+        init_db()
+        sid = args.export_session_id or _latest_session_id()
+        if sid <= 0:
+            console.print("[red]No sessions in the DB yet.[/]")
+            sys.exit(1)
+        try:
+            n, fmt = _export_session(sid, args.export)
+            console.print(f"[green]✓[/] Exported [bold]{n}[/] bets from session #{sid} → "
+                          f"[cyan]{os.path.expanduser(args.export)}[/] ({fmt.upper()})")
+            sys.exit(0)
+        except Exception as e:
+            console.print(f"[red]✗ Export failed:[/] {e}")
+            sys.exit(1)
     if args.status:
         cmd_status()
         return
@@ -4044,6 +4237,14 @@ def main():
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
+        # Phase 5a — session summary before exit (best-effort; never blocks save path)
+        try:
+            console.clear()
+            console.print(format_session_summary("Interrupted"))
+            console.print("\n[dim]  Press any key to close…[/]")
+            _getch()
+        except Exception as e:
+            logger.warning("Could not render session summary on shutdown: %s", e)
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  _shutdown)
