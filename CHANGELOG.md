@@ -1,5 +1,51 @@
 # Changelog
 
+## CLI v2.21.0 — backtest / replay mode (no API calls, no real balance risk) (2026-07-17)
+
+Phase 5c of the CLI ↔ TG parity roadmap. Second "beyond TG" release — run any strategy configuration against saved sessions (historical replay) or a synthetic random stream (Monte Carlo simulation) without touching the WolfBet API.
+
+### Added
+
+- **`--backtest` mode.** Skips the API-key wizard, all HTTP calls, all rate-limit code. Loads config from `--preset NAME` OR `~/.wolfbet_autobot.json` OR sensible defaults (Martingale / 2.01x / over / 49.5). Runs the strategy over a synthetic outcome stream; ends with the same rich session summary panel from v2.20.0.
+- **`--simulate N`** — data source: N synthetic bet outcomes generated from the multiplier's win probability (`win_chance = 99 / multiplier`, matches WolfBet's 99% RTP). Default 1000.
+- **`--seed N`** — RNG seed for `--simulate`. `random.Random(seed)` gives reproducible runs.
+- **`--replay-session ID`** — data source: replay bets from a previously-saved session #ID. Historical rolls (win/loss + result_value) drive the outcomes; the CURRENT strategy's bet-size decisions drive the amount. Answers "what if I'd used strategy X on last night's sequence?"
+
+### Helpers
+
+- `_simulate_bet_outcome(multiplier, rule, bet_amount, current_balance, rng)` — pure function returning a bet-result dict shaped like `api_place_bet`'s response.
+- `_replay_bets_from_db(session_id, bet_amount_fn)` — generator yielding bet-result dicts from a saved session.
+- `_apply_backtest_result(result)` — mutates `state.*` from one result. Reused by `backtest_loop`; parallel to `betting_loop`'s block.
+- `backtest_loop(source, progress_every=100)` — orchestrates. Honours `should_stop()` and `state.running` so stop conditions and `q` hotkey both work. Prints heartbeat progress every N bets (defaults scale with `--simulate N/20`).
+- `_run_backtest(args)` — entry point wired into `main()` before the normal flow.
+
+### Behavioural notes
+
+- **Zero risk to real balance.** No API calls, no auth, no PII. Random uses `random.Random(seed)` (stdlib) — sufficient for statistical analysis.
+- **`[BACKTEST]` prefix on `state.status`** throughout the run — impossible to confuse for a live session. Banner emits `🧪 BACKTEST MODE — no API calls, no real balance risk`.
+- **Transient in v1.** Backtest doesn't write to the DB; user sees the summary panel, then exits. No pollution of real session history / lifetime stats.
+- **Strategy engine is the single source of truth** for both live and simulated runs. Custom Rules (Strategy 8), streak delays, `streakbet_loss`, `basebet_pct`, milestones, `apply_rules`, `wolfrider_switch`, `compute_next_bet` — all reused verbatim via the existing hooks.
+- **Fast.** No `bet_delay`, no rate-limit backoff, no HTTP. A 10k-bet simulation completes in < 1 s.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase5c_backtest.py` — 14 tests covering: `_simulate_bet_outcome` shape / determinism / win-rate for multiple multipliers, `_replay_bets_from_db` yields correct count / bet size / raises on missing session, `_apply_backtest_result` win/loss/mixed streak tracking, `backtest_loop` runs to completion, respects `max_bets` stop condition, is deterministic with the same seed.
+- Combined suite: **123 tests** (29 Phase 2 + 22 Phase 3 + 9 Phase 4a + 34 Phase 4b + 15 Phase 5a + 14 Phase 5c) — all pass in `.venv` in < 200 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `123 passed`.
+
+### Example usage
+
+```
+python wolfbet.py --backtest --simulate 500 --seed 42          # Monte Carlo
+python wolfbet.py --backtest --replay-session 42               # Historical replay
+python wolfbet.py --backtest --simulate 10000 --preset aggressive  # With a saved preset
+```
+
+### Version
+
+- `wolfbet.py:VERSION` `2.20.0` → `2.21.0` (minor bump — new user-visible mode).
+- Banner literal updated to match.
+
 ## CLI v2.20.0 — session summary on exit + CSV/JSON export (2026-07-17)
 
 Phase 5a of the CLI ↔ TG parity roadmap — the first "beyond TG" release. Adds a rich end-of-session recap panel (native Rich, not Markdown) and full session-data export via a new CLI flag and hotkey.

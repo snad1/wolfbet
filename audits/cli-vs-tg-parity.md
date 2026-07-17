@@ -10,7 +10,8 @@
 - **Phase 3** — landed in **CLI v2.17.0** (commit `3dc2b16`). Section 4 API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line now Y.
 - **Phase 4a** — landed in **CLI v2.18.0** (commit `776fcb9`). Wizard prompts + preset persistence for the Phase 2 config fields (recurring / streak delays / streakbet_loss / basebet_pct / milestones). Follow-up debt from v2.16.0 / v2.17.0 is now **cleared** — new users reach every Phase 2 feature from the interactive wizard, and presets round-trip fully.
 - **Phase 4b** — landed in **CLI v2.19.0** (commit `0e6a1ff`). Runtime tweak surface: press `T` during a session to change 22 parameters mid-flight (parity with TG `/tweak`). New `_apply_mutation(changes)` central mutation function reuses Phase 2 helpers; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart on the next loop iteration.
-- **Phase 5a** — landed in **CLI v2.20.0** (this update). First "beyond TG" release. Rich session summary at end (`Q` / Ctrl+C / SIGTERM), `--export <path>` CLI flag + `--export-session-id N`, and `E` hotkey for live-session export (CSV or JSON — detected from extension). Zero risk to the bet loop — display + export layer only.
+- **Phase 5a** — landed in **CLI v2.20.0** (commit `42ff9cc`). First "beyond TG" release. Rich session summary at end (`Q` / Ctrl+C / SIGTERM), `--export <path>` CLI flag + `--export-session-id N`, and `E` hotkey for live-session export (CSV or JSON — detected from extension). Zero risk to the bet loop — display + export layer only.
+- **Phase 5c** — landed in **CLI v2.21.0** (this update). Backtest / replay mode: `--backtest` skips the API entirely and runs the strategy against either synthetic outcomes (`--simulate N`, optional `--seed`) or a saved session's historical rolls (`--replay-session ID`). Strategy engine is now the single source of truth for both live and simulated runs.
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
@@ -173,7 +174,9 @@ The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned 
 
 **Phase 5a (v2.20.0)** added `wolfbet/tests/test_phase5a_export.py` — 15 tests covering: DB seed round-trip, `_read_session` / `_read_bets` / `_latest_session_id`, format detection (`.csv` / `.CSV` / `.json` / unknown), CSV `#`-metadata + header shape, JSON `{session, bets}` structure, file perms (`0o600`), missing-session raises `ValueError`, `format_session_summary` no-crash on zero-bet and populated states.
 
-Combined: **109 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
+**Phase 5c (v2.21.0)** added `wolfbet/tests/test_phase5c_backtest.py` — 14 tests covering: `_simulate_bet_outcome` shape / determinism / win-rate for multipliers 2.0 and 10.0, `_replay_bets_from_db` correct count / bet size / raises on missing session, `_apply_backtest_result` win/loss/mixed streak tracking, `backtest_loop` runs to completion, respects `max_bets` stop condition, deterministic with the same seed.
+
+Combined: **123 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
 
 Still untested (Phase 1 debt + everything else):
 
@@ -192,5 +195,6 @@ Broader coverage is best added incrementally when a bug lands or when refactorin
 - **Phase 4a** (v2.18.0, ✅ landed): Wizard prompts + preset persistence for the Phase 2 config fields — follow-up debt cleared.
 - **Phase 4b** (v2.19.0, ✅ landed): Runtime `/tweak`-equivalent — press `T` for mid-session parameter edits across 22 tweakable fields; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart.
 - **Phase 5a** (v2.20.0, ✅ landed): Session summary on exit + CSV/JSON export. `--export <path>` CLI flag + `E` hotkey; summary panel on `Q` / Ctrl+C / SIGTERM.
-- **Phase 5b** (next): async refactor + pipelined betting + multi-slot (bigger scope — requires an `httpx.AsyncClient` migration and threading/concurrency model choice).
+- **Phase 5c** (v2.21.0, ✅ landed): Backtest / replay mode. `--backtest --simulate N [--seed N]` (Monte Carlo) or `--backtest --replay-session ID` (historical replay). No API calls, no real balance risk. Strategy engine is now the single source of truth for both live and simulated runs.
+- **Phase 5b** (next, on-demand): async refactor + pipelined betting + multi-slot (bigger scope — requires an `httpx.AsyncClient` migration and threading/concurrency model choice). Deferred until speed becomes the bottleneck.
 - **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2/3/4b helpers across TG and CLI.
