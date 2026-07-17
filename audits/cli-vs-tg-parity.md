@@ -12,7 +12,8 @@
 - **Phase 4b** — landed in **CLI v2.19.0** (commit `0e6a1ff`). Runtime tweak surface: press `T` during a session to change 22 parameters mid-flight (parity with TG `/tweak`). New `_apply_mutation(changes)` central mutation function reuses Phase 2 helpers; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart on the next loop iteration.
 - **Phase 5a** — landed in **CLI v2.20.0** (commit `42ff9cc`). First "beyond TG" release. Rich session summary at end (`Q` / Ctrl+C / SIGTERM), `--export <path>` CLI flag + `--export-session-id N`, and `E` hotkey for live-session export (CSV or JSON — detected from extension). Zero risk to the bet loop — display + export layer only.
 - **Phase 5c** — landed in **CLI v2.21.0** (commit `1fc7c98`). Backtest / replay mode: `--backtest` skips the API entirely and runs the strategy against either synthetic outcomes (`--simulate N`, optional `--seed`) or a saved session's historical rolls (`--replay-session ID`). Strategy engine is now the single source of truth for both live and simulated runs.
-- **Phase 6** — landed in **TG v1.16.0 / CLI v2.22.0** (this update). Shared registry refactor: `GAME_ENDPOINTS` / `AUTO_ENDPOINTS` / `GAME_LABELS` / `wolfbet_hash` / `is_auto_game` / `fmt_multiplier` / `custom_rule_to_wolfbet` / `build_auto_config` / `build_auto_start_payload` all extracted from both engines into `wolfbet/core/games.py`. Both engines import from one truth. Zero user-visible change. Adding a new WolfBet game is now a single-file edit.
+- **Phase 6** — landed in **TG v1.16.0 / CLI v2.22.0** (commit `87c18dc`). Shared registry refactor: `GAME_ENDPOINTS` / `AUTO_ENDPOINTS` / `GAME_LABELS` / `wolfbet_hash` / `is_auto_game` / `fmt_multiplier` / `custom_rule_to_wolfbet` / `build_auto_config` / `build_auto_start_payload` all extracted from both engines into `wolfbet/core/games.py`. Both engines import from one truth. Zero user-visible change. Adding a new WolfBet game is now a single-file edit.
+- **CLI v2.22.1 polish** — landed in this update. `_check_risky_config()` heads-up panel at wizard exit (8 categories: aggressive Martingale, no max_loss, no max_profit on Anti-M, base_bet ≥ 1% of balance, multiplier > 10, recurring without stop, custom rules without max_bets, aggressive basebet_pct). Better `--export` error hint, expanded `--backtest --help` examples. Non-blocking; zero risk to bet loop.
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
@@ -179,7 +180,9 @@ The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned 
 
 **Phase 6 (TG v1.16.0 / CLI v2.22.0)** added `wolfbet/tests/test_phase6_games.py` — 35 tests covering the shared module: registry shape, `wolfbet_hash` length/hex validity, `is_auto_game` positive/negative, `fmt_multiplier` for 6 inputs, `request_hash_header` for 3 game classes, `custom_rule_to_wolfbet` for 5 rule types, `build_auto_config` for all 8 strategy branches + unknown-default + stop-condition appending, `build_auto_start_payload` for both auto games.
 
-Combined: **158 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 300 ms in the wolfbet `.venv`).
+**Polish v2.22.1** added `wolfbet/tests/test_phase7_polish.py` — 20 tests for `_check_risky_config`: clean-config → no warnings, each of the 8 warning categories triggers correctly, boundary conditions (e.g. `loss_mult=2.0` doesn't trigger aggressive, `multiplier=10.0` doesn't trigger high-multiplier), combined config triggers multiple simultaneous warnings.
+
+Combined: **178 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 300 ms in the wolfbet `.venv`).
 
 Still untested (Phase 1 debt + everything else):
 

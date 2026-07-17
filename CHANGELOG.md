@@ -1,5 +1,45 @@
 # Changelog
 
+## CLI v2.22.1 — safety-check warnings + wizard polish (2026-07-17)
+
+Small polish patch. Catches obvious foot-guns before a session starts. Non-blocking heads-up — users retain full control.
+
+### Added
+
+- **`_check_risky_config()`** — new module-level pure function inspecting `state.*` for combinations known to drain balance quickly. Returns a list of heads-up strings (empty = clean). Covers eight categories:
+  - Aggressive Martingale (`loss_mult >= 2.5`) — flags the reserves needed for a 5-loss streak.
+  - Doubling strategies (`strategy_key in ("2", "7")`) without `max_loss`.
+  - Anti-Martingale without `max_profit`.
+  - `base_bet > 1%` of current balance.
+  - `multiplier > 10` (win chance < 10%).
+  - Recurring restart with no `max_profit` and no `max_bets`.
+  - Custom rules (Strategy 8) without `max_bets`.
+  - Aggressive `basebet_pct >= 5%`.
+- **Wizard `step_confirm` warnings panel** — before the final "Start auto-betting?" prompt, if `_check_risky_config()` returns non-empty, print a bordered yellow panel titled `⚠️  Heads-up — review before starting` with a bulleted list. One-liner underneath: "These are safety hints, not blockers. Press y to proceed anyway." Clean configs skip the panel entirely.
+
+### Improved
+
+- **`--export` missing-session error** now includes a hint: `Tip: run 'python wolfbet.py --stats' to see recent session IDs.`
+- **`--backtest` argparse help** now shows compact examples: `--simulate 500 --seed 42`, `--replay-session 42`, `--simulate 10000 --preset aggressive`.
+
+### Behavioural notes
+
+- **Non-blocking.** Every warning is a heads-up — users can always proceed.
+- **Zero risk to bet loop / strategy engine / HTTP surfaces.** Wizard-exit UI only.
+- **No new secrets, no auth changes, no PII.**
+- **Read-only state inspection** — the check function never mutates state or DB.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase7_polish.py` — 20 tests covering: clean config → no warnings; each of the 8 warning categories triggers correctly; edge cases (`loss_mult=2.0` doesn't trigger aggressive Martingale, `multiplier=10.0` doesn't trigger high-multiplier, etc.); combined config triggers multiple simultaneous warnings.
+- Combined suite: **178 tests** (29 Phase 2 + 22 Phase 3 + 9 Phase 4a + 34 Phase 4b + 15 Phase 5a + 14 Phase 5c + 35 Phase 6 + 20 polish) — all pass in `.venv` in < 300 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `178 passed`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.22.0` → `2.22.1` (patch bump — additive UX, no schema change).
+- Banner literal updated to match.
+
 ## TG v1.16.0 + CLI v2.22.0 — shared registry refactor: core/games.py (2026-07-17)
 
 Phase 6 of the CLI ↔ TG parity roadmap — the last housekeeping phase. Every WolfBet endpoint, hash spec, and strategy-translation function that used to live in **both** `tg/engine.py` **and** `wolfbet.py` now lives once in `wolfbet/core/games.py`. Both engines import from one truth.

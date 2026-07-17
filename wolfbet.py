@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.22.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.22.1  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -147,6 +147,72 @@ def _check_milestone(last_bet_state: str) -> Optional[str]:
                 state._last_profit_milestone = crossed
             return f"{crossed:.8f} profit"
     return None
+
+
+def _check_risky_config() -> list:
+    """Inspect state.* for combinations known to drain balance quickly.
+
+    Returns a list of human-readable heads-up strings. Never blocks — every
+    warning is a hint the user can override. Empty list = clean config.
+    Called by step_confirm at wizard exit.
+    """
+    warnings = []
+    sk = state.strategy_key
+    mult = state.multiplier
+    loss_mult = state.loss_mult
+
+    # Aggressive Martingale
+    if sk == "2" and loss_mult >= 2.5:
+        warnings.append(
+            f"Aggressive Martingale (loss_mult={loss_mult}) — a 5-loss streak needs "
+            f"~{loss_mult**5:.0f}× base_bet in reserve."
+        )
+    # Doubling with no loss floor
+    if sk in ("2", "7") and state.max_loss is None:
+        warnings.append(
+            "No `max_loss` set — Martingale-style strategies can drain balance "
+            "on a bad streak. Consider `t maxloss <amount>` (or set it in the wizard) "
+            "to establish a floor."
+        )
+    # Anti-Martingale without profit lock-in
+    if sk == "3" and state.max_profit is None:
+        warnings.append(
+            "Anti-Martingale grows bets on wins with no lock-in. "
+            "Consider `t maxprofit <amount>` to bank a target."
+        )
+    # Base bet vs balance
+    if state.current_balance > 0 and state.base_bet > 0.01 * state.current_balance:
+        pct = state.base_bet / state.current_balance * 100
+        warnings.append(
+            f"Base bet is {pct:.1f}% of current balance ({state.base_bet:.8f} of "
+            f"{state.current_balance:.8f}) — small bankrolls drain in ~7 losses at this size."
+        )
+    # High multiplier
+    if mult > 10:
+        win_pct = 99.0 / mult
+        warnings.append(
+            f"Multiplier {mult}x → win chance ≈ {win_pct:.1f}%. "
+            "Most sessions at this multiplier end in the red."
+        )
+    # Recurring runaway
+    if state.recurring and state.max_profit is None and state.max_bets is None:
+        warnings.append(
+            "Recurring restart is on with no max_profit and no max_bets — "
+            "sessions could restart indefinitely. Consider setting at least one cap."
+        )
+    # Rule-based without cap
+    if sk == "8" and state.max_bets is None:
+        warnings.append(
+            "Custom rules (Strategy 8) with no `max_bets` cap can loop. "
+            "Consider setting `max_bets` for safety."
+        )
+    # Aggressive basebet_pct
+    if state.basebet_pct >= 0.05:
+        warnings.append(
+            f"basebet_pct = {state.basebet_pct*100:.1f}% of balance — "
+            "the base bet grows quickly on winning streaks."
+        )
+    return warnings
 
 
 def _reset_session_for_recurring() -> None:
@@ -408,7 +474,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.22.0"
+VERSION      = "2.22.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -3219,6 +3285,18 @@ def setup_wizard():
             for i, r in enumerate(state.custom_rules, 1):
                 console.print(f"    [dim]{i}.[/] [green]{r.description}[/]")
 
+        # ── v2.22.1: heads-up warnings for risky config combinations ──
+        risk_warnings = _check_risky_config()
+        if risk_warnings:
+            console.print()
+            body_lines = [Text.from_markup(f"[yellow]•[/] {w}") for w in risk_warnings]
+            console.print(Panel(
+                Group(*body_lines),
+                title="[bold yellow]⚠️  Heads-up — review before starting[/]",
+                border_style="yellow",
+            ))
+            console.print("[dim]  These are safety hints, not blockers. Press y to proceed anyway.[/]")
+
         console.print()
         console.print("[bold red]  WARNING: Real money will be wagered. Bet responsibly.[/]")
         console.print()
@@ -4206,7 +4284,10 @@ def main():
     parser.add_argument("--export-session-id", type=int, metavar="ID",
                         help="Session ID for --export (default: latest)")
     parser.add_argument("--backtest", action="store_true",
-                        help="Run strategy against saved rolls or random samples (no API calls)")
+                        help="Run strategy against saved rolls or random samples (no API calls). "
+                             "Examples: '--backtest --simulate 500 --seed 42' | "
+                             "'--backtest --replay-session 42' | "
+                             "'--backtest --simulate 10000 --preset aggressive'")
     parser.add_argument("--replay-session", type=int, metavar="ID",
                         help="Backtest data source: replay bets from session #ID")
     parser.add_argument("--simulate", type=int, metavar="N",
@@ -4240,6 +4321,8 @@ def main():
             sys.exit(0)
         except Exception as e:
             console.print(f"[red]✗ Export failed:[/] {e}")
+            if "not found" in str(e).lower():
+                console.print("[dim]  Tip: run `python wolfbet.py --stats` to see recent session IDs.[/]")
             sys.exit(1)
     if args.backtest:
         _run_backtest(args)
