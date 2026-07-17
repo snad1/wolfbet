@@ -73,7 +73,7 @@ python3 wolfbet.py
 scp -r wolfbet.py requirements.txt install.sh core/ tg/ .env.example user@your-server:~/wolfbet/
 
 # Install (sets up venv, systemd, wolfctl)
-# shared/ library is auto-installed via pip from GitHub (requires SSH key)
+# shared/ library is auto-installed via pip from GitHub over HTTPS (public repo, no SSH key needed)
 ssh user@your-server
 cd ~/wolfbet && chmod +x install.sh && ./install.sh
 ```

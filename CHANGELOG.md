@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.16.11 — casino-shared dependency now installs over HTTPS (2026-07-17)
+
+### Changed
+
+- **`requirements.txt`: `casino-shared` pinned via `git+https://` instead of `git+ssh://`.** The `snad1/casino-shared` repo is now public, so pip can fetch it anonymously over HTTPS — fresh servers no longer need a GitHub SSH key just to run `install.sh`. README "Remote Server" note updated to match. (The `wolfbet` repo itself is still private; clone it with a read-only fine-grained PAT or SSH key.)
+
 ## v2.16.10 — `/status` speed block trimmed + WolfBet rate-limit line added (2026-06-17)
 
 ### Changed
