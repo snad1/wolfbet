@@ -1,5 +1,10 @@
 # Changelog
 
+## CLI v2.23.1 — README documentation refresh (docs only) (2026-07-17)
+
+- **Docs**: full `README.md` rewrite (`v2.11.0` → `v2.23.1` header). New sections: Live-session hotkeys, Runtime tweak grammar (22 params), Advanced session tuning, Observability metrics, Session summary + exports, Backtest mode, Lifetime analytics, Safety warnings, File locations, Development / testing, Version history. CLI Options table rebuilt (grouped by daemon control / inspection / export / backtest).
+- **No code changes.** `VERSION` bumped `2.23.0` → `2.23.1` + banner literal. 196 regression tests still pass.
+
 ## CLI v2.23.0 — lifetime analytics screen (`--analytics`) (2026-07-17)
 
 New user-visible command: **`python wolfbet.py --analytics`** — aggregates every saved session into a lifetime-performance report. Complement to `--stats` (which shows the most recent 20 sessions individually).

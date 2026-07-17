@@ -15,6 +15,7 @@
 - **Phase 6** — landed in **TG v1.16.0 / CLI v2.22.0** (commit `87c18dc`). Shared registry refactor: `GAME_ENDPOINTS` / `AUTO_ENDPOINTS` / `GAME_LABELS` / `wolfbet_hash` / `is_auto_game` / `fmt_multiplier` / `custom_rule_to_wolfbet` / `build_auto_config` / `build_auto_start_payload` all extracted from both engines into `wolfbet/core/games.py`. Both engines import from one truth. Zero user-visible change. Adding a new WolfBet game is now a single-file edit.
 - **CLI v2.22.1 polish** — landed in commit `724cdfe`. `_check_risky_config()` heads-up panel at wizard exit (8 categories: aggressive Martingale, no max_loss, no max_profit on Anti-M, base_bet ≥ 1% of balance, multiplier > 10, recurring without stop, custom rules without max_bets, aggressive basebet_pct). Better `--export` error hint, expanded `--backtest --help` examples. Non-blocking; zero risk to bet loop.
 - **CLI v2.23.0** — landed in this update. New `--analytics` command: lifetime aggregates across ALL sessions with breakdowns by game and strategy, plus top 5 best / worst sessions. Complement to `--stats` (recent 20 sessions in detail). Read-only SQL over the local DB.
+- **CLI v2.23.1** — documentation refresh complete. `README.md` now covers every phase (hotkeys, tweak grammar, advanced tuning, observability, exports, backtest, analytics, safety warnings, file locations, testing). Zero code changes; ready for real-world use.
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
