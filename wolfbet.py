@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.16.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.17.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -224,13 +224,76 @@ def _should_recurring_restart(reason: str) -> bool:
     #   Profit target reached | Max bets reached | Max wins reached
     safe_prefixes = ("Profit target", "Max bets", "Max wins")
     return any(reason.startswith(p) for p in safe_prefixes)
+
+
+# ══════════════════════════════════════════════════════════
+#  PHASE 3 metrics — observability helpers (ported from tg/engine.py:1487-1508)
+# ══════════════════════════════════════════════════════════
+def _compute_api_avg() -> float:
+    """Rolling average API time in ms (0 when no samples yet)."""
+    if state._api_ms_count == 0:
+        return 0.0
+    return state._api_ms_total / state._api_ms_count
+
+
+def _compute_api_p50() -> float:
+    """Median (p50) API time in ms from the last-500-sample window (0 when empty)."""
+    if not state._api_samples:
+        return 0.0
+    ordered = sorted(state._api_samples)
+    return ordered[len(ordered) // 2]
+
+
+def _compute_on_target_pct() -> Optional[float]:
+    """Fraction of bets whose API ≤ bet_delay*1000; None when delay disabled / no samples."""
+    if state.bet_delay <= 0 or state._api_ms_count == 0:
+        return None
+    return (state._on_target_count / state._api_ms_count) * 100
+
+
+def _compute_theoretical_max_bps() -> float:
+    """Ceiling bps = 1 / max(bet_delay, api_avg). 0 when both are 0 (fresh session)."""
+    api_avg_s = _compute_api_avg() / 1000.0
+    floor = max(state.bet_delay, api_avg_s)
+    return (1.0 / floor) if floor > 0 else 0.0
+
+
+def _compute_efficiency_pct() -> float:
+    """Actual bps as % of theoretical max (capped at 100). 0 when no ceiling yet."""
+    tmax = _compute_theoretical_max_bps()
+    if tmax <= 0:
+        return 0.0
+    return min(100.0, state.bets_per_second / tmax * 100)
+
+
+def _record_api_ms(dt_ms: float) -> None:
+    """Update all API-timing counters from a single request's dt_ms. Locks around state mutation."""
+    with state.lock:
+        state._last_api_ms   = dt_ms
+        state._api_ms_total += dt_ms
+        state._api_ms_count += 1
+        state._api_samples.append(dt_ms)
+        if dt_ms > state.peak_api_ms:
+            state.peak_api_ms = dt_ms
+        if state.bet_delay > 0 and dt_ms <= state.bet_delay * 1000:
+            state._on_target_count += 1
+
+
+def _record_cycle_ms(cycle_observed_ms: float) -> None:
+    """EMA-smooth the per-bet cycle time; derive overhead = cycle − api − delay*1000."""
+    with state.lock:
+        if state._cycle_ms > 0:
+            state._cycle_ms = state._cycle_ms * 0.9 + cycle_observed_ms * 0.1
+        else:
+            state._cycle_ms = cycle_observed_ms
+        state._cycle_overhead_ms = max(0.0, state._cycle_ms - state._last_api_ms - state.bet_delay * 1000)
 DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolfbet_autobot.db"))
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.16.0"
+VERSION      = "2.17.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -504,6 +567,17 @@ class BotState:
         self._auto_uuid: Optional[str] = None
         self._auto_start_last_time: float = 0.0
         self._auto_start_remaining: Optional[int] = None
+
+        # ── Phase 3 observability metrics ──
+        self._last_api_ms   : float = 0.0
+        self._api_ms_total  : float = 0.0
+        self._api_ms_count  : int   = 0
+        self.peak_api_ms    : float = 0.0
+        self._api_samples   : deque = deque(maxlen=500)
+        self._on_target_count: int   = 0
+        self._cycle_ms      : float = 0.0            # EMA-smoothed per-bet cycle
+        self._cycle_overhead_ms: float = 0.0         # cycle − api − delay*1000
+        self._last_cycle_start: float = 0.0
 
         # ── performance ──
         self.bets_per_minute = 0.0
@@ -810,8 +884,10 @@ def api_auto_start() -> bool:
     for attempt in range(len(backoffs) + 1):
         state._auto_start_last_time = time.monotonic()
         try:
+            t0 = time.time()
             r = requests.post(url, headers=_headers(body_str=body_str),
                               json=payload, timeout=15)
+            _record_api_ms((time.time() - t0) * 1000)
             _update_auto_start_remaining(r.headers)
             if r.status_code == 200:
                 data = r.json()
@@ -896,8 +972,10 @@ def api_place_bet(amount: float) -> Optional[dict]:
     body_str = json.dumps(payload, separators=(",", ":"))
     logger.debug("BET payload=%s url=%s", body_str, url)
     try:
+        t0 = time.time()
         r = requests.post(url, headers=_headers(body_str=body_str),
                           json=payload, timeout=15)
+        _record_api_ms((time.time() - t0) * 1000)
         _update_rate_limit(r)
 
         if r.status_code == 200:
@@ -1020,6 +1098,7 @@ def betting_loop():
     last_result = "none"
 
     while state.running:
+        loop_start = time.monotonic()
         # ── paused ──────────────────────────────────────
         if state.paused:
             state.status = "PAUSED — press [R] to resume"
@@ -1246,6 +1325,9 @@ def betting_loop():
         state.current_bet = next_bet
         last_result = bet_state
 
+        # ── cycle-time metric (EMA-smoothed, informs Efficiency + overhead) ──
+        _record_cycle_ms((time.monotonic() - loop_start) * 1000)
+
 # ══════════════════════════════════════════════════════════
 #  DATABASE  I/O
 # ══════════════════════════════════════════════════════════
@@ -1394,6 +1476,16 @@ def _save_state_file():
             "milestone_losses":  state.milestone_losses or None,
             "milestone_profit":  state.milestone_profit or None,
             "last_profit_milestone": state._last_profit_milestone,
+            # Phase 3 observability metrics
+            "api_ms":              state._last_api_ms,
+            "api_avg_ms":          _compute_api_avg(),
+            "api_peak_ms":         state.peak_api_ms,
+            "api_p50_ms":          _compute_api_p50(),
+            "on_target_pct":       _compute_on_target_pct(),
+            "cycle_ms":            state._cycle_ms,
+            "overhead_ms":         state._cycle_overhead_ms,
+            "efficiency_pct":      _compute_efficiency_pct(),
+            "theoretical_max_bps": _compute_theoretical_max_bps(),
             "rule": state.rule,
             "bet_value": state.bet_value,
             "bet_delay": state.bet_delay,
@@ -1581,6 +1673,35 @@ def build_dashboard_screen() -> str:
           f"  {_a('dim', 'Avg')} {_a(avg_c, f'{avg_s}{avg_pnl:.8f}')}"
           f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
     add(s5)
+
+    # ── Row 6: API timing + rate limit + (delay-gated) API stable + Efficiency + Cycle ──
+    api_avg = _compute_api_avg()
+    api_p50 = _compute_api_p50()
+    add(f" {_a('dim', 'API')} last {_a('cyan', f'{state._last_api_ms:.0f}ms')}"
+        f"  avg {_a('cyan', f'{api_avg:.0f}ms')}"
+        f"  peak {_a('cyan', f'{state.peak_api_ms:.0f}ms')}")
+
+    rl_line = f" {_a('dim', 'Rate limit')} {_a('yellow', f'{state.rate_remaining}/{state.rate_limit}')} play"
+    if state._auto_start_remaining is not None:
+        rl_line += f"  · {_a('yellow', f'{state._auto_start_remaining}/20')} start"
+    add(rl_line)
+
+    if state.bet_delay > 0:
+        ot = _compute_on_target_pct()
+        ot_str = f"{ot:.0f}%" if ot is not None else "n/a"
+        add(f" {_a('dim', 'API stable')} {_a('cyan', f'{api_p50:.0f}ms')} median"
+            f"  · {_a('cyan', ot_str)} on-target  (API ≤ bet delay)")
+        tmax = _compute_theoretical_max_bps()
+        eff = _compute_efficiency_pct()
+        eff_c = 'green' if eff >= 90 else 'yellow'
+        add(f" {_a('dim', 'Efficiency')} {_a(eff_c, f'{eff:.0f}%')}"
+            f"  (max {_a('cyan', f'{tmax:.2f}')} bps @ delay={state.bet_delay:.3f}s)")
+
+    cycle_ms = state._cycle_ms
+    bps_from_cycle = (1000.0 / cycle_ms) if cycle_ms > 0 else 0.0
+    add(f" {_a('dim', 'Cycle')} {_a('magenta', f'{cycle_ms:.0f}ms')}/bet"
+        f"  (overhead {_a('cyan', f'{state._cycle_overhead_ms:.0f}ms')})"
+        f"  {_a('dim', '→')} {_a('magenta', f'{bps_from_cycle:.2f}')} bps")
 
     # ── Row 6: Sparkline ─────────────────────────────
     spark = _sparkline(list(state.profit_history))

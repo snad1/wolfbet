@@ -1,5 +1,40 @@
 # Changelog
 
+## CLI v2.17.0 — observability parity (API timing, rate-limit line, Cycle, Efficiency) (2026-07-17)
+
+Phase 3 of the CLI ↔ TG parity roadmap. Closes Section 4 "Observability" of `audits/cli-vs-tg-parity.md`.
+
+### Added
+
+- **API timing metrics** — every `requests.post` in `api_place_bet` + `api_auto_start` is now wall-clock-timed. Rolling counters track `last`, `avg`, `peak`, and a 500-sample deque backs the p50 median. Ports `tg/engine.py:1487-1508` math verbatim (sync-adapted).
+- **`on_target %`** — fraction of bets whose API ≤ `bet_delay*1000`. Bounds the Efficiency ceiling. Renders `n/a` when `bet_delay = 0` (matches TG).
+- **`cycle_ms`** — EMA-smoothed full per-bet loop time (`0.9 * old + 0.1 * new`). Derives `overhead_ms = cycle − api − delay*1000` (floored at 0).
+- **`efficiency %`** — actual `bets_per_second` as a % of theoretical max (`1 / max(bet_delay, api_avg)`). Caps at 100%. Colour-coded green ≥ 90%, yellow below.
+- **Dashboard rows**:
+  - `API last / avg / peak` — always shown.
+  - `Rate limit: N/M play [· K/20 start]` — always shown for WolfBet (the `· … start` half appears only when an auto-bet session is active).
+  - `API stable: … median · … on-target (API ≤ bet delay)` — **only when `bet_delay > 0`**.
+  - `Efficiency: … (max … bps @ delay=…)` — same delay-guard.
+  - `Cycle: …ms/bet (overhead …ms) → … bps` — always shown.
+- **Snapshot fields** — `_save_state_file()` now writes `api_ms`, `api_avg_ms`, `api_peak_ms`, `api_p50_ms`, `on_target_pct`, `cycle_ms`, `overhead_ms`, `efficiency_pct`, `theoretical_max_bps` so `--status` / `--monitor` see them.
+
+### Behavioural notes
+
+- **No external API surface change.** All new values are computed from data the CLI already receives; no additional HTTP calls, no new auth surface, no PII.
+- **Fresh-session degradation is clean.** Before any bet lands, every metric renders as `0ms` / `0%` / `n/a` — no `NaN`, no `None` leakage, no divide-by-zero.
+- **`Overhead` intentionally not a standalone row.** TG v1.15.10 dropped it as noise; the CLI shows the value parenthetically inside the Cycle row so power users still see it without a dedicated row.
+- **Wizard prompts + preset persistence for the new Phase 2/3 fields remain follow-up debt.** Fields work programmatically today; the interactive `_ask()` wizard doesn't prompt for them yet.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase3_metrics.py` — 22 pure-function tests covering `_compute_api_avg`, `_compute_api_p50`, `_compute_on_target_pct`, `_compute_theoretical_max_bps`, `_compute_efficiency_pct`, `_record_api_ms`, `_record_cycle_ms`. Test count now: **51 (29 Phase 2 + 22 Phase 3)** — all pass in `.venv` in < 200 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `51 passed`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.16.0` → `2.17.0` (minor bump — new user-visible dashboard surface).
+- Banner literal updated to match.
+
 ## CLI v2.16.0 — session robustness parity (recurring, streak delays, milestones, basebet_pct) (2026-07-17)
 
 Phase 2 of the CLI ↔ TG parity roadmap. Closes Section 3 "Session robustness" of `audits/cli-vs-tg-parity.md`.

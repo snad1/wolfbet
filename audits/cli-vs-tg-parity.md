@@ -6,7 +6,8 @@
 **Phase completion log**:
 
 - **Phase 1** — landed in **CLI v2.15.0** (commit `aaf01d4`). Section 1 P0 items now Y.
-- **Phase 2** — landed in **CLI v2.16.0** (this update). Section 3 recurring / streak delays / basebet_pct / streakbet_loss / milestones / 429 Retry-After now Y. Wizard prompts + preset persistence for the new fields still TODO — tracked as follow-up (fields are honoured programmatically and via preset JSON edits).
+- **Phase 2** — landed in **CLI v2.16.0** (commit `683f6f3`). Section 3 recurring / streak delays / basebet_pct / streakbet_loss / milestones / 429 Retry-After now Y.
+- **Phase 3** — landed in **CLI v2.17.0** (this update). Section 4 API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line now Y. Wizard prompts + preset persistence for the new Phase 2/3 fields still TODO — tracked as follow-up (fields are honoured programmatically and via preset JSON edits).
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
@@ -90,14 +91,14 @@
 | Feature | TG source | CLI status | P | Notes |
 |---|---|---|---|---|
 | Live status field | tg/engine.py `self.status` | Y | P0 | CLI has `state.status`. |
-| API timing: last/avg/peak | tg/engine.py `_api_ms`, `_api_ms_total`, `peak_api_ms` | N | P1 | Phase 3. |
-| API p50 median (`api_p50_ms`) | tg/engine.py:1495-1499 | N | P1 | Phase 3. |
-| On-target % (fraction of bets whose API ≤ bet_delay) | tg/engine.py:1497-1500 | N | P1 | Phase 3. |
-| Cycle time (`cycle_ms`) — full per-bet duration | tg/engine.py `_cycle_ms` | N | P1 | Phase 3. |
-| Efficiency % (actual bps / theoretical max) | tg/engine.py:1501-1508 | N | P1 | Phase 3. |
-| Overhead ms (engine + scheduler) | tg/engine.py `_cycle_overhead_ms` | N | P2 | Not shipping to TG dashboard anymore either (removed v1.15.10). |
-| Rate-limit remaining line — live budget from `x-ratelimit-remaining` | tg/engine.py:343-354 + get_status | P | P1 | CLI has `state.rate_remaining`/`state.rate_limit` (wolfbet.py:396-409) but doesn't display it. Phase 3. |
-| `auto_start_remaining` line — separate quota display for auto/start | tg/engine.py:221 + get_status | N | P0 | Phase 1 (parsed) + Phase 3 (displayed). |
+| API timing: last/avg/peak | tg/engine.py `_api_ms`, `_api_ms_total`, `peak_api_ms` | Y (v2.17.0) | P1 | Landed in v2.17.0. Rolling counters + peak, displayed as `API last / avg / peak` row. |
+| API p50 median (`api_p50_ms`) | tg/engine.py:1495-1499 | Y (v2.17.0) | P1 | Landed in v2.17.0. Median of a 500-sample deque; renders in the `API stable` row when `bet_delay > 0`. |
+| On-target % (fraction of bets whose API ≤ bet_delay) | tg/engine.py:1497-1500 | Y (v2.17.0) | P1 | Landed in v2.17.0. Renders `n/a` when `bet_delay = 0` (matches TG). |
+| Cycle time (`cycle_ms`) — full per-bet duration | tg/engine.py `_cycle_ms` | Y (v2.17.0) | P1 | Landed in v2.17.0. EMA-smoothed (`0.9*old + 0.1*new`). |
+| Efficiency % (actual bps / theoretical max) | tg/engine.py:1501-1508 | Y (v2.17.0) | P1 | Landed in v2.17.0. Capped at 100%. Green ≥ 90%, yellow below. |
+| Overhead ms (engine + scheduler) | tg/engine.py `_cycle_overhead_ms` | Y (parenthetical) | P2 | Value computed by v2.17.0; shown inside the Cycle row (`overhead …ms`) rather than a standalone row — matches TG v1.15.10 trim. |
+| Rate-limit remaining line — live budget from `x-ratelimit-remaining` | tg/engine.py:343-354 + get_status | Y (v2.17.0) | P1 | Landed in v2.17.0. Dashboard row `Rate limit: N/M play`. |
+| `auto_start_remaining` line — separate quota display for auto/start | tg/engine.py:221 + get_status | Y (v2.17.0) | P0 | Landed in v2.17.0. Rendered as `· K/20 start` on the Rate-limit row when an auto-bet session is active. |
 | Bets per second (recent + session-avg) | tg/engine.py:180 `_bps_recent_history` | Y | P0 | CLI has `state.bets_per_second`. |
 | Bets per minute | tg/engine.py | Y | P0 | CLI has `state.bets_per_minute`. |
 | Peak / low bps + bpm | tg/engine.py | Y | P0 | CLI has `peak_bps`, `low_bps`, `peak_bpm`, `low_bpm`. |
@@ -159,7 +160,11 @@
 
 The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned `tests/test_auto_endpoints.py` but the port scope pushed it out.
 
-**Phase 2 (v2.16.0)** stood up the test-suite scaffolding: `wolfbet/tests/` directory + `tests/__init__.py` + `wolfbet/tests/test_phase2_helpers.py` — 29 tests covering every new pure helper (`_parse_streak_delay`, `_get_streak_delay`, `_get_streakbet_loss_factor`, `_apply_basebet_pct`, `_check_milestone`, `_should_recurring_restart`). Run with `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` — passes in <100 ms in the wolfbet `.venv`.
+**Phase 2 (v2.16.0)** stood up the test-suite scaffolding: `wolfbet/tests/` directory + `tests/__init__.py` + `wolfbet/tests/test_phase2_helpers.py` — 29 tests covering every new pure helper (`_parse_streak_delay`, `_get_streak_delay`, `_get_streakbet_loss_factor`, `_apply_basebet_pct`, `_check_milestone`, `_should_recurring_restart`).
+
+**Phase 3 (v2.17.0)** added `wolfbet/tests/test_phase3_metrics.py` — 22 tests covering `_compute_api_avg`, `_compute_api_p50`, `_compute_on_target_pct`, `_compute_theoretical_max_bps`, `_compute_efficiency_pct`, `_record_api_ms`, `_record_cycle_ms`.
+
+Combined: **51 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
 
 Still untested (Phase 1 debt + everything else):
 
@@ -174,8 +179,8 @@ Broader coverage is best added incrementally when a bug lands or when refactorin
 
 - **Phase 1** (v2.15.0, ✅ landed): Section 1 P0 items + audit doc.
 - **Phase 2** (v2.16.0, ✅ landed): Section 3 recurring / streak-delays / streakbet_loss / basebet_pct / milestones / 429 Retry-After. Testing scaffold introduced.
-- **Phase 3** (next): Section 4 observability parity — CLI dashboard renders `rate_remaining`, `auto_start_remaining`, `api_p50_ms`, `on_target_pct`, `cycle_ms`, `efficiency_pct` (values already computed and persisted; wire them into the rich Live layout).
-- **Phase 4**: `/tweak`-equivalent interactive commands, richer pause/resume, monitor loop polish.
+- **Phase 3** (v2.17.0, ✅ landed): Section 4 observability parity — API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line.
+- **Phase 4** (next): `/tweak`-equivalent interactive commands, richer pause/resume, monitor loop polish.
 - **Phase 5**: pipelined betting, multi-slot, CLI-only "beyond TG" features.
-- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2 helpers across TG and CLI.
-- **Follow-up debt**: wizard prompts + preset persistence for the Phase 2 fields (fields work programmatically today).
+- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2/3 helpers across TG and CLI.
+- **Follow-up debt**: wizard prompts + preset persistence for the Phase 2 & Phase 3 config fields (fields work programmatically today).
