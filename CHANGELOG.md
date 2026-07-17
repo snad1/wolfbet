@@ -1,5 +1,43 @@
 # Changelog
 
+## TG v1.16.0 + CLI v2.22.0 — shared registry refactor: core/games.py (2026-07-17)
+
+Phase 6 of the CLI ↔ TG parity roadmap — the last housekeeping phase. Every WolfBet endpoint, hash spec, and strategy-translation function that used to live in **both** `tg/engine.py` **and** `wolfbet.py` now lives once in `wolfbet/core/games.py`. Both engines import from one truth.
+
+### Refactored
+
+- **New module** `wolfbet/core/games.py` — single source of truth:
+  - `GAME_ENDPOINTS`, `AUTO_ENDPOINTS`, `GAME_LABELS`, `AUTO_START_MIN_INTERVAL`
+  - `wolfbet_hash(body_str)` — dynamic `md5(body) ⊕ md5(nonce)` header
+  - `is_auto_game(game_key)` — game_key ∈ AUTO_ENDPOINTS
+  - `fmt_multiplier(m)` — WolfBet multiplier format (no trailing zeros)
+  - `request_hash_header(game_key, body_str)` — resolves the hash_spec sentinel (`None` / `"dynamic"` / verbatim string) for a game
+  - `custom_rule_to_wolfbet(rule)` — client `StrategyRule` → server auto-bet rule dict
+  - `build_auto_config(strategy_key, loss_mult, win_mult, base_bet, game, custom_rules, stop_conditions, delay_martin_threshold, logger, log_prefix)` — pure parameterised replacement for the old `self._build_auto_config`
+  - `build_auto_start_payload(game, currency, base_bet, multiplier, rule, bet_value, config)` — pure parameterised builder
+- **TG engine** (`tg/engine.py`): local `GAME_ENDPOINTS` / `AUTO_ENDPOINTS` / `GAME_LABELS` / `AUTO_START_MIN_INTERVAL` / `_wolfbet_hash` deleted; `_fmt_mult` / `_custom_rule_to_wolfbet` methods deleted; `_is_auto_game(self)` / `_build_auto_config(self)` / `_build_auto_start_payload(self)` shrunk to thin `self.* → shared function` adapters. `_request_headers` now delegates hash resolution to `request_hash_header`. **No behavioural change** on the wire.
+- **CLI** (`wolfbet.py`): identical treatment. `_headers(game_key, body_str)` delegates to `request_hash_header`. The legacy hardcoded static `x-hash-api` strings for `dice-manual` / `limbo` are unified with the TG behaviour (`"dynamic"` — the sentinel that computes per-request). TG has been using dynamic hash for these endpoints successfully for months, so this brings the CLI into alignment.
+
+### Behavioural notes
+
+- **Zero user-visible behaviour change.** Every existing test still passes; every existing session config still runs.
+- **No secrets, no auth changes, no PII.** Same endpoints, same `x-hash-api` algorithm, same auth pattern.
+- **Wolfbet-repo-local**, NOT part of the pip-installed `shared/` package. Rationale: the other 5 bots (stake / cryptogames / duckdice / shuffle / goated) don't hit WolfBet endpoints; giving them a `wolfbet_games.py` dependency would be architecturally wrong.
+- **`core/games.py` imports `StrategyRule` from `core.strategy`** (which is shared) — no circular dependency, no cross-repo coupling changes.
+- **Adding a new game** (e.g. a `plinko-auto`) is now a **single-file edit** — both engines pick it up automatically on next start.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase6_games.py` — 35 tests covering every branch of the shared module: registry shape, `wolfbet_hash` length/hex validity, `is_auto_game` positive/negative, `fmt_multiplier` for 6 inputs, `request_hash_header` for 3 game classes, `custom_rule_to_wolfbet` for 5 rule types, `build_auto_config` for all 8 strategy branches + unknown-default, `build_auto_start_payload` for both auto games (with/without rule + bet_value).
+- Combined suite: **158 tests** (29 Phase 2 + 22 Phase 3 + 9 Phase 4a + 34 Phase 4b + 15 Phase 5a + 14 Phase 5c + 35 Phase 6) — all pass in `.venv` in < 300 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `158 passed`.
+- TG side has no test suite; TG deploy smoke on the server via `*ctl update` + `/status` → `/tweak delay 0.1` → auto-bet session start.
+
+### Versions
+
+- TG: `tg/__init__.py:VERSION` `1.15.10` → `1.16.0` (minor bump — internal refactor).
+- CLI: `wolfbet.py:VERSION` `2.21.0` → `2.22.0`. Banner literal updated.
+
 ## CLI v2.21.0 — backtest / replay mode (no API calls, no real balance risk) (2026-07-17)
 
 Phase 5c of the CLI ↔ TG parity roadmap. Second "beyond TG" release — run any strategy configuration against saved sessions (historical replay) or a synthetic random stream (Monte Carlo simulation) without touching the WolfBet API.

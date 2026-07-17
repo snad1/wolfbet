@@ -11,7 +11,8 @@
 - **Phase 4a** — landed in **CLI v2.18.0** (commit `776fcb9`). Wizard prompts + preset persistence for the Phase 2 config fields (recurring / streak delays / streakbet_loss / basebet_pct / milestones). Follow-up debt from v2.16.0 / v2.17.0 is now **cleared** — new users reach every Phase 2 feature from the interactive wizard, and presets round-trip fully.
 - **Phase 4b** — landed in **CLI v2.19.0** (commit `0e6a1ff`). Runtime tweak surface: press `T` during a session to change 22 parameters mid-flight (parity with TG `/tweak`). New `_apply_mutation(changes)` central mutation function reuses Phase 2 helpers; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart on the next loop iteration.
 - **Phase 5a** — landed in **CLI v2.20.0** (commit `42ff9cc`). First "beyond TG" release. Rich session summary at end (`Q` / Ctrl+C / SIGTERM), `--export <path>` CLI flag + `--export-session-id N`, and `E` hotkey for live-session export (CSV or JSON — detected from extension). Zero risk to the bet loop — display + export layer only.
-- **Phase 5c** — landed in **CLI v2.21.0** (this update). Backtest / replay mode: `--backtest` skips the API entirely and runs the strategy against either synthetic outcomes (`--simulate N`, optional `--seed`) or a saved session's historical rolls (`--replay-session ID`). Strategy engine is now the single source of truth for both live and simulated runs.
+- **Phase 5c** — landed in **CLI v2.21.0** (commit `1fc7c98`). Backtest / replay mode: `--backtest` skips the API entirely and runs the strategy against either synthetic outcomes (`--simulate N`, optional `--seed`) or a saved session's historical rolls (`--replay-session ID`). Strategy engine is now the single source of truth for both live and simulated runs.
+- **Phase 6** — landed in **TG v1.16.0 / CLI v2.22.0** (this update). Shared registry refactor: `GAME_ENDPOINTS` / `AUTO_ENDPOINTS` / `GAME_LABELS` / `wolfbet_hash` / `is_auto_game` / `fmt_multiplier` / `custom_rule_to_wolfbet` / `build_auto_config` / `build_auto_start_payload` all extracted from both engines into `wolfbet/core/games.py`. Both engines import from one truth. Zero user-visible change. Adding a new WolfBet game is now a single-file edit.
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
@@ -176,7 +177,9 @@ The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned 
 
 **Phase 5c (v2.21.0)** added `wolfbet/tests/test_phase5c_backtest.py` — 14 tests covering: `_simulate_bet_outcome` shape / determinism / win-rate for multipliers 2.0 and 10.0, `_replay_bets_from_db` correct count / bet size / raises on missing session, `_apply_backtest_result` win/loss/mixed streak tracking, `backtest_loop` runs to completion, respects `max_bets` stop condition, deterministic with the same seed.
 
-Combined: **123 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
+**Phase 6 (TG v1.16.0 / CLI v2.22.0)** added `wolfbet/tests/test_phase6_games.py` — 35 tests covering the shared module: registry shape, `wolfbet_hash` length/hex validity, `is_auto_game` positive/negative, `fmt_multiplier` for 6 inputs, `request_hash_header` for 3 game classes, `custom_rule_to_wolfbet` for 5 rule types, `build_auto_config` for all 8 strategy branches + unknown-default + stop-condition appending, `build_auto_start_payload` for both auto games.
+
+Combined: **158 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 300 ms in the wolfbet `.venv`).
 
 Still untested (Phase 1 debt + everything else):
 
@@ -196,5 +199,5 @@ Broader coverage is best added incrementally when a bug lands or when refactorin
 - **Phase 4b** (v2.19.0, ✅ landed): Runtime `/tweak`-equivalent — press `T` for mid-session parameter edits across 22 tweakable fields; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart.
 - **Phase 5a** (v2.20.0, ✅ landed): Session summary on exit + CSV/JSON export. `--export <path>` CLI flag + `E` hotkey; summary panel on `Q` / Ctrl+C / SIGTERM.
 - **Phase 5c** (v2.21.0, ✅ landed): Backtest / replay mode. `--backtest --simulate N [--seed N]` (Monte Carlo) or `--backtest --replay-session ID` (historical replay). No API calls, no real balance risk. Strategy engine is now the single source of truth for both live and simulated runs.
-- **Phase 5b** (next, on-demand): async refactor + pipelined betting + multi-slot (bigger scope — requires an `httpx.AsyncClient` migration and threading/concurrency model choice). Deferred until speed becomes the bottleneck.
-- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2/3/4b helpers across TG and CLI.
+- **Phase 6** (TG v1.16.0 / CLI v2.22.0, ✅ landed): Shared registry refactor. `GAME_ENDPOINTS` / `AUTO_ENDPOINTS` / `GAME_LABELS` / auto-bet builders extracted to `wolfbet/core/games.py`. Both engines import from one truth; new games are single-file edits.
+- **Phase 5b** (last remaining roadmap item, on-demand): async refactor + pipelined betting + multi-slot. Requires an `httpx.AsyncClient` migration and threading/concurrency model choice. Deferred until speed becomes the bottleneck.

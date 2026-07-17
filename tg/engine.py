@@ -14,44 +14,11 @@ from .config import API_BASE, APP_ENV, logger
 from core.database import init_db, migrate_db, db_connect, cleanup_old_bets, cleanup_live_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
-
-import hashlib
-
-# ── Game endpoint configuration ──
-# game_key → (api_path, api_version, rate_limit_default, needs_hash)
-GAME_ENDPOINTS = {
-    "dice":           ("/v1/bet/place",         1, 480,  False),
-    "dice-manual":    ("/v1/dice/manual/play",  1, 720,  True),
-    "limbo":          ("/v2/limbo/manual/play",  2, 500,  True),
-    "limbo-auto":     ("/v2/limbo/auto/play",    2, 4000, True),
-    "dice-auto":      ("/v2/dice/auto/play",     2, 4000, True),
-}
-GAME_LABELS = {
-    "dice":           "Dice (API v1)",
-    "dice-manual":    "Dice Manual (v1)",
-    "limbo":          "Limbo (v2)",
-    "limbo-auto":     "Limbo Auto (v2)",
-    "dice-auto":      "Dice Auto (v2)",
-}
-
-# Auto-bet start/stop endpoints
-AUTO_ENDPOINTS = {
-    "limbo-auto": {"start": "/v2/limbo/auto/start", "stop": "/v2/limbo/auto/stop"},
-    "dice-auto":  {"start": "/v2/dice/auto/start",  "stop": "/v2/dice/auto/stop"},
-}
-
-# Auto/start pacing — the rate-limit window length isn't documented (could be
-# 20s or 60s), so we don't compute pace from x-ratelimit-limit. Instead we
-# enforce a small floor between requests and rely on tight 429 retries to
-# probe the actual window when we hit the cap.
-AUTO_START_MIN_INTERVAL = 1.0
-
-
-def _wolfbet_hash(body_str: str = "") -> str:
-    """Generate WolfBet x-hash-api: interleave(md5(body), md5(nonce))."""
-    md5_body = hashlib.md5(body_str.encode()).hexdigest()
-    md5_nonce = hashlib.md5(str(int(time.time() * 1000)).encode()).hexdigest()
-    return "".join(a + b for a, b in zip(md5_body, md5_nonce))
+from core.games import (
+    GAME_ENDPOINTS, AUTO_ENDPOINTS, GAME_LABELS, AUTO_START_MIN_INTERVAL,
+    is_auto_game, fmt_multiplier, request_hash_header,
+    build_auto_config, build_auto_start_payload,
+)
 
 # ── Batching / periodic save constants ──────────────────
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
@@ -255,13 +222,10 @@ class BettingEngine:
         return self._base_headers()
 
     def _request_headers(self, body_str: str = "") -> dict:
-        """Per-request headers including dynamic x-hash-api."""
-        ep = GAME_ENDPOINTS.get(self.game)
-        if ep and ep[3]:  # needs_hash
-            return {
-                "x-hash-api": _wolfbet_hash(body_str),
-                "x-client-type": "Web-Application",
-            }
+        """Per-request headers with x-hash-api resolved via core.games.request_hash_header."""
+        h = request_hash_header(self.game, body_str)
+        if h is not None:
+            return {"x-hash-api": h, "x-client-type": "Web-Application"}
         return {}
 
     @staticmethod
@@ -473,132 +437,24 @@ class BettingEngine:
         self._auto_uuid = None
 
     def _is_auto_game(self) -> bool:
-        return self.game in AUTO_ENDPOINTS
-
-    @staticmethod
-    def _fmt_mult(m: float) -> str:
-        """Format multiplier as WolfBet expects: no trailing zeros ('2' not '2.0', '2.01' kept)."""
-        s = f"{m:.4f}".rstrip("0").rstrip(".")
-        return s or "0"
+        return is_auto_game(self.game)
 
     def _build_auto_start_payload(self) -> dict:
-        """Build the payload for auto/start — includes strategy config."""
-        base = {
-            "currency":   self.currency,
-            "amount":     f"{self.base_bet:.8f}",
-            "multiplier": self._fmt_mult(self.multiplier),
-            "config":     self._build_auto_config(),
-        }
-        if self.game == "limbo-auto":
-            base["game"] = "limbo"
-        elif self.game == "dice-auto":
-            base["game"] = "dice"
-            base["rule"] = self.rule
-            base["bet_value"] = f"{self.bet_value:.2f}"
-        return base
-
-    @staticmethod
-    def _custom_rule_to_wolfbet(r) -> dict | None:
-        """Translate a StrategyRule into a WolfBet auto-bet rule dict, or None if unsupported."""
-        if r.cond_type != "sequence":
-            return None  # profit/bet conditions not supported for auto-bet
-        # Trigger name: WolfBet uses "lose" not "loss"
-        trigger_map = {"win": "win", "loss": "lose", "bet": "bet"}
-        # Sequential mode → WolfBet condition type
-        type_map = {
-            "every": "every",
-            "every_streak": "streak",
-            "first_streak": "streak",
-            "streak_above": "streakGreater",
-        }
-        wb_type = type_map.get(r.cond_mode)
-        wb_trigger = trigger_map.get(r.cond_trigger)
-        if not (wb_type and wb_trigger):
-            return None
-
-        # Build the command lazily — only the matching action evaluates action_value
-        try:
-            av = float(r.action_value) if r.action_value not in (None, "") else 0.0
-        except (TypeError, ValueError):
-            av = 0.0
-        action_map = {
-            "reset_amount":    [{"name": "resetAmount"}],
-            "increase_amount": [{"name": "increaseAmountPercent", "value": av}],
-            "decrease_amount": [{"name": "decreaseAmountPercent", "value": av}],
-            "add_amount":      [{"name": "increaseAmountValue", "value": av}],
-            "deduct_amount":   [{"name": "decreaseAmountValue", "value": av}],
-            "set_amount":      [{"name": "setAmount", "value": av}],
-            "switch":          [{"name": "switch"}],
-            "stop":            [{"name": "stop"}],
-        }
-        wb_command = action_map.get(r.action)
-        if not wb_command:
-            return None
-        return {
-            "command": wb_command,
-            "when": [{"name": wb_trigger, "value": int(r.cond_value), "type": wb_type}],
-        }
+        """Adapter: self.* → shared build_auto_start_payload()."""
+        return build_auto_start_payload(
+            self.game, self.currency, self.base_bet, self.multiplier,
+            self.rule, self.bet_value, self._build_auto_config(),
+        )
 
     def _build_auto_config(self) -> list:
-        """Translate our strategy + stop conditions into WolfBet auto-bet config."""
-        rules = []
-
-        # Strategy rules
-        # loss_mult 2.0 → increaseAmountPercent: 100 (doubles)
-        # loss_mult 2.01 → increaseAmountPercent: 101
-        loss_pct = round((self.loss_mult - 1) * 100)
-        win_pct = round((self.win_mult - 1) * 100)
-
-        if self.strategy_key == "1":  # Flat
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
-        elif self.strategy_key == "2":  # Martingale
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
-        elif self.strategy_key == "3":  # Anti-Martingale
-            rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
-        elif self.strategy_key == "4":  # D'Alembert
-            unit = self.base_bet
-            rules.append({"command": [{"name": "decreaseAmountValue", "value": unit}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "increaseAmountValue", "value": unit}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
-        elif self.strategy_key == "5":  # Paroli
-            rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 3, "type": "streak"}]})
-        elif self.strategy_key == "6":  # WolfRider (dice only — switch direction)
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
-            if self.game == "dice-auto":
-                rules.append({"command": [{"name": "switch"}], "when": [{"name": "bet", "value": 1, "type": "every"}]})
-        elif self.strategy_key == "7":  # Delay Martingale
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-            rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": self.delay_martin_threshold, "type": "streakGreater"}]})
-        elif self.strategy_key == "8":  # Rule-Based — translate user's custom rules
-            for r in self.custom_rules:
-                wb_rule = self._custom_rule_to_wolfbet(r)
-                if wb_rule:
-                    rules.append(wb_rule)
-                else:
-                    logger.warning("User %d: rule '%s' cannot be expressed in WolfBet auto-bet format — skipped",
-                                   self.user_id, r.description or r.action)
-            if not rules:
-                # Fallback: no translatable rules → flat behavior so the session can still start
-                rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-        else:  # Default flat
-            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
-
-        # Stop conditions
-        if self.max_profit is not None:
-            rules.append({"command": [{"name": "stop"}], "when": [{"name": "profit", "value": float(self.max_profit), "type": "gte"}]})
-        if self.max_loss is not None:
-            rules.append({"command": [{"name": "stop"}], "when": [{"name": "loss", "value": float(self.max_loss), "type": "gt"}]})
-        if self.max_bets is not None:
-            rules.append({"command": [{"name": "stop"}], "when": [{"name": "bet", "value": int(self.max_bets), "type": "every"}]})
-        if self.stop_on_balance is not None:
-            rules.append({"command": [{"name": "stop"}], "when": [{"name": "balance", "value": float(self.stop_on_balance), "type": "lt"}]})
-
-        return rules
+        """Adapter: self.* → shared build_auto_config()."""
+        return build_auto_config(
+            self.strategy_key, self.loss_mult, self.win_mult, self.base_bet,
+            self.game, self.custom_rules,
+            {"max_profit": self.max_profit, "max_loss": self.max_loss,
+             "max_bets": self.max_bets, "stop_on_balance": self.stop_on_balance},
+            self.delay_martin_threshold, logger, f"User {self.user_id}: ",
+        )
 
     def _build_bet_payload(self, amount: float) -> dict:
         gk = self.game
@@ -608,7 +464,7 @@ class BettingEngine:
                 "game":       "dice",
                 "amount":     f"{amount:.8f}",
                 "rule":       self.rule,
-                "multiplier": self._fmt_mult(self.multiplier),
+                "multiplier": fmt_multiplier(self.multiplier),
                 "bet_value":  f"{self.bet_value:.2f}",
             }
         elif gk == "dice-manual":
@@ -617,7 +473,7 @@ class BettingEngine:
                 "game":       "dice",
                 "amount":     f"{amount:.8f}",
                 "rule":       self.rule,
-                "multiplier": self._fmt_mult(self.multiplier),
+                "multiplier": fmt_multiplier(self.multiplier),
                 "bet_value":  f"{self.bet_value:.2f}",
                 "auto":       1,
             }
@@ -626,7 +482,7 @@ class BettingEngine:
                 "currency":   self.currency,
                 "game":       "limbo",
                 "amount":     f"{amount:.8f}",
-                "multiplier": self._fmt_mult(self.multiplier),
+                "multiplier": fmt_multiplier(self.multiplier),
                 "auto":       1,
             }
         elif gk in ("limbo-auto", "dice-auto"):
