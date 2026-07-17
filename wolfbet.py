@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.18.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.19.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -214,6 +214,153 @@ def _reset_session_for_recurring() -> None:
                 state.session_id, state.base_bet, state.current_balance)
 
 
+# ══════════════════════════════════════════════════════════
+#  PHASE 4b — runtime tweak grammar (mirrors tg/handlers.cmd_tweak)
+# ══════════════════════════════════════════════════════════
+_TWEAK_ALIAS = {
+    "delay":       "bet_delay",
+    "sdloss":      "streak_delay_loss",
+    "sdwin":       "streak_delay_win",
+    "sdbets":      "streak_delay_bets",
+    "sbloss":      "streakbet_loss",
+    "bbpct":       "basebet_pct",
+    "maxprofit":   "max_profit",
+    "maxloss":     "max_loss",
+    "maxbets":     "max_bets",
+    "maxwins":     "max_wins",
+    "minbalance":  "stop_on_balance",
+    "msbets":      "milestone_bets",
+    "mswins":      "milestone_wins",
+    "mslosses":    "milestone_losses",
+    "msprofit":    "milestone_profit",
+    "pi":          "profit_increment",
+    "pt":          "profit_threshold",
+    "basebet":     "base_bet",
+    "lossmult":    "loss_mult",
+    "winmult":     "win_mult",
+}
+_TWEAK_PARAMS = {
+    "bet_delay", "basebet_pct",
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
+    "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+    "profit_increment", "profit_threshold", "recurring",
+    "base_bet", "multiplier", "loss_mult", "win_mult",
+}
+_TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
+
+
+def _apply_mutation(changes: dict) -> list:
+    """Apply {param → value} mutations to state.* — returns human status list.
+
+    Mirrors tg/engine.py:1274-1387 for CLI parity. Raises ValueError on malformed
+    numeric input; caller is responsible for surfacing that cleanly."""
+    msgs = []
+
+    def _is_off(v):
+        return isinstance(v, str) and v.lower() in _TWEAK_OFF_VALUES or v is None
+
+    # ── Instant (no restart) ──
+    if "bet_delay" in changes:
+        state.bet_delay = float(changes["bet_delay"])
+        msgs.append(f"Delay: {state.bet_delay:.3f}s")
+
+    if "basebet_pct" in changes:
+        v = changes["basebet_pct"]
+        state.basebet_pct = 0.0 if _is_off(v) else float(v)
+        if state.basebet_pct > 0 and state.current_balance > 0:
+            _apply_basebet_pct()
+            msgs.append(f"Basebet pct: {state.basebet_pct*100:.4f}% → base={state.base_bet:.8f}")
+        else:
+            msgs.append("Basebet pct: off")
+
+    for attr, label in [("streak_delay_loss", "Streak delay loss"),
+                        ("streak_delay_win",  "Streak delay win"),
+                        ("streak_delay_bets", "Streak delay bets"),
+                        ("streakbet_loss",    "Streakbet loss")]:
+        if attr in changes:
+            v = changes[attr]
+            setattr(state, attr, _parse_streak_delay(None if _is_off(v) else v))
+            tup = getattr(state, attr)
+            if tup[0] > 0:
+                msgs.append(f"{label}: every {tup[0]} → {tup[1]:.3f}")
+            else:
+                msgs.append(f"{label}: off")
+
+    # Stop conditions — instant
+    for attr, label, cast in [("max_profit",      "Max profit",  float),
+                              ("max_loss",        "Max loss",    float),
+                              ("max_bets",        "Max bets",    int),
+                              ("max_wins",        "Max wins",    int),
+                              ("stop_on_balance", "Min balance", float)]:
+        if attr in changes:
+            v = changes[attr]
+            if _is_off(v):
+                setattr(state, attr, None)
+                msgs.append(f"{label}: off")
+            else:
+                setattr(state, attr, cast(v))
+                msgs.append(f"{label}: {getattr(state, attr)}")
+
+    # Milestone thresholds — instant
+    for attr, label in [("milestone_bets",   "Milestone bets"),
+                        ("milestone_wins",   "Milestone wins"),
+                        ("milestone_losses", "Milestone losses")]:
+        if attr in changes:
+            v = changes[attr]
+            setattr(state, attr, 0 if _is_off(v) else int(v))
+            msgs.append(f"{label}: {getattr(state, attr) or 'off'}")
+    if "milestone_profit" in changes:
+        v = changes["milestone_profit"]
+        state.milestone_profit = 0.0 if _is_off(v) else float(v)
+        msgs.append(f"Milestone profit: {state.milestone_profit:.8f}" if state.milestone_profit else "Milestone profit: off")
+
+    # Profit increment — instant
+    if "profit_increment" in changes:
+        v = changes["profit_increment"]
+        state.profit_increment = None if _is_off(v) else float(v)
+        msgs.append(f"Profit increment: {state.profit_increment:.8f}" if state.profit_increment else "Profit increment: off")
+    if "profit_threshold" in changes:
+        v = changes["profit_threshold"]
+        state.profit_threshold = None if _is_off(v) else float(v)
+        if state.profit_threshold:
+            state.next_profit_milestone = state.profit_threshold
+        msgs.append(f"Profit threshold: {state.profit_threshold:.8f}" if state.profit_threshold else "Profit threshold: off")
+
+    # Recurring — instant boolean
+    if "recurring" in changes:
+        v = str(changes["recurring"]).lower()
+        state.recurring = v in ("on", "true", "yes", "y", "1")
+        msgs.append(f"Recurring: {'on' if state.recurring else 'off'}")
+
+    # ── Strategy-config changes — auto games clear UUID for fresh restart ──
+    strategy_touched = False
+    if "base_bet" in changes:
+        state.base_bet = float(changes["base_bet"])
+        state.current_bet = state.base_bet
+        msgs.append(f"Base bet: {state.base_bet:.8f}")
+        strategy_touched = True
+    if "multiplier" in changes:
+        state.multiplier = float(changes["multiplier"])
+        msgs.append(f"Multiplier: {state.multiplier:.2f}")
+        strategy_touched = True
+    if "loss_mult" in changes:
+        state.loss_mult = float(changes["loss_mult"])
+        msgs.append(f"Loss mult: {state.loss_mult:.2f}")
+        strategy_touched = True
+    if "win_mult" in changes:
+        state.win_mult = float(changes["win_mult"])
+        msgs.append(f"Win mult: {state.win_mult:.2f}")
+        strategy_touched = True
+
+    if strategy_touched and _is_auto_game(state.game) and state._auto_uuid:
+        with state.lock:
+            state._auto_uuid = None
+        msgs.append("Auto-bet UUID cleared — restarts on next bet")
+
+    return msgs
+
+
 def _should_recurring_restart(reason: str) -> bool:
     """Whitelist safe stop-reasons for recurring restart. Loss / insufficient-balance never restart."""
     if not state.recurring:
@@ -293,7 +440,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.18.0"
+VERSION      = "2.19.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1766,7 +1913,7 @@ def build_dashboard_screen() -> str:
 
     # ── Row N: Status + controls ──────────────────────
     status_txt = state.status[:60]
-    keys = "[P]ause [R]esume [Q]uit [H]istory"
+    keys = "[P]ause [R]esume [T]weak [H]istory [Q]uit"
     add(f" {_a('white', status_txt)}  {_a('dim', keys)}")
 
     return "\r\n".join(lines)
@@ -1815,6 +1962,79 @@ def show_history():
     _getch()
     state.paused = was_paused
 
+
+def _print_tweak_help():
+    """Print a compact reference of tweakable params + example values."""
+    t = Table(box=box.SIMPLE, expand=True)
+    t.add_column("Param",   width=20)
+    t.add_column("Example", width=28)
+    t.add_column("Notes",   width=32)
+    rows = [
+        ("delay <sec>",         "delay 0.1",         "bet_delay"),
+        ("bbpct <0-1>",         "bbpct 0.001",       "basebet_pct (0 disables)"),
+        ("sdloss / sdwin",      "sdloss 3:0.5",      "'N:sec' streak delay"),
+        ("sdbets / sbloss",     "sdbets 100:0.5",    "streak-bet reduction"),
+        ("maxprofit",           "maxprofit 0.01",    "'off' to disable"),
+        ("maxloss / maxbets",   "maxbets 5000",      "instant stop condition"),
+        ("maxwins / minbalance","maxwins 1000",      "instant stop condition"),
+        ("msbets / mswins",     "msbets 100",        "milestone thresholds"),
+        ("mslosses / msprofit", "msprofit 0.001",    "milestone thresholds"),
+        ("pi / pt",             "pt 0.001",          "profit increment"),
+        ("recurring on/off",    "recurring on",      "restart on non-loss stop"),
+        ("basebet <amount>",    "basebet 0.00000002","auto games: UUID clears"),
+        ("multiplier",          "multiplier 3.0",    "auto games: UUID clears"),
+        ("lossmult / winmult",  "lossmult 2.01",     "auto games: UUID clears"),
+    ]
+    for p, ex, note in rows:
+        t.add_row(f"[cyan]{p}[/]", f"[yellow]{ex}[/]", f"[dim]{note}[/]")
+    console.print(t)
+
+
+def show_tweak():
+    """Modal runtime tweak surface — parity with tg/handlers.cmd_tweak.
+
+    Enters paused state, prompts for `param value`, applies via _apply_mutation,
+    resumes. 'back' / empty / q cancels."""
+    was_paused = state.paused
+    state.paused = True
+    time.sleep(0.15)
+
+    console.clear()
+    console.print(Rule("[bold cyan]Runtime tweak[/]"))
+    _print_tweak_help()
+
+    while True:
+        console.print("\n[dim]Format: [/][cyan]param value[/]  [dim]|  'back' to cancel[/]")
+        try:
+            raw = input("  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not raw or raw.lower() in ("back", "q", "quit"):
+            break
+        parts = raw.split(maxsplit=1)
+        if len(parts) < 2:
+            console.print("  [red]Missing value.[/] Try: [cyan]delay 0.1[/]")
+            continue
+        param, value = parts[0].lower(), parts[1]
+        param = _TWEAK_ALIAS.get(param, param)
+        if param not in _TWEAK_PARAMS:
+            console.print(f"  [red]Unknown param:[/] [cyan]{param}[/]")
+            continue
+        try:
+            msgs = _apply_mutation({param: value})
+        except (ValueError, TypeError) as e:
+            console.print(f"  [red]Invalid value:[/] {e}")
+            continue
+        for m in msgs:
+            console.print(f"  [green]✓[/] {m}")
+            logger.info("TWEAK: %s", m)
+        time.sleep(2.0)
+        break
+
+    console.clear()
+    state.paused = was_paused
+
 # ══════════════════════════════════════════════════════════
 #  KEYBOARD INPUT  (runs in background thread)
 # ══════════════════════════════════════════════════════════
@@ -1852,6 +2072,8 @@ def input_handler():
             state.status = "Resumed"
         elif ch == "h":
             show_history()
+        elif ch == "t":
+            show_tweak()
 
 # ══════════════════════════════════════════════════════════
 #  SETUP WIZARD  (step-based, supports "back" and "none")

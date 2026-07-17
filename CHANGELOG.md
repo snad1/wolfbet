@@ -1,5 +1,44 @@
 # Changelog
 
+## CLI v2.19.0 — runtime tweak surface (parity with TG /tweak) (2026-07-17)
+
+Phase 4b of the CLI ↔ TG parity roadmap. Full parity with `tg/handlers.cmd_tweak` — 22 tweakable params, same aliases, mid-session parameter edits without stopping the bet loop.
+
+### Added
+
+- **New hotkey `T` — Runtime tweak.** Press `T` during a live session to open a modal reference table + `param value` prompt (follows the same idiom as `H` for history: pause → prompt → resume). `back` / empty / `q` cancels without applying anything. Errors surface cleanly (`Invalid value: ...`, `Unknown param: ...`) and let you retry — never crash the bet loop.
+- **`_apply_mutation(changes: dict) -> list[str]`** — new module-level pure mutation function. Ports the shape of `tg/engine.py:1274-1387` for CLI parity. Returns human-readable status messages ("Delay: 0.500s", "Max profit: off", …). Reuses the Phase 2 helpers: `_parse_streak_delay` decodes streak-format tweaks (`"3:0.5"` → `(3, 0.5)`); `_apply_basebet_pct` recomputes `base_bet` immediately after a `basebet_pct` tweak.
+- **`_TWEAK_ALIAS` + `_TWEAK_PARAMS`** — grammar maps mirroring TG's alias set. Short forms accepted (`delay`, `sdloss`, `maxprofit`, `msbets`, `pi`, `basebet`, `lossmult`, …) and normalised to canonical state attribute names.
+- **Auto-bet UUID-clear semantics.** Strategy-config changes on `dice-auto` / `limbo-auto` (base_bet, multiplier, loss_mult, win_mult) clear `state._auto_uuid`. `betting_loop`'s next iteration fires a fresh `api_auto_start()` with the new config — reuses the Phase 1 expired-session recovery path, no new engine flag.
+- **`recurring` param.** Toggle Phase 2 recurring restart mid-session (`t recurring on/off`). CLI-native extension of the tweak grammar; TG doesn't have this today.
+- **Dashboard key legend updated** — bottom row now reads `[P]ause [R]esume [T]weak [H]istory [Q]uit`.
+
+### Full tweak param list
+
+**Instant** (no restart): `delay` / `bet_delay`, `bbpct` / `basebet_pct`, `sdloss` / `sdwin` / `sdbets` (streak delays), `sbloss` (streakbet loss), `maxprofit` / `maxloss` / `maxbets` / `maxwins` / `minbalance`, `msbets` / `mswins` / `mslosses` / `msprofit` (milestones), `pi` / `pt` (profit increment / threshold), `recurring`.
+
+**Auto-restart** (auto games clear UUID; manual games apply instantly): `basebet` / `base_bet`, `multiplier`, `lossmult` / `loss_mult`, `winmult` / `win_mult`.
+
+Use `off` / `none` / `0` / `disable` / `false` / `no` / `n` as synonyms to clear any field.
+
+### Behavioural notes
+
+- **No new external API surfaces.** No new secrets, no auth changes, no PII.
+- **Type validation is strict.** `float(v)` / `int(v)` errors surface as `ValueError` in the mutation function, caught by `show_tweak()` and shown as `Invalid value: ...`. The bet loop keeps running.
+- **Malformed streak input** falls back to `(0, 0.0)` (disabled) via the existing `_parse_streak_delay` tolerance.
+- **State mutation is lock-guarded** for the UUID-clear path; other fields are single-write assignments already safe against the bet-loop reader.
+
+### Testing
+
+- New file `wolfbet/tests/test_phase4b_mutation.py` — 34 pure-function tests covering every branch: instant params, streak decoding, `off` synonyms, stop conditions, milestones, recurring toggle (`on`/`off`/`true`/`false`/`yes`/`no`/`y`/`n`/`1`/`0`), strategy touches on manual vs auto games (UUID clear), type validation (`ValueError` propagation), alias resolution, `_TWEAK_ALIAS` ↔ `_TWEAK_PARAMS` consistency.
+- Combined suite now: **94 tests** (29 Phase 2 + 22 Phase 3 + 9 Phase 4a + 34 Phase 4b) — all pass in `.venv` in < 200 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `94 passed`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.18.0` → `2.19.0` (minor bump — new user-visible hotkey + tweak surface).
+- Banner literal updated to match.
+
 ## CLI v2.18.0 — wizard prompts + preset persistence for Phase 2 fields (2026-07-17)
 
 Phase 4a of the CLI ↔ TG parity roadmap. Clears the follow-up debt from v2.16.0 / v2.17.0.

@@ -8,7 +8,8 @@
 - **Phase 1** — landed in **CLI v2.15.0** (commit `aaf01d4`). Section 1 P0 items now Y.
 - **Phase 2** — landed in **CLI v2.16.0** (commit `683f6f3`). Section 3 recurring / streak delays / basebet_pct / streakbet_loss / milestones / 429 Retry-After now Y.
 - **Phase 3** — landed in **CLI v2.17.0** (commit `3dc2b16`). Section 4 API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line now Y.
-- **Phase 4a** — landed in **CLI v2.18.0** (this update). Wizard prompts + preset persistence for the Phase 2 config fields (recurring / streak delays / streakbet_loss / basebet_pct / milestones). Follow-up debt from v2.16.0 / v2.17.0 is now **cleared** — new users reach every Phase 2 feature from the interactive wizard, and presets round-trip fully.
+- **Phase 4a** — landed in **CLI v2.18.0** (commit `776fcb9`). Wizard prompts + preset persistence for the Phase 2 config fields (recurring / streak delays / streakbet_loss / basebet_pct / milestones). Follow-up debt from v2.16.0 / v2.17.0 is now **cleared** — new users reach every Phase 2 feature from the interactive wizard, and presets round-trip fully.
+- **Phase 4b** — landed in **CLI v2.19.0** (this update). Runtime tweak surface: press `T` during a session to change 22 parameters mid-flight (parity with TG `/tweak`). New `_apply_mutation(changes)` central mutation function reuses Phase 2 helpers; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart on the next loop iteration.
 
 **Criticality legend**:
 - **P0** — blocks feature parity (auto sessions can't run, sessions can't recover from a common failure)
@@ -130,7 +131,7 @@
 | Session-end notification (`format_stop`) with green ✅ / red 🛑 | tg/formatter.py | N/A | — | Telegram-specific. CLI's equivalent is the final TUI screen — Phase 4 could add "session summary" pane. |
 | Milestone push notifications | tg/handlers.py `_notify_milestone` | N/A | — | TG-only pattern. CLI could log to console. Phase 4. |
 | Recurring restart notification (throttled) | tg/handlers.py `_notify_stop` + `_throttle_recurring` | N/A | — | Depends on Phase 2 recurring feature. |
-| `/tweak` command — mid-session parameter change | tg/handlers.py `cmd_tweak` | N | P1 | Phase 4. CLI needs a keyboard shortcut / prompt. |
+| `/tweak` command — mid-session parameter change | tg/handlers.py `cmd_tweak` | Y (v2.19.0) | P1 | Landed in v2.19.0. Press `T` during a session → modal `param value` prompt. 22 tweakable fields with TG-style aliases. Auto-game strategy tweaks clear `_auto_uuid`. |
 | Pause / resume | tg/engine.py `self.paused` | Y | P0 | CLI has `state.paused` + `[P]` key. |
 | Manual stop | tg/handlers.py `cmd_stop` | Y | P0 | CLI has Ctrl+C / `[Q]`. |
 | Live status refresh (auto-poll every N seconds) | tg/handlers.py `cmd_monitor` | Y | P0 | CLI's rich Live layout redraws continuously. |
@@ -167,7 +168,9 @@ The CLI had **zero automated tests** before Phase 2. Phase 1 originally planned 
 
 **Phase 4a (v2.18.0)** added `wolfbet/tests/test_phase4a_presets.py` — 9 tests covering preset round-trip for all Phase 2 fields, streak-tuple encoding, backward-compat with legacy presets, and malformed-value fallback.
 
-Combined: **60 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
+**Phase 4b (v2.19.0)** added `wolfbet/tests/test_phase4b_mutation.py` — 34 tests covering every branch of `_apply_mutation`: instant params, streak decoding, `off` synonyms, stop conditions, milestones, recurring toggle (all 10 boolean synonyms), strategy touches on manual vs auto games (UUID clear), type validation (`ValueError` propagation), alias resolution, and `_TWEAK_ALIAS` ↔ `_TWEAK_PARAMS` consistency.
+
+Combined: **94 tests** pass in `WOLFBET_ENV=testing pytest wolfbet/tests/ -q` (< 200 ms in the wolfbet `.venv`).
 
 Still untested (Phase 1 debt + everything else):
 
@@ -184,6 +187,6 @@ Broader coverage is best added incrementally when a bug lands or when refactorin
 - **Phase 2** (v2.16.0, ✅ landed): Section 3 recurring / streak-delays / streakbet_loss / basebet_pct / milestones / 429 Retry-After. Testing scaffold introduced.
 - **Phase 3** (v2.17.0, ✅ landed): Section 4 observability parity — API timing (last/avg/peak/p50), on-target %, cycle_ms, efficiency %, rate-limit dashboard line, auto_start_remaining dashboard line.
 - **Phase 4a** (v2.18.0, ✅ landed): Wizard prompts + preset persistence for the Phase 2 config fields — follow-up debt cleared.
-- **Phase 4b** (next): `/tweak`-equivalent interactive commands for mid-session parameter edits, richer pause/resume, monitor loop polish.
-- **Phase 5**: pipelined betting, multi-slot, CLI-only "beyond TG" features.
-- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2/3 helpers across TG and CLI.
+- **Phase 4b** (v2.19.0, ✅ landed): Runtime `/tweak`-equivalent — press `T` for mid-session parameter edits across 22 tweakable fields; auto-game strategy tweaks clear `_auto_uuid` for a fresh restart.
+- **Phase 5** (next): pipelined betting (requires async), multi-slot, CLI-only "beyond TG" features.
+- **Phase 6** (optional): move `GAME_ENDPOINTS` + `AUTO_ENDPOINTS` + `GAME_LABELS` + strategy translation to `shared/wolfbet_games.py`; de-duplicate the Phase 2/3/4b helpers across TG and CLI.
