@@ -1,5 +1,23 @@
 # Changelog
 
+## CLI v2.15.0 — dice-auto / limbo-auto now supported in terminal (2026-07-17)
+
+### Added
+
+- **CLI now supports WolfBet auto-bet endpoints** (`/v2/{dice,limbo}/auto/start`, `/auto/play`, `/auto/stop`). Selecting `dice-auto` or `limbo-auto` from the game menu runs a server-side auto-bet session — same as the Telegram bot has offered since v1.15.x. UUID lifecycle (start → play → stop) is fully managed; 400 "Session has ended" and expired-UUID errors trigger automatic seed rotation + restart. 429 on `/auto/start` retries with exponential backoff up to 60s and respects `Retry-After`.
+- **`_wolfbet_hash(body_str)`** ported from `tg/engine.py:50-54`. Auto endpoints require a per-request `x-hash-api = md5(body) ⊕ md5(nonce)`. Manual endpoints keep their legacy hardcoded hash strings — no change to existing manual behaviour.
+- **Strategy → WolfBet auto-bet translator** (`_build_auto_config`, `_custom_rule_to_wolfbet`). All 8 strategy keys (Flat, Martingale, Anti-Martingale, D'Alembert, Paroli, WolfRider, Delay Martingale, Rule-Based) are serialised into the WolfBet server-side rule format. Stop conditions (`max_profit`, `max_loss`, `max_bets`, `stop_on_balance`) are also translated into server-side stop rules so the auto session enforces them without a round-trip.
+- **Snapshot fields** — `auto_uuid`, `auto_start_remaining`, `game` are now written to `~/.wolfbet_autobot_live.json` so `--status` can display them.
+- **Clean shutdown** — Ctrl+C / SIGTERM calls `/auto/stop` (best-effort) before writing the final session snapshot so the server-side UUID is released promptly.
+- **Parity audit doc** — `audits/cli-vs-tg-parity.md` documents every Telegram-bot feature vs its CLI status (Y/N/PARTIAL), criticality (P0/P1/P2), and target phase. Phase 1 (this release) delivers all P0 auto-bet items; Phases 2–5 cover recurring / streak delays / basebet_pct / dashboard metrics / tweak commands.
+
+### Notes
+
+- Banner literal fixed from stale `v2.10.2` to `v2.15.0`.
+- Manual games (`dice`, `dice-manual`, `limbo`) are unchanged in behaviour — the auto path lives alongside the existing manual path in `betting_loop()`, dispatched by `_is_auto_game(state.game)`.
+- No new secrets, no new auth surface, no new PII paths. The auto endpoints reuse the same Bearer token the manual endpoints already use.
+- Testing: manual smoke recommended (`python wolfbet.py` → pick `dice-auto` → confirm UUID handshake + ~10 bets tick + clean stop). No automated test suite yet; per the parity audit, that's a Phase 2 deliverable.
+
 ## v2.16.11 — casino-shared dependency now installs over HTTPS (2026-07-17)
 
 ### Changed

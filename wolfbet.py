@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.10.2  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.15.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging  # noqa: E401
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib  # noqa: E401
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
@@ -53,23 +53,57 @@ API_BASE     = os.environ.get("WOLFBET_API_BASE",    "https://wolfbet.com/api")
 
 # ── Game endpoint configuration ──
 # game_key → (api_path, api_version, rate_limit_default, x_hash_api)
+# x_hash_api semantics:
+#   None      → no hash header required
+#   "dynamic" → compute md5(body)⊕md5(nonce) per-request via _wolfbet_hash()
+#   <string>  → send the exact string verbatim (legacy manual endpoints)
 GAME_ENDPOINTS = {
     "dice":        ("/v1/bet/place",              1, 480, None),
     "dice-manual": ("/v1/dice/manual/play",       1, 720, "4fcfa97d3a307bbcb20a7bf8ee29dcdfce7a20c0edda6867a32ee1b43e0742de"),
     "limbo":       ("/v2/limbo/manual/play",       2, 500, "7cb7c8fc779782c7f7ce9a52901e69991eef0ee09228ea6767a1f52a619d3b53"),
+    "dice-auto":   ("/v2/dice/auto/play",         2, 4000, "dynamic"),
+    "limbo-auto":  ("/v2/limbo/auto/play",         2, 4000, "dynamic"),
 }
 GAME_LABELS = {
     "dice":        "Dice (API v1)",
     "dice-manual": "Dice Manual (v1)",
     "limbo":       "Limbo (v2)",
+    "dice-auto":   "Dice Auto (v2)",
+    "limbo-auto":  "Limbo Auto (v2)",
 }
+
+# ── Auto-bet start/stop endpoints ──
+AUTO_ENDPOINTS = {
+    "dice-auto":  {"start": "/v2/dice/auto/start",  "stop": "/v2/dice/auto/stop"},
+    "limbo-auto": {"start": "/v2/limbo/auto/start", "stop": "/v2/limbo/auto/stop"},
+}
+
+# Auto/start pacing — window length isn't documented (could be 20s or 60s);
+# we enforce a floor between requests and lean on tight 429 retries to probe.
+AUTO_START_MIN_INTERVAL = 1.0
+
+
+def _wolfbet_hash(body_str: str = "") -> str:
+    """Generate WolfBet x-hash-api: interleave(md5(body), md5(nonce)).
+
+    Ported verbatim from tg/engine.py:50-54 for /auto/* endpoints. Manual
+    endpoints keep their legacy hardcoded x-hash-api strings.
+    """
+    md5_body = hashlib.md5(body_str.encode()).hexdigest()
+    md5_nonce = hashlib.md5(str(int(time.time() * 1000)).encode()).hexdigest()
+    return "".join(a + b for a, b in zip(md5_body, md5_nonce))
+
+
+def _is_auto_game(game_key: str) -> bool:
+    """True if game_key uses the /auto/* endpoint surface."""
+    return game_key in AUTO_ENDPOINTS
 DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolfbet_autobot.db"))
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.14.13"
+VERSION      = "2.15.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -339,6 +373,11 @@ class BotState:
         self.rate_backoff    = 2.0     # current probe interval (exponential: 2→4→8→16→32)
         self.rate_reset_at   = 0.0     # legacy (kept for monitor compatibility)
 
+        # ── auto-bet state (dice-auto / limbo-auto) ──
+        self._auto_uuid: Optional[str] = None
+        self._auto_start_last_time: float = 0.0
+        self._auto_start_remaining: Optional[int] = None
+
         # ── performance ──
         self.bets_per_minute = 0.0
         self.bets_per_second = 0.0
@@ -380,7 +419,10 @@ console = Console()
 # ══════════════════════════════════════════════════════════
 #  API HELPERS
 # ══════════════════════════════════════════════════════════
-def _headers(game_key: str = None) -> dict:
+def _headers(game_key: str = None, body_str: str = "") -> dict:
+    """Build request headers. For "dynamic" games (auto/*) recomputes x-hash-api
+    from the serialized body per request; legacy manual games use the static
+    hardcoded hash stored in GAME_ENDPOINTS[3]."""
     h = {
         "Authorization":    f"Bearer {state.api_key}",
         "X-Requested-With": "XMLHttpRequest",
@@ -388,8 +430,9 @@ def _headers(game_key: str = None) -> dict:
     }
     gk = game_key or state.game
     ep = GAME_ENDPOINTS.get(gk)
-    if ep and ep[3]:  # x_hash_api
-        h["x-hash-api"]    = ep[3]
+    if ep and ep[3]:
+        hash_spec = ep[3]
+        h["x-hash-api"]    = _wolfbet_hash(body_str) if hash_spec == "dynamic" else hash_spec
         h["x-client-type"] = "Web-Application"
     return h
 
@@ -443,16 +486,272 @@ def _build_bet_payload(amount: float) -> dict:
             "multiplier": f"{state.multiplier}",
             "auto":       1,
         }
+    elif gk in ("dice-auto", "limbo-auto"):
+        return {"uuid": state._auto_uuid}
     return {}
+
+
+# ══════════════════════════════════════════════════════════
+#  AUTO-BET  (dice-auto / limbo-auto)
+#  Ported from tg/engine.py:22-587 for parity with the Telegram bot.
+# ══════════════════════════════════════════════════════════
+def _fmt_mult(m: float) -> str:
+    """Format multiplier as WolfBet expects: no trailing zeros ('2' not '2.0')."""
+    s = f"{m:.4f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _custom_rule_to_wolfbet(r) -> Optional[dict]:
+    """Translate a StrategyRule into a WolfBet auto-bet rule dict, or None if unsupported."""
+    if r.cond_type != "sequence":
+        return None
+    trigger_map = {"win": "win", "loss": "lose", "bet": "bet"}
+    type_map = {
+        "every": "every",
+        "every_streak": "streak",
+        "first_streak": "streak",
+        "streak_above": "streakGreater",
+    }
+    wb_type = type_map.get(r.cond_mode)
+    wb_trigger = trigger_map.get(r.cond_trigger)
+    if not (wb_type and wb_trigger):
+        return None
+    try:
+        av = float(r.action_value) if r.action_value not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        av = 0.0
+    action_map = {
+        "reset_amount":    [{"name": "resetAmount"}],
+        "increase_amount": [{"name": "increaseAmountPercent", "value": av}],
+        "decrease_amount": [{"name": "decreaseAmountPercent", "value": av}],
+        "add_amount":      [{"name": "increaseAmountValue", "value": av}],
+        "deduct_amount":   [{"name": "decreaseAmountValue", "value": av}],
+        "set_amount":      [{"name": "setAmount", "value": av}],
+        "switch":          [{"name": "switch"}],
+        "stop":            [{"name": "stop"}],
+    }
+    wb_command = action_map.get(r.action)
+    if not wb_command:
+        return None
+    return {
+        "command": wb_command,
+        "when": [{"name": wb_trigger, "value": int(r.cond_value), "type": wb_type}],
+    }
+
+
+def _build_auto_config() -> list:
+    """Translate our strategy + stop conditions into WolfBet auto-bet rules."""
+    rules = []
+    loss_pct = round((state.loss_mult - 1) * 100)
+    win_pct = round((state.win_mult - 1) * 100)
+
+    sk = state.strategy_key
+    if sk == "1":  # Flat
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+    elif sk == "2":  # Martingale
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+    elif sk == "3":  # Anti-Martingale
+        rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+    elif sk == "4":  # D'Alembert
+        unit = state.base_bet
+        rules.append({"command": [{"name": "decreaseAmountValue", "value": unit}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "increaseAmountValue", "value": unit}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+    elif sk == "5":  # Paroli
+        rules.append({"command": [{"name": "increaseAmountPercent", "value": win_pct}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 3, "type": "streak"}]})
+    elif sk == "6":  # WolfRider
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": 1, "type": "every"}]})
+        if state.game == "dice-auto":
+            rules.append({"command": [{"name": "switch"}], "when": [{"name": "bet", "value": 1, "type": "every"}]})
+    elif sk == "7":  # Delay Martingale
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+        rules.append({"command": [{"name": "increaseAmountPercent", "value": loss_pct}], "when": [{"name": "lose", "value": state.delay_martin_threshold, "type": "streakGreater"}]})
+    elif sk == "8":  # Rule-Based — translate user's custom rules
+        for r in state.custom_rules:
+            wb_rule = _custom_rule_to_wolfbet(r)
+            if wb_rule:
+                rules.append(wb_rule)
+            else:
+                logger.warning("Rule '%s' cannot be expressed in WolfBet auto-bet format — skipped",
+                               r.description or r.action)
+        if not rules:
+            rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+    else:
+        rules.append({"command": [{"name": "resetAmount"}], "when": [{"name": "win", "value": 1, "type": "every"}]})
+
+    # Stop conditions — server-side enforcement
+    if state.max_profit is not None:
+        rules.append({"command": [{"name": "stop"}], "when": [{"name": "profit", "value": float(state.max_profit), "type": "gte"}]})
+    if state.max_loss is not None:
+        rules.append({"command": [{"name": "stop"}], "when": [{"name": "loss", "value": float(state.max_loss), "type": "gt"}]})
+    if state.max_bets is not None:
+        rules.append({"command": [{"name": "stop"}], "when": [{"name": "bet", "value": int(state.max_bets), "type": "every"}]})
+    if state.stop_on_balance is not None:
+        rules.append({"command": [{"name": "stop"}], "when": [{"name": "balance", "value": float(state.stop_on_balance), "type": "lt"}]})
+
+    return rules
+
+
+def _build_auto_start_payload() -> dict:
+    """Build the /auto/start payload — includes full server-side strategy config."""
+    base = {
+        "currency":   state.currency,
+        "amount":     f"{state.base_bet:.8f}",
+        "multiplier": _fmt_mult(state.multiplier),
+        "config":     _build_auto_config(),
+    }
+    if state.game == "limbo-auto":
+        base["game"] = "limbo"
+    elif state.game == "dice-auto":
+        base["game"] = "dice"
+        base["rule"] = state.rule
+        base["bet_value"] = f"{state.bet_value:.2f}"
+    return base
+
+
+def _update_auto_start_remaining(headers) -> None:
+    """Learn live remaining quota from x-ratelimit-remaining."""
+    try:
+        v = headers.get("x-ratelimit-remaining")
+        if v is not None:
+            state._auto_start_remaining = int(v)
+    except (ValueError, TypeError):
+        pass
+
+
+def _rotate_server_seed() -> bool:
+    """Rotate the WolfBet server seed via GET /v1/game/seed/refresh."""
+    url = f"{API_BASE}/v1/game/seed/refresh"
+    try:
+        r = requests.get(url, headers=_headers("dice"), timeout=12)
+        if r.status_code == 200:
+            logger.info("Server seed rotated")
+            return True
+        logger.warning("seed/refresh HTTP %d: %s", r.status_code, (r.text or "")[:120])
+    except Exception as e:
+        logger.warning("seed/refresh exception: %s: %r", type(e).__name__, e)
+    return False
+
+
+def api_auto_start() -> bool:
+    """Start a WolfBet auto-bet session; sets state._auto_uuid on success.
+
+    Pacing: 1s floor + quota-scaled pre-wait (6s / 4s / 2s at remaining
+    0 / 1 / 2). 429 retries with exponential backoff up to 60s (respects
+    Retry-After header).
+    """
+    endpoints = AUTO_ENDPOINTS.get(state.game)
+    if not endpoints:
+        with state.lock:
+            state.last_error = f"Auto-bet not available for {state.game}"
+        return False
+    wait = (state._auto_start_last_time + AUTO_START_MIN_INTERVAL) - time.monotonic()
+    if state._auto_start_remaining is not None:
+        quota_floor = {0: 6.0, 1: 4.0, 2: 2.0}.get(state._auto_start_remaining, 0.0)
+        wait = max(wait, quota_floor)
+    if wait > 0:
+        logger.info("Pacing auto/start, waiting %.2fs (remaining=%s)",
+                    wait, state._auto_start_remaining)
+        time.sleep(wait)
+    url = f"{API_BASE}{endpoints['start']}"
+    payload = _build_auto_start_payload()
+    body_str = json.dumps(payload, separators=(",", ":"))
+    backoffs = [1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 25.0, 60.0]
+    for attempt in range(len(backoffs) + 1):
+        state._auto_start_last_time = time.monotonic()
+        try:
+            r = requests.post(url, headers=_headers(body_str=body_str),
+                              json=payload, timeout=15)
+            _update_auto_start_remaining(r.headers)
+            if r.status_code == 200:
+                data = r.json()
+                uuid = data.get("autoBet", {}).get("uuid")
+                if uuid:
+                    with state.lock:
+                        state._auto_uuid = uuid
+                    logger.info("Auto-bet started, uuid=%s (remaining=%s)",
+                                uuid, state._auto_start_remaining)
+                    return True
+                with state.lock:
+                    state.last_error = f"Auto-bet start: no UUID in response"
+                logger.error("auto/start no UUID: %s", data)
+                return False
+            if r.status_code == 429 and attempt < len(backoffs):
+                delay = float(r.headers.get("Retry-After", backoffs[attempt]))
+                logger.warning("auto/start 429, retrying in %.1fs (attempt %d/%d)",
+                               delay, attempt + 1, len(backoffs))
+                time.sleep(delay)
+                continue
+            with state.lock:
+                state.last_error = f"Auto-bet start failed: HTTP {r.status_code}"
+            logger.error("auto/start HTTP %d: %s", r.status_code, r.text[:200])
+            return False
+        except requests.exceptions.RequestException as e:
+            if attempt < len(backoffs):
+                delay = backoffs[attempt]
+                logger.warning("auto/start network error (%s), retrying in %.1fs",
+                               type(e).__name__, delay)
+                time.sleep(delay)
+                continue
+            with state.lock:
+                state.last_error = f"Auto-bet start: {type(e).__name__}"
+            return False
+    return False
+
+
+def api_auto_stop() -> None:
+    """Best-effort stop of the auto-bet session; always clears state._auto_uuid."""
+    endpoints = AUTO_ENDPOINTS.get(state.game)
+    if not endpoints or not state._auto_uuid:
+        return
+    url = f"{API_BASE}{endpoints['stop']}"
+    payload = {"uuid": state._auto_uuid}
+    body_str = json.dumps(payload, separators=(",", ":"))
+    try:
+        requests.post(url, headers=_headers(body_str=body_str),
+                      json=payload, timeout=12)
+        logger.info("Auto-bet stopped, uuid=%s", state._auto_uuid)
+    except Exception:
+        pass
+    with state.lock:
+        state._auto_uuid = None
+
+
+def _fmt_auto_stop_reason(sr) -> str:
+    """Turn WolfBet's auto-stop payload into a human message."""
+    if isinstance(sr, dict):
+        tmpl = sr.get("message") or ""
+        for k, v in (sr.get("values") or {}).items():
+            try:
+                v_fmt = f"{float(v):.8f}" if "." in str(v) or "e" in str(v).lower() else str(v)
+            except (TypeError, ValueError):
+                v_fmt = str(v)
+            tmpl = tmpl.replace("{{" + str(k) + "}}", v_fmt)
+        return tmpl.strip() or str(sr)
+    return str(sr)
+
+
+def _recover_expired_session() -> bool:
+    """Recover from 'Session has ended' — rotate seed, stop dead UUID, start new."""
+    logger.warning("Auto-bet session expired — rotating seed + restarting")
+    _rotate_server_seed()
+    api_auto_stop()
+    return api_auto_start()
 
 
 def api_place_bet(amount: float) -> Optional[dict]:
     payload = _build_bet_payload(amount)
     ep = GAME_ENDPOINTS.get(state.game, ("/v1/bet/place", 1, 480, None))
     url = f"{API_BASE}{ep[0]}"
-    logger.debug("BET payload=%s url=%s", json.dumps(payload), url)
+    body_str = json.dumps(payload, separators=(",", ":"))
+    logger.debug("BET payload=%s url=%s", body_str, url)
     try:
-        r = requests.post(url, headers=_headers(),
+        r = requests.post(url, headers=_headers(body_str=body_str),
                           json=payload, timeout=15)
         _update_rate_limit(r)
 
@@ -467,9 +766,26 @@ def api_place_bet(amount: float) -> Optional[dict]:
                         state.last_error = "Insufficient balance"
                         state._insufficient_balance = True
                     return None
+                # Auto-bet UUID expired — clear it so next loop iteration will restart.
+                if _is_auto_game(state.game) and ("session" in err_lower or "expired" in err_lower or "not exists" in err_lower):
+                    logger.warning("AUTO-BET SESSION EXPIRED: %s", err_msg[:120])
+                    with state.lock:
+                        state._auto_uuid = None
+                        state.last_error = "Auto-bet session expired — restarting…"
+                    return None
                 with state.lock:
                     state.last_error = f"API error: {err_msg[:120]}"
                 return None
+            # Auto-bet: server may report a stop reason inline (max_profit/max_loss/etc.)
+            if _is_auto_game(state.game):
+                stop_reason = data.get("stopReason") or data.get("stop_reason")
+                if stop_reason:
+                    reason_str = _fmt_auto_stop_reason(stop_reason)
+                    logger.info("AUTO-BET STOP from server: %s", reason_str)
+                    with state.lock:
+                        state._auto_uuid = None
+                        state.last_error = f"WolfBet auto-stop: {reason_str}"
+                    # Let caller record this bet; loop's should_stop or next auto_start decides continuation.
             logger.debug("BET OK  id=%s state=%s",
                          data.get("bet", {}).get("id"),
                          data.get("bet", {}).get("state"))
@@ -480,10 +796,17 @@ def api_place_bet(amount: float) -> Optional[dict]:
                 state.rate_wait    = True
                 state.rate_backoff = 2.0
                 state.last_error   = "Rate limit 429 — probing for recovery…"
+        elif r.status_code == 400 and _is_auto_game(state.game):
+            # UUID expired / invalid — clear it so next loop iteration restarts.
+            body = r.text[:200]
+            logger.warning("AUTO-BET 400 (likely UUID expired): %s", body)
+            with state.lock:
+                state._auto_uuid = None
+                state.last_error = "Auto-bet session expired — restarting…"
         else:
             body = r.text[:500]
             logger.error("HTTP %d  response=%s  payload=%s",
-                         r.status_code, body, json.dumps(payload))
+                         r.status_code, body, body_str)
             with state.lock:
                 state.last_error = f"HTTP {r.status_code}: {r.text[:120]}"
     except requests.exceptions.Timeout:
@@ -569,8 +892,24 @@ def betting_loop():
         if stop:
             state.running = False
             state.status  = f"STOPPED: {reason}"
+            if _is_auto_game(state.game):
+                api_auto_stop()
             _db_save_session()
             break
+
+        # ── auto-bet: ensure we have a live UUID ──
+        if _is_auto_game(state.game) and not state._auto_uuid:
+            state.status = "Starting auto-bet session…"
+            if not api_auto_start():
+                # api_auto_start set state.last_error; back off and retry
+                with state.lock:
+                    state.consecutive_errors += 1
+                    state.backoff_delay = min(state.backoff_delay * 2, state.max_backoff)
+                time.sleep(state.backoff_delay)
+                continue
+            with state.lock:
+                state.consecutive_errors = 0
+                state.backoff_delay = 1.0
 
         # ── bet pacing delay ───────────────────────────────
         if state.bet_delay > 0:
@@ -855,6 +1194,10 @@ def _save_state_file():
             "lowest_balance": state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance,
             "rate_remaining": state.rate_remaining,
             "rate_limit": state.rate_limit,
+            # auto-bet state (dice-auto / limbo-auto)
+            "auto_uuid": state._auto_uuid,
+            "auto_start_remaining": state._auto_start_remaining,
+            "game": state.game,
             "rule": state.rule,
             "bet_value": state.bet_value,
             "bet_delay": state.bet_delay,
@@ -3053,6 +3396,12 @@ def main():
         state.status  = "Interrupted — saving session…"
         logger.warning("SESSION END (signal)  bets=%d  profit=%+.8f  balance=%.8f",
                     state.total_bets, state.profit, state.current_balance)
+        # Best-effort auto-bet cleanup so the server drops the UUID.
+        if _is_auto_game(state.game) and state._auto_uuid:
+            try:
+                api_auto_stop()
+            except Exception:
+                pass
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
