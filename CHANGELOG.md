@@ -1,5 +1,46 @@
 # Changelog
 
+## CLI v2.23.0 — lifetime analytics screen (`--analytics`) (2026-07-17)
+
+New user-visible command: **`python wolfbet.py --analytics`** — aggregates every saved session into a lifetime-performance report. Complement to `--stats` (which shows the most recent 20 sessions individually).
+
+### Added
+
+- **`--analytics` command flag** — mutually exclusive with `--status` / `--stop` / `--list-presets` / `--stats` / `--last-bets` / `--session-bets`. No arguments needed.
+- **`cmd_analytics()`** — renders:
+  - Header rule with total counts (sessions, bets, wagered).
+  - **Overall** panel: total sessions, sessions in profit vs loss, total bets W/L, win rate, total wagered, total P/L, best & worst session profit.
+  - **By game** table: sessions, bets, win rate, P/L, wagered per game — ordered by profit.
+  - **By strategy** table: same columns per strategy.
+  - **Top 5 best sessions** — profit-descending.
+  - **Top 5 worst sessions** — profit-ascending.
+  - Footer tip pointing at `--stats` and `--session-bets ID` for the drill-down views.
+- **Pure helpers** (testable in isolation):
+  - `_analytics_lifetime() -> dict` — top-line SQL aggregates with all-zero defaults for an empty DB.
+  - `_analytics_by_game() -> list[dict]` — SQL `GROUP BY game`.
+  - `_analytics_by_strategy() -> list[dict]` — SQL `GROUP BY strategy`.
+  - `_analytics_top_sessions(order, limit) -> list[dict]` — whitelisted order key (`profit_desc` / `profit_asc` / `bets_desc`), safe against SQL injection.
+- **`_print_analytics_table` / `_print_top_sessions_table`** — small render helpers, keep `cmd_analytics` readable.
+
+### Behavioural notes
+
+- **Read-only over the local DB.** Zero writes; no risk to session history / lifetime totals.
+- **Empty DB is graceful.** `No sessions in the DB yet — run a session first.` message; clean exit code 0.
+- **Complement to `--stats`, not a replacement.** `--stats` still shows the most recent 20 sessions in detail.
+- **No new dependencies** — all stdlib + Rich (already imported).
+- **No new secrets, no auth changes, no PII.**
+
+### Testing
+
+- New file `wolfbet/tests/test_phase8_analytics.py` — 18 tests seeding a temp DB with 3 sessions across 2 games and 2 strategies, then validating: lifetime totals match hand-computed values, win rate percent, `sessions_in_profit` / `_in_loss` counts, best/worst profit, `by_game` grouping + profit-desc ordering + aggregate columns, `by_strategy` correctness, `top_sessions` `profit_desc` / `profit_asc` / `bets_desc` / unknown-order fallback / limit-respected, empty-DB edge case, `cmd_analytics` no-crash on both empty and populated DBs.
+- Combined suite: **196 tests** (29 Phase 2 + 22 Phase 3 + 9 Phase 4a + 34 Phase 4b + 15 Phase 5a + 14 Phase 5c + 35 Phase 6 + 20 polish + 18 analytics) — all pass in `.venv` in < 300 ms.
+- Run: `cd wolfbet && WOLFBET_ENV=testing .venv/bin/python -m pytest tests/ -q` → `196 passed`.
+
+### Version
+
+- `wolfbet.py:VERSION` `2.22.1` → `2.23.0` (minor bump — new user-visible command).
+- Banner literal updated to match.
+
 ## CLI v2.22.1 — safety-check warnings + wizard polish (2026-07-17)
 
 Small polish patch. Catches obvious foot-guns before a session starts. Non-blocking heads-up — users retain full control.
