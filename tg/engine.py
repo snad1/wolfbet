@@ -14,6 +14,13 @@ from .config import API_BASE, APP_ENV, logger
 from core.database import init_db, migrate_db, db_connect, cleanup_old_bets, cleanup_live_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
+# v2.28.0 — shared helpers previously duplicated between CLI and TG.
+# classify_auto_stop_reason CLOSES TG's max-nonce blind spot: TG previously
+# only matched "session/expired/not exists/betsession" — never "nonce" —
+# so every "Max nonce achieved" was treated as a generic API error and
+# never triggered seed rotation. Now identical to CLI's behaviour.
+from core.net_helpers import classify_auto_stop_reason, parse_streak_delay
+from core.diagnostics import percentile
 from core.games import (
     GAME_ENDPOINTS, AUTO_ENDPOINTS, GAME_LABELS, AUTO_START_MIN_INTERVAL,
     is_auto_game, fmt_multiplier, request_hash_header,
@@ -228,16 +235,10 @@ class BettingEngine:
             return {"x-hash-api": h, "x-client-type": "Web-Application"}
         return {}
 
-    @staticmethod
-    def _parse_streak_delay(value) -> tuple:
-        """Parse 'N:seconds' streak delay config. Returns (streak_count, delay_seconds) or (0, 0)."""
-        if not value:
-            return (0, 0.0)
-        try:
-            parts = str(value).split(":")
-            return (int(parts[0]), float(parts[1]))
-        except (IndexError, ValueError):
-            return (0, 0.0)
+    # v2.28.0 — delegated to core.net_helpers.parse_streak_delay (shared with CLI).
+    # Kept as a static method for backward compat with `self._parse_streak_delay(...)`
+    # call sites throughout this class.
+    _parse_streak_delay = staticmethod(parse_streak_delay)
 
     @staticmethod
     def _fmt_stop_reason(sr) -> str:
@@ -533,13 +534,24 @@ class BettingEngine:
                 if "insufficient" in body_lower or "balance" in body_lower:
                     self._set_error("Insufficient balance")
                     self._insufficient_balance = True
-                elif ("session has ended" in body_lower or "not exists" in body_lower
-                      or "no query results" in body_lower or "betsession" in body_lower):
-                    self._session_expired = True
-                    self._set_error("Auto-bet session expired — restarting",
-                                    f"HTTP {r.status_code}: {body[:120]}")
                 else:
-                    self._set_error("Bet request failed", f"HTTP {r.status_code}: {body[:120]}")
+                    # v2.28.0 — shared classifier catches "max nonce achieved"
+                    # AS WELL AS session-expired variants. Previously TG only
+                    # detected the latter, so max-nonce responses fell through
+                    # to the generic "Bet request failed" branch and _recover_
+                    # expired_session never fired — same dashboard-spam bug
+                    # the CLI shipped a fix for at v2.25.0.
+                    reason = classify_auto_stop_reason(body)
+                    if reason:
+                        self._session_expired = True
+                        friendly = ("Max nonce achieved — rotating server seed"
+                                    if reason == "max_nonce"
+                                    else "Auto-bet session expired — restarting")
+                        self._set_error(friendly,
+                                        f"HTTP {r.status_code}: {body[:120]}")
+                    else:
+                        self._set_error("Bet request failed",
+                                        f"HTTP {r.status_code}: {body[:120]}")
         except (httpx.TimeoutException, httpx.ConnectError):
             self._consecutive_timeouts += 1
             self._set_error("Connection timeout — retrying")
@@ -1351,8 +1363,8 @@ class BettingEngine:
         }
         # API median (p50) and on-target % (api ≤ bet_delay). Explains the
         # Efficiency ceiling: 95% on-target → ~95% efficiency is the upper bound.
-        p50 = (sorted(self._api_samples)[len(self._api_samples) // 2]
-               if self._api_samples else 0)
+        # v2.28.0 — shared percentile helper (same as CLI's --benchmark).
+        p50 = percentile(sorted(self._api_samples), 0.50) if self._api_samples else 0
         on_target_pct = ((self._on_target_count / self._api_ms_count) * 100
                          if self._api_ms_count > 0 and self.bet_delay > 0 else None)
         status["api_p50_ms"] = p50

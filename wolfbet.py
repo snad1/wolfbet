@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.27.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.28.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -41,6 +41,11 @@ from core.strategy import (
 )
 from core.database import init_db as _core_init_db, migrate_db, db_connect, secure_path
 from core.database import cleanup_old_bets, cleanup_live_bets
+# v2.28.0 — shared helpers extracted for CLI ↔ TG parity + dedup.
+from core.net_helpers import (
+    validate_proxy, mask_proxy, classify_auto_stop_reason, parse_streak_delay,
+)
+from core.diagnostics import percentile, benchmark_verdict
 from core.engine import (
     compute_next_bet as _core_compute_next_bet,
     wolfrider_switch as _core_wolfrider_switch,
@@ -72,15 +77,9 @@ API_BASE     = os.environ.get("WOLFBET_API_BASE",    "https://wolfbet.com/api")
 # ══════════════════════════════════════════════════════════
 #  PHASE 2 helpers — session robustness (ported from tg/engine.py)
 # ══════════════════════════════════════════════════════════
-def _parse_streak_delay(value) -> tuple:
-    """Parse 'N:seconds' (or 'N:multiplier') config. Returns (N, X) or (0, 0.0)."""
-    if not value:
-        return (0, 0.0)
-    try:
-        parts = str(value).split(":")
-        return (int(parts[0]), float(parts[1]))
-    except (IndexError, ValueError):
-        return (0, 0.0)
+# _parse_streak_delay — extracted to core.net_helpers in v2.28.0; alias kept for
+# call-site + test compatibility. Same behaviour (empty/malformed → (0, 0.0)).
+_parse_streak_delay = parse_streak_delay
 
 
 def _apply_basebet_pct() -> bool:
@@ -578,7 +577,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.27.0"
+VERSION      = "2.28.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1002,45 +1001,11 @@ _http_session = requests.Session()
 _http_session.headers.update({"User-Agent": f"wolfbet-cli/{VERSION}"})
 
 
-def _validate_proxy(url) -> Optional[str]:
-    """Return normalized proxy URL or None.
-
-    Accepted schemes: http, https, socks5. Off-values (off/none/direct/0/'')
-    return None. Raises ValueError on any other input.
-
-    Mirrors tg/handlers.py:569-581 for TG↔CLI parity.
-    """
-    if url is None:
-        return None
-    s = str(url).strip()
-    if s.lower() in ("", "off", "none", "direct", "0", "false", "disable", "no"):
-        return None
-    if not (s.startswith("http://") or s.startswith("https://") or s.startswith("socks5://")):
-        raise ValueError(
-            f"Proxy must start with http://, https://, or socks5:// (got {s!r})"
-        )
-    return s
-
-
-def _mask_proxy(url) -> str:
-    """Return scheme://host:port form of a proxy URL — strips userinfo.
-
-    Mirrors tg/handlers.py:530-540. Never leaks credentials into logs, config
-    show, or the dashboard status line.
-    """
-    if not url:
-        return "direct"
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(url)
-        if p.hostname:
-            host = p.hostname
-            if p.port:
-                return f"{p.scheme}://{host}:{p.port}"
-            return f"{p.scheme}://{host}"
-    except Exception:
-        pass
-    return "set"
+# _validate_proxy / _mask_proxy — extracted to core.net_helpers in v2.28.0.
+# Aliases kept so every call-site (and every v2.26.0+ test) keeps working
+# without edits. TG bot's tg/handlers.py imports the same functions.
+_validate_proxy = validate_proxy
+_mask_proxy     = mask_proxy
 
 
 def _apply_proxy_to_session() -> None:
@@ -1276,23 +1241,9 @@ def _fmt_auto_stop_reason(sr) -> str:
     return str(sr)
 
 
-def _classify_auto_stop_reason(text) -> str:
-    """Classify a WolfBet auto-bet error / stopReason string.
-
-    Returns "max_nonce" when the server-seed nonce is exhausted (recovery
-    requires rotating the seed), "expired" when the auto-bet UUID / session
-    is dead (recovery requires a new /auto/start), or "" for any other
-    reason (server-side max_profit / max_loss / max_bets — those are
-    terminal for the WolfBet cycle but the CLI keeps its own session).
-    """
-    if not text:
-        return ""
-    s = str(text).lower()
-    if "nonce" in s:
-        return "max_nonce"
-    if "session" in s or "expired" in s or "not exists" in s or "betsession" in s:
-        return "expired"
-    return ""
+# _classify_auto_stop_reason — extracted to core.net_helpers in v2.28.0.
+# TG bot now imports the same helper, closing its max-nonce blind spot.
+_classify_auto_stop_reason = classify_auto_stop_reason
 
 
 def _recover_expired_session() -> bool:
@@ -4925,12 +4876,9 @@ def cmd_cleanup(days=None):
 # ══════════════════════════════════════════════════════════
 #  BPS DIAGNOSTICS  (v2.26.1 — --benchmark, --diagnose)
 # ══════════════════════════════════════════════════════════
-def _percentile(sorted_ms, pct):
-    """Percentile from a pre-sorted list of ms values. 0..1."""
-    if not sorted_ms:
-        return 0.0
-    idx = max(0, min(len(sorted_ms) - 1, int(pct * len(sorted_ms))))
-    return sorted_ms[idx]
+# _percentile — extracted to core.diagnostics in v2.28.0. TG /benchmark
+# will use the same helper.
+_percentile = percentile
 
 
 def cmd_benchmark(n=None):
@@ -4985,23 +4933,9 @@ def cmd_benchmark(n=None):
     max_bps = 1000.0 / p50 if p50 > 0 else 0.0
     console.print(f"\n[dim]Theoretical max BPS from p50:[/] "
                   f"[bold magenta]{max_bps:.1f}[/] bps")
-    # Verdict — deterministic tiers
-    got_429 = sum(1 for s in statuses if s == 429)
-    if got_429:
-        console.print(f"[bold red]Rate-limited[/] ({got_429}/{n} got 429). "
-                      "WolfBet is throttling this IP. Slow down or use a proxy.")
-    elif p50 >= 100:
-        console.print(f"[bold yellow]Network bottleneck[/] (p50={p50:.0f}ms → "
-                      f"ceiling ~{max_bps:.1f} BPS). WolfBet response is the limit.")
-    elif p99 > 3 * p50 and p50 > 0:
-        console.print(f"[bold yellow]Tail-latency spikes[/] "
-                      f"(p99={p99:.0f}ms, {p99/p50:.1f}× p50). Unstable network path.")
-    elif p50 < 30:
-        console.print(f"[bold green]Network fast[/] (p50={p50:.0f}ms). "
-                      "If live BPS is lower, the bottleneck is elsewhere — try --diagnose.")
-    else:
-        console.print(f"[bold cyan]Network OK[/] (p50={p50:.0f}ms → "
-                      f"ceiling ~{max_bps:.1f} BPS).")
+    # Verdict — shared with TG /benchmark (extracted to core.diagnostics in v2.28.0).
+    colour, msg = benchmark_verdict(p50=p50, p99=p99, statuses=statuses, sample_count=n)
+    console.print(f"[bold {colour}]{msg}[/]")
     if failures:
         console.print(f"[dim]Note: {failures}/{n} network errors.[/]")
 

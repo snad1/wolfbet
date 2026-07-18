@@ -1,5 +1,44 @@
 # Changelog
 
+## CLI v2.28.0 + TG v1.17.0 — extract shared helpers to `core/` (CLI ↔ TG dedup + TG bug fixes) (2026-07-18)
+
+User asked: "stop reimplementing what already exists — TG is the baseline, CLI ≥ TG, merge duplicated functions." Six pure-Python helpers were duplicated between `wolfbet.py` and `tg/*.py`. This release consolidates them, fixes two real bugs in the TG bot that only existed because the two engines evolved separately, and adds one small parity gain in `/benchmark`.
+
+**Shared helpers** (new modules, both engines import them):
+
+- `core/net_helpers.py`:
+  - `validate_proxy(url)` — accepted schemes `http/https/socks5`, broader off-value vocabulary than TG's previous inline check.
+  - `mask_proxy(url)` — strips userinfo. **Fixes a TG bug**: TG's inline masker built `f"{p.scheme}://{p.hostname}:{p.port}"` unconditionally and leaked `"None"` when the URL had no port.
+  - `classify_auto_stop_reason(text)` — returns `"max_nonce" / "expired" / ""`. **Fixes a TG bug**: TG's inline check matched `session/expired/not exists/betsession/no query results` but not `"nonce"`. Every "Max nonce achieved" response fell through to the generic "Bet request failed" branch and `_recover_expired_session` never fired. Same dashboard-spam bug the CLI shipped a fix for at v2.25.0.
+  - `parse_streak_delay("N:X")` — byte-for-byte identical logic that lived in both engines.
+
+- `core/diagnostics.py`:
+  - `percentile(sorted_ms, pct)` — used by both engines' latency reporting.
+  - `benchmark_verdict(*, p50, p99, statuses, sample_count)` — returns `(colour, message)` so each engine renders as it prefers (CLI Rich markup, TG Markdown). Same five-tier logic (429 → rate-limited → network-bottleneck → tail-latency → fast → OK) now shared.
+
+**CLI migration** (`wolfbet.py`):
+
+- Deleted five local defs: `_validate_proxy`, `_mask_proxy`, `_classify_auto_stop_reason`, `_parse_streak_delay`, `_percentile`.
+- Kept the underscore-prefixed names as re-export aliases so every v2.25.x-v2.27.x call site and test keeps working without edits.
+- `cmd_benchmark` uses `benchmark_verdict` — one call replaces the five-branch if/elif ladder.
+
+**TG migration** (`tg/handlers.py`, `tg/engine.py`):
+
+- `tg/handlers.py`: `/config` uses `mask_proxy` (port-less URLs no longer leak `None`); `/set proxy=…` uses `validate_proxy` (broader off-value vocabulary — `off/none/direct/0/false/disable/no`).
+- `tg/handlers.py` `/benchmark`: gains `p50`, `p99`, and a plain-English verdict line at the bottom of the results.
+- `tg/engine.py`: `_parse_streak_delay` staticmethod becomes a thin delegator to the shared function (all `self._parse_streak_delay(...)` call sites keep working). Session-expired branch uses `classify_auto_stop_reason` — **TG bot now recovers from max-nonce automatically** (parity gain, no new TG-side code). Status-file p50 uses `percentile(sorted_samples, 0.5)`.
+
+**Zero user-visible CLI change** beyond a version bump — the CLI already had every helper this ships. TG bot gains max-nonce recovery + a proxy-masking fix + a `/benchmark` verdict.
+
+**Not touched**:
+
+- `_recover_expired_session` — same 3-step shape both engines have, but different transports (`requests`/`_http_session` vs `httpx.AsyncClient`) and CLI has extras TG lacks (rate-backoff settle-sleep, `consecutive_recovery_fails`). Extraction needs a callback interface; separate phase.
+- Async bet-writer / `AsyncBetWriter` — CLI has the thread pattern (v2.27.0); TG uses `asyncio.to_thread(_flush_bets)`. Different lifecycles; defer.
+
+**Tests**: `tests/test_phase5k_core_helpers.py` — 32 tests covering the six helpers directly, plus re-export sanity checks against `wolfbet.py` and source-string checks confirming both `tg/engine.py` and `tg/handlers.py` import from `core.*`. Existing 378 tests all still pass because CLI re-exports preserve every name. **410 total passing.**
+
+`VERSION` `2.27.0` → `2.28.0`. `tg/__init__.py:VERSION` `1.16.0` → `1.17.0` (TG max-nonce recovery is user-visible). `wolfctl` unchanged (v3.5).
+
 ## CLI v2.27.0 — async bet-writer + SQLite tuning (kill the CLI overhead) (2026-07-18)
 
 v2.26.1's `--diagnose` proved the ~67 ms per-bet CLI overhead on the new server was disk-bound (fresh SQLite connection + per-bet fsync in `_db_save_bet`). This release moves bet writes off the hot path.

@@ -14,6 +14,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
+# v2.28.0 — shared helpers (previously duplicated between CLI and TG).
+# validate_proxy: broader off-value vocabulary than the old inline check.
+# mask_proxy: port-safe (previously leaked "None" when the URL had no port).
+# percentile + benchmark_verdict: TG /benchmark gains p50/p99 + plain verdict.
+from core.net_helpers import validate_proxy, mask_proxy
+from core.diagnostics import percentile, benchmark_verdict
+
 from . import VERSION
 from .config import APP_ENV, CONFIG_KEYS, DATA_DIR, TIERS, get_user_tier, logger
 from .database import (
@@ -266,6 +273,7 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bet_value = round(100 - 99 / multiplier - 0.01, 2)
     mult_str = f"{multiplier:.4f}".rstrip("0").rstrip(".") or "0"
     times = []
+    statuses = []   # v2.28.0 — capture HTTP status for shared verdict tiers
 
     for i in range(count):
         payload = {
@@ -281,8 +289,10 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
             r = session.post(f"{API_BASE}/bet/place", json=payload, timeout=(5, 15))
             elapsed = (_time.time() - t0) * 1000
             times.append(elapsed)
+            statuses.append(r.status_code)
         except Exception:
             times.append(-1)
+            statuses.append("ERR")
 
     session.close()
 
@@ -296,13 +306,24 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed = len(times) - len(valid)
     theoretical_bps = 1000 / avg if avg > 0 else 0
 
+    # v2.28.0 — shared with CLI's --benchmark verdict tiers.
+    sorted_valid = sorted(valid)
+    p50 = percentile(sorted_valid, 0.50)
+    p99 = percentile(sorted_valid, 0.99)
+    _colour, verdict = benchmark_verdict(
+        p50=p50, p99=p99, statuses=statuses, sample_count=count,
+    )
+
     lines = [
         f"*Benchmark Results ({count} bets)*\n",
         f"  Avg: `{avg:.0f}ms`",
+        f"  p50: `{p50:.0f}ms`",
+        f"  p99: `{p99:.0f}ms`",
         f"  Min: `{mn:.0f}ms`",
         f"  Max: `{mx:.0f}ms`",
         f"  Failed: `{failed}`\n",
         f"  Max theoretical: `{theoretical_bps:.1f}` bets/sec",
+        f"\n_{verdict}_",
         f"\n*Individual times:*",
         f"`{'  '.join(f'{t:.0f}ms' if t > 0 else 'FAIL' for t in times)}`",
     ]
@@ -528,14 +549,9 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         api_set = "Yes" if config.get("api_key") else "No"
         lines.append(f"API key: `{api_set}`")
         proxy = config.get("proxy")
+        # v2.28.0 — shared mask_proxy: strips userinfo + handles port-missing case.
         if proxy:
-            # Show proxy host only, hide credentials
-            try:
-                from urllib.parse import urlparse
-                p = urlparse(proxy)
-                lines.append(f"Proxy: `{p.scheme}://{p.hostname}:{p.port}`")
-            except Exception:
-                lines.append("Proxy: `set`")
+            lines.append(f"Proxy: `{mask_proxy(proxy)}`")
         else:
             lines.append("Proxy: `off`")
         pipeline = int(config.get("pipeline") or 1)
@@ -567,18 +583,23 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if param == "currency":
             config["currency"] = value.lower()
         elif param == "proxy":
-            if value.lower() in ("off", "none", "direct", "0"):
-                config["proxy"] = None
-                await update.message.reply_text("Proxy disabled — using direct connection.", parse_mode="Markdown")
-                save_user_config(user_id, config)
-                return
-            if not (value.startswith("http://") or value.startswith("https://") or value.startswith("socks5://")):
+            # v2.28.0 — shared validate_proxy: broader off-value vocabulary,
+            # same scheme rules as CLI. Zero user-visible behaviour change on
+            # the happy path; raises ValueError on unknown schemes.
+            try:
+                normalized = validate_proxy(value)
+            except ValueError:
                 await update.message.reply_text(
                     "Proxy format: `http://user:pass@ip:port` or `socks5://user:pass@ip:port`\n"
                     "Use `/set proxy off` to disable.",
                     parse_mode="Markdown")
                 return
-            config["proxy"] = value
+            config["proxy"] = normalized
+            if normalized is None:
+                await update.message.reply_text(
+                    "Proxy disabled — using direct connection.", parse_mode="Markdown")
+                save_user_config(user_id, config)
+                return
         elif param in ("streakdelay_loss", "sdloss"):
             if value.lower() == "off":
                 config["streak_delay_loss"] = None
