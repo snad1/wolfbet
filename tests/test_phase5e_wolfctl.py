@@ -151,6 +151,26 @@ def test_wolfctl_help_alias():
     assert "wolfctl —" in proc.stdout or "wolfctl" in proc.stdout
 
 
+def test_update_uses_autostash():
+    """cmd_update must pass --autostash so a dirty tree doesn't abort the pull."""
+    src = _read(_WOLFCTL)
+    assert "pull --ff-only --autostash" in src
+
+
+def test_update_prints_status_on_dirty_tree():
+    """User must see WHAT got autostashed before the pull runs."""
+    src = _read(_WOLFCTL)
+    assert "Local changes detected" in src
+    assert "git status --porcelain" in src
+
+
+def test_update_prints_recovery_hint_on_failure():
+    """On pull failure, tell the user how to recover their stashed changes."""
+    src = _read(_WOLFCTL)
+    assert "git stash list" in src
+    assert "git stash pop" in src
+
+
 def test_wolfctl_version_alias():
     """--version / -v / version all route to cmd_version.
 

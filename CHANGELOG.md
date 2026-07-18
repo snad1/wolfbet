@@ -1,5 +1,29 @@
 # Changelog
 
+## CLI v2.25.2 — `wolfctl update` survives a dirty working tree (2026-07-18)
+
+**Fixes real-world blocker** on the production server:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+        install.sh
+Please commit your changes or stash them before you merge.
+```
+
+`cmd_update` at `wolfctl:262` was running a bare `git pull --ff-only`. Any tracked-file local change on a file touched by the incoming commit aborted the update — leaving the user stuck without a wrapper-level recovery path.
+
+Fix: extend `cmd_update`'s git-pull block:
+
+- **Dirty-tree preflight** — `git diff --quiet` + `git diff --cached --quiet` detects local changes. When dirty, prints `"Local changes detected — autostashing before pull:"` followed by `git status --porcelain` so the user sees exactly what will be stashed.
+- **`git pull --ff-only --autostash`** — git ≥ 2.9 stashes local changes, does the pull, then pops the stash. Pop-conflicts leave the stash in place for manual recovery.
+- **Failure hint** — on pull failure the wrapper now prints `Recover with: git stash list  |  git stash pop` so the user knows exactly where their edits went.
+
+Zero destructive fallbacks (no `git reset --hard`, no `git checkout --`). A wrapper must never silently discard user work.
+
+**Tests**: three new grep-based checks in `tests/test_phase5e_wolfctl.py` guarantee the `--autostash` flag, porcelain print block, and recovery hint don't silently regress. 279 total passing.
+
+Zero Python code changes. `VERSION` bumped `2.25.1` → `2.25.2`. `wolfctl` header stays at v3.3 (same public surface — one-line bug fix to one function).
+
 ## CLI v2.25.1 — wolfctl refresh (subcommand parity + install.sh drift fix) (2026-07-18)
 
 **Fixes real-world discoverability gap** — `wolfctl --help` was still labelled v3.1 on production servers and didn't expose any of the flags shipped after v2.19 (`--analytics`, `--backtest`, `--export`, `--pipeline`, `--config-show`, `--config-set`, `--version`, `--last-bets`, `--preset`). Two drift sources fixed at once:

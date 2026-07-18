@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.25.1 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.25.2 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -528,6 +528,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **Phase 5b (v2.24.0)** — Pipelined betting: `--pipeline N` (Flat-only, ThreadPoolExecutor + Semaphore, guardrail forces depth 1 for non-Flat / auto-bet). Last outstanding CLI ↔ TG parity gap closed.
 - **v2.25.0** — Auto-bet max-nonce recovery (seed rotation, circuit breaker, same-CLI-session guarantee); non-interactive config surface (`--config-show`, `--config-set`); rich `--help` with grouped examples; monitor stats (ROI %, API p50/p99 unconditional, Efficiency + Cycle unconditional, `/auto/start` quota with low-warning colour).
 - **v2.25.1** — `wolfctl` refresh (v3.3) — feature parity with the Python CLI: nine new subcommands (`config-show`, `config-set`, `analytics`, `backtest`, `export`, `last-bets`, `preset`, `pipeline`, `version`). `install.sh` no longer inlines a stale v3.1 heredoc; installs the repo `wolfctl` directly. One source of truth.
+- **v2.25.2** — `wolfctl update` now uses `git pull --ff-only --autostash` with a dirty-tree preflight, so local changes are safely stashed rather than blocking the pull. On failure, prints the exact recovery command (`git stash list  |  git stash pop`). Zero destructive fallbacks.
 
 ---
 

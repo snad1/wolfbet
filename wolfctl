@@ -263,7 +263,19 @@ cmd_update() {
     # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "Pulling latest from git…"
-        git pull --ff-only || { echo "Git pull failed. Resolve manually."; exit 1; }
+        # Detect a dirty tracked-file tree so the user sees WHAT got autostashed.
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "Local changes detected — autostashing before pull:"
+            git status --porcelain
+        fi
+        # --autostash (git ≥ 2.9) stashes local changes, pulls, then pops.
+        # Pop-conflicts leave the stash in place for manual recovery.
+        if ! git pull --ff-only --autostash; then
+            echo "Git pull failed. Resolve manually."
+            echo "  If you had local changes, they were stashed."
+            echo "  Recover with: git stash list  |  git stash pop"
+            exit 1
+        fi
     fi
     echo "Updating bot files…"
     if [ ! -f "wolfbet.py" ]; then
