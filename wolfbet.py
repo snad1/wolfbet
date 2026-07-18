@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.26.1  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.27.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib, csv  # noqa: E401
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib, csv, queue  # noqa: E401
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from collections import deque
@@ -306,6 +306,8 @@ _TWEAK_ALIAS = {
     "recdelay":    "recurring_delay",
     "recurringdelay": "recurring_delay",
     "purgedays":   "purge_days",
+    "dbmode":      "db_write_mode",
+    "dbwritemode": "db_write_mode",
 }
 _TWEAK_PARAMS = {
     "bet_delay", "basebet_pct",
@@ -316,6 +318,7 @@ _TWEAK_PARAMS = {
     "base_bet", "multiplier", "loss_mult", "win_mult",
     "pipeline_depth",
     "proxy", "purge_days",
+    "db_write_mode",
 }
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
@@ -437,6 +440,14 @@ def _apply_mutation(changes: dict) -> list:
             except (TypeError, ValueError):
                 raise ValueError(f"purge_days must be an integer 1-30, got {v!r}")
         msgs.append(f"Purge days: {state.purge_days}")
+
+    # DB write mode — "async" (batched, tuned) or "sync" (legacy, per-bet fsync).
+    if "db_write_mode" in changes:
+        v = str(changes["db_write_mode"]).strip().lower()
+        if v not in ("async", "sync"):
+            raise ValueError(f"db_write_mode must be 'async' or 'sync', got {v!r}")
+        state.db_write_mode = v
+        msgs.append(f"DB write mode: {state.db_write_mode}")
 
     # Pipeline depth — instant int (dispatcher re-evaluates on next iteration).
     # Guardrail is enforced by _effective_pipeline_depth(); we just clamp to [1, 8].
@@ -567,7 +578,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.26.1"
+VERSION      = "2.27.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -605,6 +616,7 @@ _CONFIG_KEYS = [
     "profit_increment", "profit_threshold",
     "pipeline_depth", "recurring_delay",
     "proxy", "purge_days",
+    "db_write_mode",
 ]
 
 def _mask_key(key: str) -> str:
@@ -669,6 +681,8 @@ _PRESET_KEYS = [
     "recurring_delay",
     # v2.26.0 — proxy + retention (TG↔CLI parity):
     "proxy", "purge_days",
+    # v2.27.0 — async bet writer mode:
+    "db_write_mode",
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -947,6 +961,14 @@ class BotState:
         self.proxy            : Optional[str] = None
         # Bet-row retention window in days (used by hourly cleanup thread + --cleanup).
         self.purge_days       : int = 3
+
+        # ── v2.27.0 — bet DB write mode ──
+        # "async" (default): bet rows batched via background writer thread —
+        # 30-40 ms per-bet overhead savings via persistent connection +
+        # PRAGMA synchronous=NORMAL + batched INSERTs.
+        # "sync": legacy path — fresh connection + fsync per bet (safe but slow).
+        # Fallback to sync on queue overflow preserves nothing-lost semantics.
+        self.db_write_mode    : str = "async"
 
         # ── Phase 5c — auto-bet recovery (max nonce / session expired) ──
         # Tag from _classify_auto_stop_reason: "max_nonce", "expired", or "".
@@ -1664,8 +1686,8 @@ def betting_loop():
             )
             state.last_error = ""
 
-        # persist to DB (non-blocking)
-        _db_save_bet(bet_data, raw_profit, new_balance)
+        # persist to DB (async writer thread when db_write_mode=async)
+        _db_save_bet_dispatch(bet_data, raw_profit, new_balance)
 
         # ── WolfRider: switch over/under after bet ──
         if state.strategy_key == "6":
@@ -1884,7 +1906,7 @@ def _apply_outcome_locked(envelope: dict) -> None:
         )
         state.last_error = ""
 
-    _db_save_bet(bet_data, raw_profit, new_balance)
+    _db_save_bet_dispatch(bet_data, raw_profit, new_balance)
 
     # Rule-Based never reaches here (guardrail forces serial), but keep the
     # milestone hook for parity with the serial loop.
@@ -2346,6 +2368,173 @@ def _db_save_bet(bet_data: dict, profit: float, balance: float):
     except Exception as e:
         logger.error("DB save_bet failed: %s", e)
 
+
+# ══════════════════════════════════════════════════════════
+#  v2.27.0 — Async bet writer (kill the per-bet CLI overhead)
+# ══════════════════════════════════════════════════════════
+# Bounded queue prevents unbounded memory growth if writer stalls.
+_bet_write_queue: queue.Queue = queue.Queue(maxsize=1000)
+_bet_writer_thread: Optional[threading.Thread] = None
+_bet_writer_conn: Optional[sqlite3.Connection] = None
+_bet_writer_stop = threading.Event()
+_bet_writer_stats = {
+    "queued": 0,
+    "flushed": 0,
+    "batches": 0,
+    "fallback_sync": 0,
+    "queue_high_watermark": 0,
+}
+
+_BET_WRITER_BATCH_SIZE   = 32
+_BET_WRITER_BATCH_WINDOW = 0.1   # seconds
+_BET_WRITER_INSERT_SQL   = (
+    "INSERT INTO bets "
+    "(session_id, timestamp, amount, multiplier, rule, "
+    " bet_value, result_value, state, profit, balance_after) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?)"
+)
+
+
+def _open_bet_writer_conn():
+    """Persistent, tuned SQLite connection for the async writer thread.
+
+    Applied PRAGMAs (writer-only — never touches read connections):
+    - synchronous=NORMAL: safe under WAL; skips per-commit fsync (30-40 ms saved).
+    - busy_timeout=5000: WAL + concurrent readers can race; be patient.
+    - cache_size=-32000: 32 MB in-memory cache.
+    - temp_store=MEMORY: temp tables in RAM.
+    """
+    conn = db_connect(DB_PATH)  # WAL journal_mode already set by shared/core/database.
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA cache_size = -32000")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    return conn
+
+
+def _bet_writer_worker():
+    """Drain _bet_write_queue in batches; one commit per batch."""
+    global _bet_writer_conn
+    try:
+        _bet_writer_conn = _open_bet_writer_conn()
+    except Exception as e:
+        logger.error("bet writer failed to open DB (%s) — falling back to sync mode", e)
+        return
+    while not (_bet_writer_stop.is_set() and _bet_write_queue.empty()):
+        batch = []
+        deadline = time.monotonic() + _BET_WRITER_BATCH_WINDOW
+        while len(batch) < _BET_WRITER_BATCH_SIZE:
+            timeout = max(0.0, deadline - time.monotonic())
+            if timeout == 0:
+                break
+            try:
+                batch.append(_bet_write_queue.get(timeout=timeout))
+            except queue.Empty:
+                break
+        if not batch:
+            if _bet_writer_stop.is_set() and _bet_write_queue.empty():
+                break
+            continue
+        try:
+            _bet_writer_conn.executemany(_BET_WRITER_INSERT_SQL, batch)
+            _bet_writer_conn.commit()
+            _bet_writer_stats["batches"] += 1
+            _bet_writer_stats["flushed"] += len(batch)
+        except Exception as e:
+            logger.warning("bet writer batch failed (%d rows dropped): %s",
+                           len(batch), e)
+            try:
+                _bet_writer_conn.close()
+            except Exception:
+                pass
+            try:
+                _bet_writer_conn = _open_bet_writer_conn()
+            except Exception as reopen_err:
+                logger.error("bet writer reopen failed: %s — exiting worker",
+                             reopen_err)
+                return
+    # Final close on exit.
+    if _bet_writer_conn is not None:
+        try:
+            _bet_writer_conn.close()
+        except Exception:
+            pass
+        _bet_writer_conn = None
+
+
+def _start_bet_writer():
+    """Spawn the writer thread if not already running. Idempotent."""
+    global _bet_writer_thread
+    if _bet_writer_thread is not None and _bet_writer_thread.is_alive():
+        return
+    _bet_writer_stop.clear()
+    _bet_writer_thread = threading.Thread(
+        target=_bet_writer_worker, daemon=True, name="BetWriter",
+    )
+    _bet_writer_thread.start()
+
+
+def _stop_bet_writer(timeout: float = 5.0):
+    """Signal writer to drain remaining queue, then join. Bounded wait."""
+    global _bet_writer_thread
+    _bet_writer_stop.set()
+    if _bet_writer_thread is not None and _bet_writer_thread.is_alive():
+        _bet_writer_thread.join(timeout=timeout)
+        if _bet_writer_thread.is_alive():
+            logger.warning(
+                "bet writer did not drain within %.1fs; %d rows may be lost",
+                timeout, _bet_write_queue.qsize(),
+            )
+    _bet_writer_thread = None
+
+
+def _make_bet_row(bet_data: dict, profit: float, balance: float) -> tuple:
+    """Build the 10-tuple used by both sync and async INSERT paths."""
+    return (
+        state.session_id,
+        datetime.now().isoformat(),
+        float(bet_data.get("amount", 0)),
+        float(bet_data.get("multiplier", 0)),
+        state.rule,
+        float(bet_data.get("bet_value", 0)),
+        float(bet_data.get("result_value", 0)),
+        bet_data.get("state", ""),
+        profit,
+        balance,
+    )
+
+
+def _db_save_bet_async(bet_data: dict, profit: float, balance: float):
+    """Non-blocking bet-row enqueue for the writer thread.
+
+    Overflow safety: if the bounded queue is full, fall back to the sync
+    path so no bet is lost — the writer is stalled but data still lands.
+    """
+    row = _make_bet_row(bet_data, profit, balance)
+    try:
+        _bet_write_queue.put_nowait(row)
+        _bet_writer_stats["queued"] += 1
+        qs = _bet_write_queue.qsize()
+        if qs > _bet_writer_stats["queue_high_watermark"]:
+            _bet_writer_stats["queue_high_watermark"] = qs
+    except queue.Full:
+        _bet_writer_stats["fallback_sync"] += 1
+        _db_save_bet(bet_data, profit, balance)
+
+
+def _db_save_bet_dispatch(bet_data: dict, profit: float, balance: float):
+    """One-line entry point used by both betting_loop and pipeline outcome.
+
+    Routes to the async writer when state.db_write_mode == "async"; falls
+    back to the legacy sync path otherwise. Preserves the existing
+    call-site signature so no other code needs to change.
+    """
+    if state.db_write_mode == "async" and _bet_writer_thread is not None:
+        _db_save_bet_async(bet_data, profit, balance)
+    else:
+        _db_save_bet(bet_data, profit, balance)
+
+
 def _db_save_session():
     try:
         conn = _db_conn()
@@ -2459,6 +2648,10 @@ def _save_state_file():
             "theoretical_max_bps": _compute_theoretical_max_bps(),
             "pipeline_effective":  state.pipeline_effective,
             "pipeline_dispatched": state.pipeline_dispatched,
+            # v2.27.0 — async bet-writer visibility (surfaced by --diagnose)
+            "db_write_mode":       state.db_write_mode,
+            "db_writer_stats":     dict(_bet_writer_stats),
+            "db_writer_queue":     _bet_write_queue.qsize(),
             "rule": state.rule,
             "bet_value": state.bet_value,
             "bet_delay": state.bet_delay,
@@ -4567,6 +4760,7 @@ _CONFIG_SHOW_FIELDS = [
     ("pipeline_depth",        "Pipelined betting depth (1 = serial, Flat-only)"),
     ("proxy",                 "HTTP/HTTPS/SOCKS5 proxy URL (credentials masked)"),
     ("purge_days",            "Bet-row retention window in days (1-30)"),
+    ("db_write_mode",         "Bet DB writer: async (default, batched) or sync (legacy, per-bet fsync)"),
     ("custom_rules_text",     "Rule-Based custom rules (JSON per line)"),
 ]
 
@@ -4867,6 +5061,23 @@ def cmd_diagnose():
         c = "yellow" if int(auto_rem) <= 3 else "cyan"
         lines.append(f"[dim]/auto/start quota:[/] [{c}]{auto_rem}/20[/]")
 
+    # v2.27.0 — DB writer visibility
+    db_mode = d.get("db_write_mode") or "sync"
+    dbw = d.get("db_writer_stats") or {}
+    dbw_q  = int(d.get("db_writer_queue") or 0)
+    dbw_fb = int(dbw.get("fallback_sync") or 0)
+    dbw_ba = int(dbw.get("batches") or 0)
+    dbw_fl = int(dbw.get("flushed") or 0)
+    dbw_hwm = int(dbw.get("queue_high_watermark") or 0)
+    if db_mode == "async":
+        lines.append(
+            f"[dim]DB writer:[/] mode=[cyan]async[/]  queue=[cyan]{dbw_q}/1000[/]  "
+            f"batches=[cyan]{dbw_ba}[/]  flushed=[cyan]{dbw_fl}[/]  "
+            f"fallback_sync=[{'red' if dbw_fb else 'cyan'}]{dbw_fb}[/]  hwm=[cyan]{dbw_hwm}[/]"
+        )
+    else:
+        lines.append(f"[dim]DB writer:[/] mode=[yellow]sync[/] (legacy — per-bet fsync)")
+
     # Deterministic top blocker
     blockers = [
         ("Network / API latency",  api_p50),
@@ -4884,8 +5095,15 @@ def cmd_diagnose():
         advice.append(f"• You have bet_delay={bet_delay:.3f}s. Drop it with "
                       "[cyan]wolfctl config-set delay=0[/] for max throughput.")
     elif top_name == "CLI overhead" and overhead > 30:
-        advice.append("• CLI overhead is high. Check disk I/O (DB writes) "
-                      "and CPU load on the daemon host.")
+        if db_mode == "sync":
+            advice.append("• CLI overhead high AND db_write_mode=sync — flip to async: "
+                          "[cyan]wolfctl config-set dbmode=async && wolfctl restart[/]")
+        else:
+            advice.append("• CLI overhead is high. Check disk I/O (DB writes) "
+                          "and CPU load on the daemon host.")
+    if dbw_fb > 0:
+        advice.append(f"• DB writer queue overflowed {dbw_fb} times "
+                      "(async writer is saturating — check disk perf).")
     elif int(rate_rem or 999) <= 3:
         advice.append("• Rate-limit headroom is low. WolfBet may throttle soon.")
     if pipe_eff == 1 and strategy in ("Flat Bet",) and delay_ms == 0:
@@ -5769,6 +5987,8 @@ def main():
                 api_auto_stop()
             except Exception:
                 pass
+        # v2.27.0 — drain the async bet-writer so no queued rows are lost.
+        _stop_bet_writer(timeout=5.0)
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -5806,6 +6026,11 @@ def main():
     except Exception as _e:
         logger.warning("startup retention purge failed: %s", _e)
 
+    # ── Async bet-writer thread (v2.27.0 — off the hot path) ──
+    if state.db_write_mode == "async":
+        _start_bet_writer()
+        logger.info("BET WRITER started (async, batch=%d)", _BET_WRITER_BATCH_SIZE)
+
     # ── Betting thread ────────────────────────────────────
     t_bet = threading.Thread(target=_run_betting_loop, daemon=True, name="BettingLoop")
     t_bet.start()
@@ -5838,6 +6063,7 @@ def main():
         except KeyboardInterrupt:
             pass
         state.running = False
+        _stop_bet_writer(timeout=5.0)   # v2.27.0 — drain async writer
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -5896,6 +6122,7 @@ def main():
         sys.stdout.write("\033c")  # full terminal reset (RIS)
         sys.stdout.flush()
 
+    _stop_bet_writer(timeout=5.0)   # v2.27.0 — drain async writer
     _db_save_session()
     _cleanup_state_file()
     _print_summary()

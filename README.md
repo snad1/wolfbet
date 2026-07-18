@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.26.1 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.27.0 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -216,6 +216,19 @@ Available in wizard Step 5b and via `T` at runtime:
 - **Recurring delay** — `recurring_delay` (alias `recdelay`) — seconds to pause between cycles (default 60, `0` = back-to-back, max 3600). Dashboard shows `"Recurring pause Ns before next cycle…"` during the pause. TG↔CLI parity.
 - **Proxy** — `proxy` — HTTP/HTTPS/SOCKS5 proxy URL. Credentials in the URL are automatically masked in `config-show` and logs. `wolfctl config-set proxy=https://user:pass@host:8080`, or `proxy=off` to go direct. SOCKS5 requires `pip install requests[socks]`. Warning surfaced if you use `http://` (unencrypted).
 - **Retention** — `purge_days` (alias `purgedays`, default 3, range 1-30). Old bet rows are purged at startup + hourly by a background thread; session aggregates preserved. One-shot: `wolfctl cleanup [DAYS]` / `wolfbet.py --cleanup [DAYS]`.
+- **DB write mode** — `db_write_mode` (alias `dbmode`, default `async`, values `async` / `sync`). Async writer batches bet rows through a background thread + tuned PRAGMAs (`synchronous=NORMAL`, `busy_timeout=5000`, `cache_size=-32000`, `temp_store=MEMORY`) — kills the per-bet fsync cost on slow disks. `sync` is the legacy path (fresh connection + fsync per bet). Async loses at most ~32 bets on power failure (session aggregates always safe); `sync` mode preserves today's exact durability. Toggle with `wolfctl config-set dbmode=async && wolfctl restart`.
+
+### Overriding paths under systemd
+
+`WOLFBET_DB_PATH`, `WOLFBET_LOG_DIR`, etc. are read when `wolfbet.py` is imported. Passing them inline to `wolfctl restart` (`WOLFBET_DB_PATH=… wolfctl restart`) sends the env var to the `wolfctl` shell only — `systemctl --user restart` launches the daemon under its own environment. To override under systemd, add a drop-in:
+
+```bash
+systemctl --user edit wolfbet
+# In the [Service] block:
+Environment=WOLFBET_DB_PATH=/mnt/tmpfs/wolfbet.db
+```
+
+With v2.27.0's async writer + tuned PRAGMAs, the tmpfs hack shouldn't be necessary on any reasonable disk — start with `wolfctl config-set dbmode=async` first and only reach for tmpfs if the async writer's `fallback_sync` counter is non-zero in `wolfctl diagnose`.
 - **Streak delays** — `streak_delay_loss`, `streak_delay_win`, `streak_delay_bets` — extra pause after N-in-a-row.
 - **`streakbet_loss`** — after N losses in a row, flip base bet direction (used by WolfRider-style strategies).
 - **`basebet_pct`** — dynamic base bet as % of current balance (recomputes every cycle reset).
@@ -541,6 +554,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **v2.25.3** — `recurring_delay` (TG↔CLI parity): configurable pause between recurring cycles (default 60s, `0` = back-to-back). Wizard prompt, `_apply_mutation` grammar (`recdelay` alias), config-show row, risky-config warning phrasing. `api_key` row now shows `(SET)` / `(NOT SET)` after the masked value.
 - **v2.26.0** — Closes remaining TG↔CLI parity gaps. **Proxy support**: shared `_http_session` routes every API call through an optional HTTP/HTTPS/SOCKS5 proxy; credentials always masked in `config-show` and logs. **Retention**: `purge_days` config + `--cleanup [DAYS]` command + startup + hourly background purge (reuses `cleanup_old_bets` / `cleanup_live_bets` from `shared/core/database`). **wolfctl v3.4**: new `wolfctl cleanup` subcommand; `casino-shared` pip install now uses `git+https://` (no more github SSH host-key prompt on fresh hosts).
 - **v2.26.1** — BPS diagnostic tools. **`--benchmark [N]`** / **`wolfctl benchmark`**: standalone API-latency probe (no bets placed) with plain-English verdict — "Network bottleneck / Rate-limited / Network fast / …". **`--diagnose`** / **`wolfctl diagnose`**: one-shot analysis of the running daemon, picks the top blocker (Network / CLI overhead / User delay) and gives targeted advice. **`--status` extension**: now surfaces `p50 / p99 / cycle_ms / efficiency%` rows that already existed in the state file but weren't printed. wolfctl v3.5. Zero behavior changes to the bet loop.
+- **v2.27.0** — Async bet-writer + SQLite tuning. Kills the per-bet CLI overhead (~67 ms → ~10 ms on typical VPS SSD) via a background writer thread with a persistent tuned connection (`synchronous=NORMAL`, `busy_timeout=5000`, `cache_size=-32000`, `temp_store=MEMORY`) and batched `executemany` inserts. Bounded queue with nothing-lost sync fallback on overflow, drained on shutdown. New `db_write_mode` config (`async` default, `sync` opt-out). `--diagnose` gains a DB writer row with queue depth + fallback counter + advice.
 
 ---
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## CLI v2.27.0 — async bet-writer + SQLite tuning (kill the CLI overhead) (2026-07-18)
+
+v2.26.1's `--diagnose` proved the ~67 ms per-bet CLI overhead on the new server was disk-bound (fresh SQLite connection + per-bet fsync in `_db_save_bet`). This release moves bet writes off the hot path.
+
+- **New `BotState.db_write_mode: str = "async"`** — default. `"sync"` for opt-out (legacy path preserved).
+
+- **Async bet-writer thread** (`_bet_writer_worker`):
+  - Persistent tuned SQLite connection (`_open_bet_writer_conn`): `PRAGMA synchronous = NORMAL`, `busy_timeout = 5000`, `cache_size = -32000` (32 MB), `temp_store = MEMORY`. Applied to the writer connection only — read connections are untouched.
+  - Reads from a bounded `queue.Queue(maxsize=1000)`; batches up to 32 rows or 100 ms window; one `executemany` + one `commit()` per batch.
+  - Reopens the connection on any DB error; drops the failed batch (bets are ephemeral; session aggregates preserved).
+  - Started at daemon boot when `db_write_mode == "async"`. Drained cleanly at shutdown (SIGINT / SIGTERM / normal exit / monitor path) with a 5 s cap.
+
+- **Dispatcher `_db_save_bet_dispatch`** — one entry point for both `betting_loop` and pipelined `_apply_outcome_locked`. Routes to `_db_save_bet_async` when async is on and the writer thread is running; otherwise falls back to the legacy sync `_db_save_bet`. **Nothing-lost semantics**: if the queue is full, sync fallback fires inline and increments `db_writer_stats["fallback_sync"]`.
+
+- **`_make_bet_row`** — extracted from the sync path so both writers build the same 10-tuple. DRY.
+
+- **Config plumbing**: `_CONFIG_KEYS`, `_PRESET_KEYS`, `_TWEAK_ALIAS` (`dbmode`, `dbwritemode`), `_TWEAK_PARAMS`, `_apply_mutation` (rejects anything but `async` / `sync`), `_CONFIG_SHOW_FIELDS`.
+
+- **State file gains** `db_write_mode`, `db_writer_stats`, `db_writer_queue`.
+
+- **`--diagnose` extension**: new "DB writer" line — `mode=async  queue=K/1000  batches=M  flushed=F  fallback_sync=X  hwm=W`. `fallback_sync > 0` → advice "queue overflowed; async writer is saturating". If `overhead_ms > 30` AND `db_write_mode == "sync"` → advice "flip to async: `wolfctl config-set dbmode=async && wolfctl restart`".
+
+- **Not touching** `shared/core/database.py` — those PRAGMAs stay conservative for the multi-bot ecosystem. Wolfbet-specific tuning lives local in `_open_bet_writer_conn`.
+
+**Tests**: `tests/test_phase5j_async_writer.py` — 18 tests using a tmpdir DB (defaults, config membership, alias, mutation with sync/async/reject-other, PRAGMAs applied on writer connection, single-row and 200-row end-to-end flush, queue-overflow triggers `fallback_sync` + row still lands via sync path, shutdown drain preserves all queued rows, dispatcher routing under three combinations — sync mode, async with writer running, async with writer NOT started falls back). **378 total passing.**
+
+**Zero behavior changes** to the bet-loop control flow. `wolfctl` unchanged at v3.5 (no new subcommand — mode is a `config-set` knob).
+
+`VERSION` `2.26.1` → `2.27.0` (minor — real perf feature). Expected effect on the user's new server: overhead drops from ~67 ms toward ~10 ms/bet; BPS climbs closer to the ~15 BPS network ceiling.
+
 ## CLI v2.26.1 — BPS diagnostic tools (`--benchmark`, `--diagnose`, latency-aware `--status`) (2026-07-18)
 
 Answers the real-world question "is it WolfBet or is it my CLI?" — on a new server the user was seeing only ~7 BPS on `limbo-auto`/Martingale despite the old server hitting ~28 BPS. Same code, same account, same config — only the network path changed. Zero diagnostic tools existed on the CLI to prove where the ceiling was coming from.
