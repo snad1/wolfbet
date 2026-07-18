@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.24.0 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.25.0 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -108,6 +108,21 @@ wolfctl start-all       # Start both CLI + Telegram bots
 wolfctl stop-all        # Stop both bots
 wolfctl status-all      # Check all services
 ```
+
+### Non-interactive config
+
+Inspect or mutate the saved config without walking the wizard:
+
+```bash
+python3 wolfbet.py --config-show                        # dump current config as a table
+python3 wolfbet.py --config-set maxprofit=0.005 delay=0.35
+python3 wolfbet.py --config-set pipeline=3 recurring=on
+```
+
+- `--config-show` reads `~/.wolfbet_autobot.json`, renders a Rich table (Field / Value / Description), and prints file path + mode. API key is masked.
+- `--config-set KEY=VALUE [KEY=VALUE …]` mutates one or more fields, then persists via `save_config()`. Aliases are the same as the `T` hotkey grammar (`delay` → `bet_delay`, `maxprofit` → `max_profit`, `pipeline` → `pipeline_depth`, …).
+- **`api_key=…` is refused.** Credentials belong in the `WOLFBET_API_KEY` env var, not shell history.
+- Unknown fields and malformed pairs exit non-zero with a clear error.
 
 ### First real run
 
@@ -368,6 +383,8 @@ All configuration can be set via environment variables (recommended for servers)
 
 **Auto-bet variant** (`dice-auto` / `limbo-auto`): the strategy is translated into WolfBet's server-side auto-bet config (`/v2/{dice,limbo}/auto/start`). WolfBet executes each bet server-side — the CLI polls status. This is throttled by WolfBet's 20-per-window rate limit; the bot backs off automatically.
 
+**Auto-recovery** (v2.25.0): when WolfBet ends the server-side cycle with `Max nonce achieved` or `Session has ended`, the CLI **rotates the server seed** (`GET /v1/game/seed/refresh`), starts a fresh `/auto/start`, and **stays in the same CLI DB session** — one CLI session can span many WolfBet auto-cycles. Circuit breaker: three consecutive recovery failures → hard stop with a clear message.
+
 ---
 
 ## Rule-Based Strategy (Strategy 8)
@@ -415,6 +432,9 @@ All configuration can be set via environment variables (recommended for servers)
 | `--last-bets N` | Show last N bets from database |
 | `--session-bets ID` | Show bets for session `ID` |
 | `--list-presets` | List saved presets |
+| `--config-show` | Dump the currently saved config as a Rich table (API key masked) |
+| `--config-set KEY=VALUE [KEY=VALUE …]` | Non-interactive config mutation (same grammar as the `T` hotkey; `api_key` refused) |
+| `--version` | Print version and exit |
 
 **Data export**
 
@@ -490,6 +510,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **Phase 8 (v2.23.0)** — Lifetime `--analytics` command.
 - **v2.23.1** — README documentation refresh.
 - **Phase 5b (v2.24.0)** — Pipelined betting: `--pipeline N` (Flat-only, ThreadPoolExecutor + Semaphore, guardrail forces depth 1 for non-Flat / auto-bet). Last outstanding CLI ↔ TG parity gap closed.
+- **v2.25.0** — Auto-bet max-nonce recovery (seed rotation, circuit breaker, same-CLI-session guarantee); non-interactive config surface (`--config-show`, `--config-set`); rich `--help` with grouped examples; monitor stats (ROI %, API p50/p99 unconditional, Efficiency + Cycle unconditional, `/auto/start` quota with low-warning colour).
 
 ---
 

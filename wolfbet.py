@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.24.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.25.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -452,6 +452,15 @@ def _compute_api_p50() -> float:
     return ordered[len(ordered) // 2]
 
 
+def _compute_api_p99() -> float:
+    """99th percentile API time in ms from the last-500-sample window (0 when empty)."""
+    if not state._api_samples:
+        return 0.0
+    ordered = sorted(state._api_samples)
+    idx = max(0, min(len(ordered) - 1, int(0.99 * len(ordered))))
+    return ordered[idx]
+
+
 def _compute_on_target_pct() -> Optional[float]:
     """Fraction of bets whose API ≤ bet_delay*1000; None when delay disabled / no samples."""
     if state.bet_delay <= 0 or state._api_ms_count == 0:
@@ -501,7 +510,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.24.0"
+VERSION      = "2.25.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -861,6 +870,13 @@ class BotState:
         # Recurring: restart session after non-loss, non-insufficient-balance stop with profit≥0
         self.recurring        : bool = False
 
+        # ── Phase 5c — auto-bet recovery (max nonce / session expired) ──
+        # Tag from _classify_auto_stop_reason: "max_nonce", "expired", or "".
+        # Signals the loop to call _recover_expired_session (seed rotation)
+        # instead of a bare api_auto_start.
+        self.last_stop_reason           : str = ""
+        self.consecutive_recovery_fails : int = 0
+
         # ── Phase 5b — pipelined betting (Flat-only) ──
         # Requested depth (config/preset/CLI); 1 = serial (default, unchanged behavior).
         self.pipeline_depth      : int = 1
@@ -1033,6 +1049,8 @@ def api_auto_start() -> bool:
                 if uuid:
                     with state.lock:
                         state._auto_uuid = uuid
+                        state.last_stop_reason = ""
+                        state.consecutive_recovery_fails = 0
                     logger.info("Auto-bet started, uuid=%s (remaining=%s)",
                                 uuid, state._auto_start_remaining)
                     return True
@@ -1046,9 +1064,14 @@ def api_auto_start() -> bool:
                                delay, attempt + 1, len(backoffs))
                 time.sleep(delay)
                 continue
+            body = (r.text or "")[:400]
+            classified = _classify_auto_stop_reason(body)
             with state.lock:
+                if classified:
+                    state.last_stop_reason = classified
                 state.last_error = f"Auto-bet start failed: HTTP {r.status_code}"
-            logger.error("auto/start HTTP %d: %s", r.status_code, r.text[:200])
+            logger.error("auto/start HTTP %d (classified=%s): %s",
+                         r.status_code, classified or "none", body)
             return False
         except requests.exceptions.RequestException as e:
             if attempt < len(backoffs):
@@ -1095,12 +1118,51 @@ def _fmt_auto_stop_reason(sr) -> str:
     return str(sr)
 
 
+def _classify_auto_stop_reason(text) -> str:
+    """Classify a WolfBet auto-bet error / stopReason string.
+
+    Returns "max_nonce" when the server-seed nonce is exhausted (recovery
+    requires rotating the seed), "expired" when the auto-bet UUID / session
+    is dead (recovery requires a new /auto/start), or "" for any other
+    reason (server-side max_profit / max_loss / max_bets — those are
+    terminal for the WolfBet cycle but the CLI keeps its own session).
+    """
+    if not text:
+        return ""
+    s = str(text).lower()
+    if "nonce" in s:
+        return "max_nonce"
+    if "session" in s or "expired" in s or "not exists" in s or "betsession" in s:
+        return "expired"
+    return ""
+
+
 def _recover_expired_session() -> bool:
-    """Recover from 'Session has ended' — rotate seed, stop dead UUID, start new."""
-    logger.warning("Auto-bet session expired — rotating seed + restarting")
+    """Recover from 'Session has ended' / 'Max nonce achieved'.
+
+    Rotates the server seed, best-effort stops the dead UUID, respects the
+    current rate-limit backoff, then starts a fresh auto-bet cycle. Does
+    NOT touch state.session_id or DB rows — the CLI session identity is
+    preserved across many WolfBet server-side auto-cycles.
+    """
+    reason = state.last_stop_reason or "expired"
+    logger.warning("Auto-bet recovery: %s — rotating seed + restarting", reason)
+    with state.lock:
+        state.status = f"Recovering from {reason} — rotating server seed…"
     _rotate_server_seed()
     api_auto_stop()
-    return api_auto_start()
+    settle = max(2.0, state.rate_backoff)
+    time.sleep(settle)
+    ok = api_auto_start()
+    if ok:
+        with state.lock:
+            state.last_stop_reason = ""
+            state.consecutive_recovery_fails = 0
+            state.status = "Seed rotated — auto-cycle restarted"
+    else:
+        with state.lock:
+            state.consecutive_recovery_fails += 1
+    return ok
 
 
 def api_place_bet(amount: float) -> Optional[dict]:
@@ -1127,26 +1189,39 @@ def api_place_bet(amount: float) -> Optional[dict]:
                         state.last_error = "Insufficient balance"
                         state._insufficient_balance = True
                     return None
-                # Auto-bet UUID expired — clear it so next loop iteration will restart.
-                if is_auto_game(state.game) and ("session" in err_lower or "expired" in err_lower or "not exists" in err_lower):
-                    logger.warning("AUTO-BET SESSION EXPIRED: %s", err_msg[:120])
-                    with state.lock:
-                        state._auto_uuid = None
-                        state.last_error = "Auto-bet session expired — restarting…"
-                    return None
+                # Auto-bet UUID expired / server-seed exhausted — clear UUID so
+                # next loop iteration recovers (seed rotation if last_stop_reason set).
+                if is_auto_game(state.game):
+                    classified = _classify_auto_stop_reason(err_msg)
+                    if classified:
+                        logger.warning("AUTO-BET %s: %s", classified.upper(), err_msg[:120])
+                        with state.lock:
+                            state._auto_uuid = None
+                            state.last_stop_reason = classified
+                            state.last_error = (
+                                "Max nonce achieved — rotating server seed…"
+                                if classified == "max_nonce"
+                                else "Auto-bet session expired — restarting…"
+                            )
+                        return None
                 with state.lock:
                     state.last_error = f"API error: {err_msg[:120]}"
                 return None
-            # Auto-bet: server may report a stop reason inline (max_profit/max_loss/etc.)
+            # Auto-bet: server may report a stop reason inline (max_profit/max_loss/max_nonce/etc.)
             if is_auto_game(state.game):
                 stop_reason = data.get("stopReason") or data.get("stop_reason")
                 if stop_reason:
                     reason_str = _fmt_auto_stop_reason(stop_reason)
-                    logger.info("AUTO-BET STOP from server: %s", reason_str)
+                    classified = _classify_auto_stop_reason(reason_str)
+                    logger.info("AUTO-BET STOP from server: %s (classified=%s)",
+                                reason_str, classified or "terminal")
                     with state.lock:
                         state._auto_uuid = None
+                        if classified:
+                            state.last_stop_reason = classified
                         state.last_error = f"WolfBet auto-stop: {reason_str}"
-                    # Let caller record this bet; loop's should_stop or next auto_start decides continuation.
+                    # Let caller record this bet; loop then either recovers (if classified)
+                    # or lets should_stop / user-side thresholds decide.
             logger.debug("BET OK  id=%s state=%s",
                          data.get("bet", {}).get("id"),
                          data.get("bet", {}).get("state"))
@@ -1164,12 +1239,18 @@ def api_place_bet(amount: float) -> Optional[dict]:
                 state.rate_backoff = max(2.0, delay)
                 state.last_error   = f"Rate limit 429 — retrying in {delay:.0f}s…"
         elif r.status_code == 400 and is_auto_game(state.game):
-            # UUID expired / invalid — clear it so next loop iteration restarts.
+            # UUID expired / seed exhausted — classify body so loop recovers correctly.
             body = r.text[:200]
-            logger.warning("AUTO-BET 400 (likely UUID expired): %s", body)
+            classified = _classify_auto_stop_reason(body) or "expired"
+            logger.warning("AUTO-BET 400 (%s): %s", classified, body)
             with state.lock:
                 state._auto_uuid = None
-                state.last_error = "Auto-bet session expired — restarting…"
+                state.last_stop_reason = classified
+                state.last_error = (
+                    "Max nonce achieved — rotating server seed…"
+                    if classified == "max_nonce"
+                    else "Auto-bet session expired — restarting…"
+                )
         else:
             body = r.text[:500]
             logger.error("HTTP %d  response=%s  payload=%s",
@@ -1284,11 +1365,25 @@ def betting_loop():
         if state.basebet_pct > 0 and state.total_bets > 0 and state.total_bets % 10 == 0:
             _apply_basebet_pct()
 
-        # ── auto-bet: ensure we have a live UUID ──
+        # ── auto-bet: ensure we have a live UUID (with max-nonce recovery) ──
         if is_auto_game(state.game) and not state._auto_uuid:
-            state.status = "Starting auto-bet session…"
-            if not api_auto_start():
-                # api_auto_start set state.last_error; back off and retry
+            needs_recovery = state.last_stop_reason in ("max_nonce", "expired")
+            state.status = (
+                f"Recovering from {state.last_stop_reason} — rotating seed…"
+                if needs_recovery else "Starting auto-bet session…"
+            )
+            ok = _recover_expired_session() if needs_recovery else api_auto_start()
+            if not ok:
+                # Circuit breaker: 3 consecutive recovery failures → hard stop.
+                if state.consecutive_recovery_fails >= 3:
+                    reason = state.last_stop_reason or "unknown"
+                    logger.error("Recovery failed 3× — hard stop (reason=%s)", reason)
+                    with state.lock:
+                        state.running = False
+                        state.status  = f"STOPPED: Recovery failed after 3 attempts ({reason})"
+                        state.last_error = state.status
+                    _db_save_session()
+                    break
                 with state.lock:
                     state.consecutive_errors += 1
                     state.backoff_delay = min(state.backoff_delay * 2, state.max_backoff)
@@ -1333,9 +1428,10 @@ def betting_loop():
         raw_profit = float(bet_data.get("profit", 0))
 
         with state.lock:
-            # reset backoff on success
+            # reset backoff + recovery counter on any successful bet
             state.consecutive_errors = 0
             state.backoff_delay      = 1.0
+            state.consecutive_recovery_fails = 0
 
             state.total_bets     += 1
             state.wagered        += amount_used
@@ -1562,6 +1658,7 @@ def _apply_outcome_locked(envelope: dict) -> None:
     with state.lock:
         state.consecutive_errors = 0
         state.backoff_delay      = 1.0
+        state.consecutive_recovery_fails = 0
 
         state.total_bets     += 1
         state.wagered        += amount_used
@@ -2354,12 +2451,16 @@ def build_dashboard_screen() -> str:
     pc = "bold_green" if p >= 0 else "bold_red"
     wr = (state.wins / state.total_bets * 100) if state.total_bets else 0
     wr_c = "bold_green" if wr >= 50 else "bold_red"
+    # ROI % — profit / wagered × 100 (edge indicator).
+    roi = (state.profit / state.wagered * 100) if state.wagered > 0 else 0.0
+    roi_c = "dim" if state.wagered == 0 else ("bold_green" if roi >= 0 else "bold_red")
 
     add(f"{_COLORS['bg_blue']}{_BOLD}{_COLORS['white']} BAL {_RST} "
         f"{_a('bold_white', f'{state.current_balance:.8f} {state.currency.upper()}')}"
         f"  {_a('dim', 'PnL')} {_a(pc, f'{ps}{p:.8f}')}"
         f"  {_a('dim', 'WAG')} {_a('yellow', f'{state.wagered:.8f}')}"
-        f"  {_a('dim', 'WR')} {_a(wr_c, f'{wr:.1f}%')}")
+        f"  {_a('dim', 'WR')} {_a(wr_c, f'{wr:.1f}%')}"
+        f"  {_a('dim', 'ROI')} {_a(roi_c, f'{roi:+.2f}%')}")
 
     # ── Row 3: Stats line 1 ──────────────────────────
     cs = state.current_streak
@@ -2411,16 +2512,21 @@ def build_dashboard_screen() -> str:
           f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
     add(s5)
 
-    # ── Row 6: API timing + rate limit + (delay-gated) API stable + Efficiency + Cycle ──
+    # ── Row 6: API timing + rate limit + Efficiency + Cycle (always shown) ──
     api_avg = _compute_api_avg()
     api_p50 = _compute_api_p50()
+    api_p99 = _compute_api_p99()
     add(f" {_a('dim', 'API')} last {_a('cyan', f'{state._last_api_ms:.0f}ms')}"
+        f"  p50 {_a('cyan', f'{api_p50:.0f}ms')}"
+        f"  p99 {_a('cyan', f'{api_p99:.0f}ms')}"
         f"  avg {_a('cyan', f'{api_avg:.0f}ms')}"
         f"  peak {_a('cyan', f'{state.peak_api_ms:.0f}ms')}")
 
     rl_line = f" {_a('dim', 'Rate limit')} {_a('yellow', f'{state.rate_remaining}/{state.rate_limit}')} play"
     if state._auto_start_remaining is not None:
-        rl_line += f"  · {_a('yellow', f'{state._auto_start_remaining}/20')} start"
+        # /auto/start quota row (auto-bet only): warn when ≤3 of 20 left.
+        quota_c = "bold_red" if state._auto_start_remaining <= 3 else "yellow"
+        rl_line += f"  · {_a(quota_c, f'{state._auto_start_remaining}/20')} auto-start"
     add(rl_line)
 
     if state.bet_delay > 0:
@@ -2428,11 +2534,17 @@ def build_dashboard_screen() -> str:
         ot_str = f"{ot:.0f}%" if ot is not None else "n/a"
         add(f" {_a('dim', 'API stable')} {_a('cyan', f'{api_p50:.0f}ms')} median"
             f"  · {_a('cyan', ot_str)} on-target  (API ≤ bet delay)")
-        tmax = _compute_theoretical_max_bps()
-        eff = _compute_efficiency_pct()
-        eff_c = 'green' if eff >= 90 else 'yellow'
+
+    # Efficiency + Cycle: always visible (previously delay-gated only).
+    tmax = _compute_theoretical_max_bps()
+    eff = _compute_efficiency_pct()
+    eff_c = 'green' if eff >= 90 else 'yellow'
+    if state.bet_delay > 0:
         add(f" {_a('dim', 'Efficiency')} {_a(eff_c, f'{eff:.0f}%')}"
             f"  (max {_a('cyan', f'{tmax:.2f}')} bps @ delay={state.bet_delay:.3f}s)")
+    else:
+        add(f" {_a('dim', 'Efficiency')} {_a(eff_c, f'{eff:.0f}%')}"
+            f"  (raw throughput, no delay)")
 
     cycle_ms = state._cycle_ms
     bps_from_cycle = (1000.0 / cycle_ms) if cycle_ms > 0 else 0.0
@@ -4241,6 +4353,169 @@ def cmd_list_presets():
                       f"{mult}x  base={base:.8f}{extra}")
     console.print()
 
+
+# ══════════════════════════════════════════════════════════
+#  CONFIG CLI COMMANDS  (v2.25.0 — non-interactive config surface)
+# ══════════════════════════════════════════════════════════
+_CONFIG_SHOW_FIELDS = [
+    ("currency",              "Betting currency"),
+    ("game",                  "Game (dice / limbo / dice-auto / limbo-auto / …)"),
+    ("rule",                  "Dice rule (over / under)"),
+    ("multiplier",            "Payout multiplier"),
+    ("bet_value",             "Threshold value on the dice roll"),
+    ("strategy",              "Strategy name"),
+    ("strategy_key",          "Strategy key (1-8)"),
+    ("base_bet",              "Base bet amount"),
+    ("loss_mult",             "Loss multiplier (Martingale)"),
+    ("win_mult",              "Win multiplier (Paroli / Anti-M)"),
+    ("delay_martin_threshold","Delay Martingale N-loss threshold"),
+    ("bet_delay",             "Seconds between bets (0 = full speed)"),
+    ("max_profit",            "Stop when profit ≥ this"),
+    ("max_loss",              "Stop when loss ≥ this"),
+    ("max_bets",              "Stop after this many bets"),
+    ("max_wins",              "Stop after this many wins"),
+    ("stop_on_balance",       "Stop when balance floor reached"),
+    ("profit_increment",      "Bump base_bet by this at every profit milestone"),
+    ("profit_threshold",      "Profit interval between increments"),
+    ("recurring",             "Auto-restart cycle on non-loss stop"),
+    ("basebet_pct",           "Base bet as % of balance (0 = off)"),
+    ("streak_delay_loss",     "Extra pause after N losses in a row  (N:sec)"),
+    ("streak_delay_win",      "Extra pause after N wins in a row  (N:sec)"),
+    ("streak_delay_bets",     "Extra pause every N bets  (N:sec)"),
+    ("streakbet_loss",        "Bet reduction after N losses  (N:factor)"),
+    ("milestone_bets",        "Milestone every N bets (0 = off)"),
+    ("milestone_wins",        "Milestone every N wins (0 = off)"),
+    ("milestone_losses",      "Milestone every N losses (0 = off)"),
+    ("milestone_profit",      "Milestone every X profit crossed (0 = off)"),
+    ("pipeline_depth",        "Pipelined betting depth (1 = serial, Flat-only)"),
+    ("custom_rules_text",     "Rule-Based custom rules (JSON per line)"),
+]
+
+
+def _fmt_config_value(field: str, val) -> str:
+    """Render a config value for the --config-show table.
+
+    Streak tuples → "N:X"; None → "off"; long strings truncated.
+    """
+    if val is None:
+        return "[dim]off[/]"
+    if isinstance(val, bool):
+        return "[green]on[/]" if val else "[dim]off[/]"
+    if isinstance(val, tuple) and len(val) == 2:
+        n, x = val
+        return f"[dim]off[/]" if n == 0 else f"{n}:{x}"
+    if isinstance(val, float):
+        if field in ("base_bet", "bet_value", "max_profit", "max_loss",
+                     "stop_on_balance", "profit_increment", "profit_threshold",
+                     "milestone_profit"):
+            return f"{val:.8f}"
+        return f"{val:.4f}".rstrip("0").rstrip(".") or "0"
+    if isinstance(val, str) and len(val) > 60:
+        return val[:57] + "…"
+    return str(val)
+
+
+def cmd_config_show():
+    """Render the current saved config as a Rich table. No wizard, no side effects."""
+    from rich.table import Table   # local import — avoids top-level cost when unused
+    if not load_config():
+        console.print("[yellow]No config saved yet — run the wizard first.[/]")
+        console.print("[dim]  Try: python3 wolfbet.py --setup-only[/]")
+        sys.exit(1)
+    tbl = Table(title="WolfBet AutoBot — Current Config",
+                title_style="bold cyan", show_lines=False)
+    tbl.add_column("Field",       style="bold yellow", no_wrap=True)
+    tbl.add_column("Value",       style="cyan")
+    tbl.add_column("Description", style="dim")
+
+    tbl.add_row("api_key", f"[dim]{_mask_key(state.api_key)}[/]",
+                "API bearer token (set via WOLFBET_API_KEY env var)")
+    for field, desc in _CONFIG_SHOW_FIELDS:
+        try:
+            val = getattr(state, field)
+        except AttributeError:
+            continue
+        tbl.add_row(field, _fmt_config_value(field, val), desc)
+    console.print(tbl)
+    try:
+        st = os.stat(CONFIG_PATH)
+        mode = oct(st.st_mode & 0o777)
+        console.print(f"\n[dim]Config file:[/] [cyan]{CONFIG_PATH}[/]  "
+                      f"[dim]mode={mode}  size={st.st_size}B[/]")
+    except OSError:
+        pass
+    console.print(f"[dim]Tweak with:[/] "
+                  f"[cyan]python3 wolfbet.py --config-set KEY=VALUE …[/]")
+
+
+def _parse_config_set_pairs(pairs: list) -> dict:
+    """Parse ['max_profit=0.005', 'base_bet=0.0001'] → {'max_profit': '0.005', …}.
+
+    Applies _TWEAK_ALIAS. Raises ValueError on malformed input.
+    """
+    out = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"Malformed pair (expected KEY=VALUE): {pair!r}")
+        key, val = pair.split("=", 1)
+        key = key.strip().lower()
+        val = val.strip()
+        canonical = _TWEAK_ALIAS.get(key, key)
+        if canonical not in _TWEAK_PARAMS:
+            raise ValueError(
+                f"Unknown config field: {key!r}. Valid: {', '.join(sorted(_TWEAK_PARAMS))}"
+            )
+        out[canonical] = val
+    return out
+
+
+def cmd_config_set(pairs: list):
+    """Apply KEY=VALUE mutations to the saved config, then persist. No wizard."""
+    # Security: reject api_key — credentials belong in env vars, not shell history.
+    for p in pairs:
+        if p.lower().startswith("api_key="):
+            console.print("[red]Refusing to write api_key via --config-set.[/]")
+            console.print("[dim]  Set the WOLFBET_API_KEY environment variable instead "
+                          "(never in shell history / process args).[/]")
+            sys.exit(2)
+
+    try:
+        parsed = _parse_config_set_pairs(pairs)
+    except ValueError as e:
+        console.print(f"[red]Invalid --config-set argument:[/] {e}")
+        sys.exit(2)
+
+    if not load_config():
+        console.print("[yellow]No config saved yet — run the wizard first.[/]")
+        console.print("[dim]  Try: python3 wolfbet.py --setup-only[/]")
+        sys.exit(1)
+
+    # Snapshot old values BEFORE mutation for the diff print.
+    old = {}
+    for canonical in parsed:
+        try:
+            old[canonical] = getattr(state, canonical)
+        except AttributeError:
+            old[canonical] = None
+
+    try:
+        _apply_mutation(parsed)
+    except ValueError as e:
+        console.print(f"[red]Mutation failed:[/] {e}")
+        sys.exit(2)
+
+    save_config()
+    console.print(Rule("[bold cyan]Config updated[/]"))
+    for canonical in parsed:
+        new = getattr(state, canonical, None)
+        console.print(
+            f"  [yellow]{canonical}[/]: "
+            f"[dim]{_fmt_config_value(canonical, old[canonical])}[/]"
+            f"  →  [green]{_fmt_config_value(canonical, new)}[/]"
+        )
+    console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
+
+
 # ══════════════════════════════════════════════════════════
 #  DATABASE QUERY COMMANDS
 # ══════════════════════════════════════════════════════════
@@ -4809,8 +5084,65 @@ def _load_and_connect():
         console.print(f"[red]Connection failed{detail}. Check your settings and try again.[/]")
         sys.exit(1)
 
+_HELP_DESCRIPTION = """\
+WolfBet AutoBot — high-speed auto-betting engine.
+
+Runs a betting strategy against WolfBet, either as an interactive TUI
+dashboard or as an unattended daemon. Ships with a rich strategy engine,
+backtest / replay mode, lifetime analytics, session export, safety
+warnings, and a Telegram bot with feature parity.
+
+Docs: https://github.com/snad1/wolfbet
+"""
+
+_HELP_EPILOG = """\
+Examples:
+  Daemon control
+    wolfbet.py                        # interactive wizard + TUI
+    wolfbet.py --resume               # reuse saved config, show TUI
+    wolfbet.py --daemon               # background daemon (no TUI)
+    wolfbet.py --monitor              # attach live TUI to a running daemon
+    wolfbet.py --status               # snapshot of the running session
+    wolfbet.py --stop                 # gracefully stop the daemon
+
+  Config inspection (no wizard, read-only)
+    wolfbet.py --config-show          # dump saved config as a table
+    wolfbet.py --list-presets         # list named presets
+    wolfbet.py --stats                # last 20 sessions in detail
+    wolfbet.py --analytics            # lifetime aggregates + top 5
+
+  Config mutation (no wizard, one-shot)
+    wolfbet.py --config-set max_profit=0.005 base_bet=0.0001
+    wolfbet.py --config-set delay=0.35 pipeline=3
+    wolfbet.py --config-set recurring=on maxbets=1000
+    wolfbet.py --preset martingale-safe --daemon
+
+  Data
+    wolfbet.py --last-bets 20         # last 20 bets across sessions
+    wolfbet.py --session-bets 42      # every bet from session #42
+    wolfbet.py --export /tmp/out.csv  # export sessions (CSV or JSON by ext)
+
+  Backtest / replay (no API calls, no real balance risk)
+    wolfbet.py --backtest --simulate 10000 --seed 42
+    wolfbet.py --backtest --replay-session 42 --preset new-strategy
+
+  Concurrency
+    wolfbet.py --resume --pipeline 3  # 3 in-flight bets (Flat strategies only)
+
+Env vars: see README §Environment Variables (`WOLFBET_API_KEY`, `WOLFBET_DB_PATH`, …)
+Tweak grammar: see README §Runtime tweak grammar (22 params, same on `T` hotkey / TG /tweak / --config-set)
+"""
+
+
 def main():
-    parser = argparse.ArgumentParser(description="WolfBet AutoBot v" + VERSION)
+    parser = argparse.ArgumentParser(
+        prog="wolfbet.py",
+        description=_HELP_DESCRIPTION,
+        epilog=_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--version", action="version",
+                        version=f"WolfBet AutoBot v{VERSION}")
     parser.add_argument("--resume",  action="store_true", help="Skip wizard, reuse saved config")
     parser.add_argument("--daemon",  action="store_true", help="Run in background (no TUI, implies --resume)")
     parser.add_argument("--setup-only", action="store_true", help="Run wizard, save config, don't start betting")
@@ -4825,6 +5157,12 @@ def main():
                             "breakdowns by game and strategy. Complement to --stats.")
     group.add_argument("--last-bets", type=int, metavar="N", help="Show last N bets from database")
     group.add_argument("--session-bets", type=int, metavar="ID", help="Show bets for a specific session")
+    group.add_argument("--config-show", action="store_true",
+                       help="Dump the currently saved config as a table (no wizard, no side effects)")
+    group.add_argument("--config-set", nargs="+", metavar="KEY=VALUE",
+                       help="Non-interactive config mutation. Aliases match the T-hotkey grammar "
+                            "(delay=0.35, maxprofit=0.005, pipeline=3, …). api_key is refused — "
+                            "use the WOLFBET_API_KEY env var.")
     parser.add_argument("--preset", type=str, metavar="NAME",
                         help="Load a named preset and start (skips wizard)")
     parser.add_argument("--export", type=str, metavar="PATH",
@@ -4902,6 +5240,12 @@ def main():
         return
     if args.session_bets is not None:
         cmd_session_bets(args.session_bets)
+        return
+    if args.config_show:
+        cmd_config_show()
+        return
+    if args.config_set:
+        cmd_config_set(args.config_set)
         return
 
     # ── Setup-only mode ───────────────────────────────────

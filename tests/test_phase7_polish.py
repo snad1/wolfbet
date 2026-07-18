@@ -18,6 +18,7 @@ import wolfbet as wb  # noqa: E402
 
 def _reset_state():
     s = wb.state
+    s.game = "dice"                # not dice-auto (shared state across tests)
     s.strategy_key = "1"  # Flat by default
     s.multiplier = 2.0
     s.loss_mult = 2.0
@@ -32,6 +33,7 @@ def _reset_state():
     s.recurring = False
     s.basebet_pct = 0.0
     s.custom_rules = []
+    s.pipeline_depth = 1           # avoid stale pipeline warnings from prior tests
 
 
 # ── Clean config → no warnings ────────────────────────────

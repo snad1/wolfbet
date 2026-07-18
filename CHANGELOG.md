@@ -1,5 +1,34 @@
 # Changelog
 
+## CLI v2.25.0 — max-nonce recovery + non-interactive config + monitor stats (2026-07-18)
+
+**Fixes real-world dashboard spam** — when the WolfBet server-side auto-bet cycle hit `Max nonce achieved` (server seed nonce exhausted), the CLI kept re-calling `/auto/start` every 2 s with the same seed, one new dashboard row per attempt. Recovery function `_recover_expired_session` existed but was dead code — now wired in.
+
+- **Recovery (A)**:
+  - New `_classify_auto_stop_reason(text)` returns `"max_nonce"` / `"expired"` / `""`. Called at 3 sites: `api_place_bet` 200-body error branch, `api_place_bet` `stopReason` branch, `api_place_bet` 400 branch, plus `api_auto_start` non-200 body.
+  - `BotState.last_stop_reason` + `BotState.consecutive_recovery_fails` track recovery state.
+  - `betting_loop()` now routes to `_recover_expired_session` (rotate seed → auto-stop → wait → auto-start) when `last_stop_reason` is set; otherwise plain `api_auto_start` for fresh startup.
+  - **Circuit breaker**: 3 consecutive recovery failures → hard-stop with a clear message.
+  - **Same-CLI-session guarantee**: recovery never touches `session_id` / `total_bets` / DB rows. One CLI session spans many WolfBet server-side auto-cycles.
+  - Successful bet or `api_auto_start` clears `last_stop_reason` + `consecutive_recovery_fails`.
+
+- **Non-interactive config (C)**:
+  - New `--config-show` — dumps saved config as a Rich table (Field / Value / Description). API key masked. Reports file path + mode.
+  - New `--config-set KEY=VALUE [KEY=VALUE …]` — mutate one or more fields without the wizard. Uses `_TWEAK_ALIAS` (same grammar as `T` hotkey / TG `/tweak`). Prints diff-style OLD → NEW per field. Refuses `api_key=…` (env var only). Refuses unknown fields.
+  - New `--version` flag.
+
+- **Rich `--help` (B)**:
+  - `RawDescriptionHelpFormatter` + multi-line description + `Examples:` epilog grouped by task (Daemon control / Config inspection / Config mutation / Data / Backtest / Concurrency).
+
+- **Monitor stats (D)**:
+  - Row 1 (BAL / PnL / WAG / WR) now also shows **ROI %** (`profit / wagered × 100`), green if positive, red if negative.
+  - API row now includes **p50** + **p99** unconditionally (previously hidden unless `bet_delay > 0`).
+  - **Efficiency + Cycle** rows always shown (previously delay-gated).
+  - Rate-limit row's `/auto/start` quota renamed `K/20 auto-start`; turns bold-red at ≤ 3 (near the WolfBet 20-per-window cap).
+  - New `_compute_api_p99()`.
+
+- **Tests**: `tests/test_phase5c_recovery.py` (18 tests — classify matrix, recovery success/failure, circuit-breaker counter, same-session guarantee, dashboard smoke, p99); `tests/test_phase5d_config_cli.py` (21 tests — parse-kv + aliases + rejections, subprocess end-to-end for `--config-show`, `--config-set`, `--help`, `--version`, api-key refusal, unknown-key refusal, malformed-pair refusal). **260 total passing.**
+
 ## CLI v2.24.0 — pipelined betting (`--pipeline N`, Flat-only) (2026-07-17)
 
 - **New**: `--pipeline N` CLI flag + `pipeline_depth` state field. Concurrent in-flight bets via `ThreadPoolExecutor(N)` + `threading.Semaphore(N)`.
