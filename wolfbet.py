@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.23.1  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.24.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
 import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib, csv  # noqa: E401
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from collections import deque
 from typing import Optional, List
@@ -212,6 +213,17 @@ def _check_risky_config() -> list:
             f"basebet_pct = {state.basebet_pct*100:.1f}% of balance — "
             "the base bet grows quickly on winning streaks."
         )
+    # Pipeline on a strategy that can't safely pipeline
+    if state.pipeline_depth > 1 and sk != "1":
+        warnings.append(
+            f"pipeline_depth={state.pipeline_depth} but strategy is {state.strategy} — "
+            "will be forced to 1 (Flat-only). Set strategy 1 (Flat) to actually pipeline."
+        )
+    if state.pipeline_depth > 1 and is_auto_game(state.game):
+        warnings.append(
+            f"pipeline_depth={state.pipeline_depth} but game is {state.game} — "
+            "auto-bet is server-side single-flight, will be forced to 1."
+        )
     return warnings
 
 
@@ -272,6 +284,7 @@ _TWEAK_ALIAS = {
     "basebet":     "base_bet",
     "lossmult":    "loss_mult",
     "winmult":     "win_mult",
+    "pipeline":    "pipeline_depth",
 }
 _TWEAK_PARAMS = {
     "bet_delay", "basebet_pct",
@@ -280,6 +293,7 @@ _TWEAK_PARAMS = {
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "profit_increment", "profit_threshold", "recurring",
     "base_bet", "multiplier", "loss_mult", "win_mult",
+    "pipeline_depth",
 }
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
@@ -366,6 +380,19 @@ def _apply_mutation(changes: dict) -> list:
         v = str(changes["recurring"]).lower()
         state.recurring = v in ("on", "true", "yes", "y", "1")
         msgs.append(f"Recurring: {'on' if state.recurring else 'off'}")
+
+    # Pipeline depth — instant int (dispatcher re-evaluates on next iteration).
+    # Guardrail is enforced by _effective_pipeline_depth(); we just clamp to [1, 8].
+    if "pipeline_depth" in changes:
+        v = changes["pipeline_depth"]
+        if _is_off(v):
+            state.pipeline_depth = 1
+        else:
+            try:
+                state.pipeline_depth = max(1, min(8, int(v)))
+            except (TypeError, ValueError):
+                raise ValueError(f"pipeline_depth must be an integer 1-8, got {v!r}")
+        msgs.append(f"Pipeline depth: {state.pipeline_depth}")
 
     # ── Strategy-config changes — auto games clear UUID for fresh restart ──
     strategy_touched = False
@@ -474,7 +501,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.23.1"
+VERSION      = "2.24.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -510,6 +537,7 @@ _CONFIG_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold",
+    "pipeline_depth",
 ]
 
 def _mask_key(key: str) -> str:
@@ -562,6 +590,8 @@ _PRESET_KEYS = [
     # Phase 4a additions — JSON-native Phase 2 fields:
     "recurring", "basebet_pct",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+    # Phase 5b — pipeline depth persists per preset:
+    "pipeline_depth",
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -830,6 +860,17 @@ class BotState:
         self._last_profit_milestone: float = 0.0
         # Recurring: restart session after non-loss, non-insufficient-balance stop with profit≥0
         self.recurring        : bool = False
+
+        # ── Phase 5b — pipelined betting (Flat-only) ──
+        # Requested depth (config/preset/CLI); 1 = serial (default, unchanged behavior).
+        self.pipeline_depth      : int = 1
+        # Effective depth after Flat-only + auto-game guardrail. Set by dispatcher.
+        self.pipeline_effective  : int = 1
+        # Live counters shown on the dashboard.
+        self.pipeline_in_flight  : int = 0
+        self.pipeline_dispatched : int = 0
+        # Human-readable reason if guardrail coerced depth down.
+        self.pipeline_reason     : str = ""
 
 
 state   = BotState()
@@ -1424,6 +1465,307 @@ def betting_loop():
 
         # ── cycle-time metric (EMA-smoothed, informs Efficiency + overhead) ──
         _record_cycle_ms((time.monotonic() - loop_start) * 1000)
+
+# ══════════════════════════════════════════════════════════
+#  PHASE 5b — PIPELINED BETTING (Flat-only)
+# ══════════════════════════════════════════════════════════
+#
+# Mirrors tg/engine.py:_pipelined_betting_loop but sync + threaded to fit the
+# CLI's existing model (requests + threading, no asyncio). Guardrail forces
+# depth=1 for anything other than Flat on a non-auto game — sequential
+# strategies (Martingale, D'Alembert, Paroli, WolfRider, Delay-M, Rule-Based)
+# depend on outcome ordering, and auto-bet is server-side single-flight.
+_PIPELINE_MAX = 8
+
+
+def _effective_pipeline_depth() -> int:
+    """Clamp state.pipeline_depth against guardrails. Sets state.pipeline_reason.
+
+    Returns 1 when the loop must run serially (no threading overhead).
+    """
+    requested = int(state.pipeline_depth or 1)
+    if requested <= 1:
+        state.pipeline_reason = ""
+        return 1
+    if is_auto_game(state.game):
+        state.pipeline_reason = f"forced to 1 — auto-bet game ({state.game}) is server-side single-flight"
+        return 1
+    if state.strategy_key != "1":
+        state.pipeline_reason = f"forced to 1 — {state.strategy} needs outcome-ordered bets (Flat-only)"
+        return 1
+    state.pipeline_reason = ""
+    return min(requested, _PIPELINE_MAX)
+
+
+def _run_betting_loop():
+    """Dispatcher — selects serial or pipelined loop based on effective depth."""
+    depth = _effective_pipeline_depth()
+    state.pipeline_effective = depth
+    if depth <= 1:
+        if state.pipeline_reason:
+            logger.info("PIPELINE %s", state.pipeline_reason)
+        return betting_loop()
+    logger.info("PIPELINE running depth=%d (Flat)", depth)
+    return pipelined_betting_loop(depth)
+
+
+def _prepare_next_bet_flat() -> dict:
+    """Snapshot the exact payload for a single Flat bet under state.lock.
+
+    Returns {"amount": float, "bet_no": int} — bet_no is monotonic dispatch order.
+    Never mutates strategy state (Flat has none). Records the streak_delay if any.
+    """
+    with state.lock:
+        state.pipeline_dispatched += 1
+        return {
+            "amount": state.current_bet,
+            "bet_no": state.pipeline_dispatched,
+        }
+
+
+def _one_bet_worker(payload: dict) -> dict:
+    """Worker thread body — places a single bet via existing api_place_bet.
+
+    Returns a result envelope; api errors surface as {"result": None}. Never
+    raises — the outcome handler decides how to react.
+    """
+    try:
+        result = api_place_bet(payload["amount"])
+    except Exception as e:                                # pragma: no cover — defensive
+        logger.exception("PIPELINE worker crashed: %s", e)
+        result = None
+    return {"payload": payload, "result": result}
+
+
+def _apply_outcome_locked(envelope: dict) -> None:
+    """Update counters + persist + strategy hooks for one bet outcome.
+
+    Full mirror of the serial loop's post-bet block, wrapped in state.lock so
+    concurrent workers can't race total_bets / wagered / profit / streaks.
+    """
+    result = envelope["result"]
+    if result is None:
+        # api_place_bet already logged + set last_error under its own lock.
+        with state.lock:
+            state.consecutive_errors += 1
+            state.backoff_delay = min(state.backoff_delay * 2, state.max_backoff)
+        return
+
+    bet_data     = result.get("bet", {})
+    balance_data = result.get("userBalance", {})
+    bet_state    = bet_data.get("state", "loss")
+    result_value = float(bet_data.get("result_value", 0))
+    amount_used  = float(bet_data.get("amount", envelope["payload"]["amount"]))
+    new_balance  = float(balance_data.get("amount", state.current_balance))
+    raw_profit   = float(bet_data.get("profit", 0))
+
+    with state.lock:
+        state.consecutive_errors = 0
+        state.backoff_delay      = 1.0
+
+        state.total_bets     += 1
+        state.wagered        += amount_used
+        state.profit         += raw_profit
+        state.current_balance = new_balance
+
+        if bet_state == "win":
+            state.wins += 1
+            if raw_profit > state.highest_win:
+                state.highest_win = raw_profit
+            state.current_streak = max(state.current_streak, 0) + 1
+            state.max_win_streak = max(state.max_win_streak, state.current_streak)
+        else:
+            state.losses += 1
+            if amount_used > state.biggest_loss:
+                state.biggest_loss = amount_used
+            state.current_streak = min(state.current_streak, 0) - 1
+            state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
+
+        if amount_used > state.highest_bet:
+            state.highest_bet = amount_used
+        if new_balance > state.highest_balance:
+            state.highest_balance = new_balance
+        if new_balance < state.lowest_balance:
+            state.lowest_balance = new_balance
+
+        if (state.profit_increment is not None and state.profit_threshold
+                and state.profit >= state.next_profit_milestone):
+            state.base_bet += state.profit_increment
+            state.next_profit_milestone += state.profit_threshold
+            logger.info(
+                "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
+                state.base_bet, state.next_profit_milestone,
+            )
+
+        if state.total_bets % 5 == 0:
+            state.profit_history.append(state.profit)
+
+        state.recent_bets.append({
+            "n":     state.total_bets,
+            "time":  datetime.now().isoformat(),
+            "amt":   amount_used,
+            "roll":  result_value,
+            "state": bet_state,
+            "pnl":   raw_profit,
+            "bal":   new_balance,
+        })
+
+        now = time.time()
+        elapsed = now - state.session_start
+        if elapsed > 0:
+            state.bets_per_second = state.total_bets / elapsed
+            state.bets_per_minute = state.bets_per_second * 60
+
+        sec_key = int(now)
+        min_key = int(now) // 60
+        if sec_key != state._current_sec:
+            if state._current_sec > 0 and state._bets_this_sec > 0:
+                if state._bets_this_sec > state.peak_bps:
+                    state.peak_bps = state._bets_this_sec
+                if state._bets_this_sec < state.low_bps:
+                    state.low_bps = state._bets_this_sec
+            state._current_sec = sec_key
+            state._bets_this_sec = 1
+        else:
+            state._bets_this_sec += 1
+
+        if min_key != state._current_min:
+            if state._current_min > 0 and state._bets_this_min > 0:
+                if state._bets_this_min > state.peak_bpm:
+                    state.peak_bpm = state._bets_this_min
+                if state._bets_this_min < state.low_bpm:
+                    state.low_bpm = state._bets_this_min
+            state._current_min = min_key
+            state._bets_this_min = 1
+        else:
+            state._bets_this_min += 1
+
+        sign  = "+" if raw_profit >= 0 else ""
+        emoji = "W" if bet_state == "win" else "L"
+        state.status = (
+            f"{emoji} {'WIN' if bet_state=='win' else 'LOSS'} | "
+            f"Roll: {result_value:.2f} | "
+            f"Bet: {amount_used:.8f} | "
+            f"P/L: {sign}{raw_profit:.8f} | "
+            f"Bal: {new_balance:.8f}"
+        )
+        state.last_error = ""
+
+    _db_save_bet(bet_data, raw_profit, new_balance)
+
+    # Rule-Based never reaches here (guardrail forces serial), but keep the
+    # milestone hook for parity with the serial loop.
+    ms_reason = _check_milestone(bet_state)
+    if ms_reason:
+        logger.info("MILESTONE: %s (balance %.8f, profit %+.8f)",
+                    ms_reason, state.current_balance, state.profit)
+        with state.lock:
+            state.status = f"Milestone: {ms_reason}"
+
+
+def pipelined_betting_loop(depth: int):
+    """Flat-only pipelined bet loop.
+
+    Concurrency: `depth` in-flight bets via ThreadPoolExecutor + Semaphore.
+    Ordering: outcomes apply in COMPLETION order (Flat's strategy state
+    doesn't depend on ordering — every bet is base_bet).
+    """
+    executor = ThreadPoolExecutor(max_workers=depth, thread_name_prefix="wb-pipe")
+    sem = threading.Semaphore(depth)
+    inflight_lock = threading.Lock()
+
+    def _done(fut):
+        try:
+            envelope = fut.result()
+            _apply_outcome_locked(envelope)
+        except Exception as e:                            # pragma: no cover
+            logger.exception("PIPELINE done_callback crash: %s", e)
+        finally:
+            with inflight_lock:
+                state.pipeline_in_flight -= 1
+            sem.release()
+
+    try:
+        while state.running:
+            loop_start = time.monotonic()
+
+            if state.paused:
+                state.status = "PAUSED — press [R] to resume"
+                time.sleep(0.4)
+                continue
+
+            if state.rate_wait:
+                # Drain in-flight before honoring the probe so no worker
+                # dispatches into the cooldown window.
+                backoff = state.rate_backoff
+                state.status = f"Rate limit — draining pipeline, resuming in {backoff:.0f}s…"
+                while state.pipeline_in_flight > 0:
+                    time.sleep(0.05)
+                time.sleep(backoff)
+                with state.lock:
+                    state.rate_wait      = False
+                    state.rate_backoff   = 2.0
+                    state.rate_remaining = 50
+                logger.info("Rate limit cooldown done, resuming pipelined betting")
+                continue
+
+            stop, reason = should_stop()
+            if stop:
+                # Drain workers before ending so counters + DB rows are consistent.
+                while state.pipeline_in_flight > 0:
+                    time.sleep(0.05)
+                if _should_recurring_restart(reason):
+                    logger.info("RECURRING RESTART after: %s", reason)
+                    _db_save_session()
+                    _reset_session_for_recurring()
+                    with state.lock:
+                        state.pipeline_dispatched = 0
+                    continue
+                state.running = False
+                state.status  = f"STOPPED: {reason}"
+                _db_save_session()
+                break
+
+            if state._insufficient_balance:
+                while state.pipeline_in_flight > 0:
+                    time.sleep(0.05)
+                state.running = False
+                state.status = "STOPPED: Insufficient balance"
+                _db_save_session()
+                break
+
+            sd = _get_streak_delay()
+            if sd > 0:
+                state.status = f"Streak delay {sd:.2f}s (streak {state.current_streak})"
+                time.sleep(sd)
+
+            if state.basebet_pct > 0 and state.total_bets > 0 and state.total_bets % 10 == 0:
+                _apply_basebet_pct()
+
+            if state.bet_delay > 0:
+                time.sleep(state.bet_delay)
+
+            payload = _prepare_next_bet_flat()
+
+            if not sem.acquire(timeout=1.0):
+                # No slot free within 1s — loop back to re-check stop/pause/rate.
+                with state.lock:
+                    state.pipeline_dispatched -= 1  # payload never dispatched
+                continue
+
+            state.status = f"Placing bet #{payload['bet_no']} (in-flight {state.pipeline_in_flight + 1}/{depth})"
+            with inflight_lock:
+                state.pipeline_in_flight += 1
+            fut = executor.submit(_one_bet_worker, payload)
+            fut.add_done_callback(_done)
+
+            _record_cycle_ms((time.monotonic() - loop_start) * 1000)
+    finally:
+        # Best-effort drain on any exit path.
+        while state.pipeline_in_flight > 0:
+            time.sleep(0.05)
+        executor.shutdown(wait=True)
+
 
 # ══════════════════════════════════════════════════════════
 #  DATABASE  I/O
@@ -2097,6 +2439,14 @@ def build_dashboard_screen() -> str:
     add(f" {_a('dim', 'Cycle')} {_a('magenta', f'{cycle_ms:.0f}ms')}/bet"
         f"  (overhead {_a('cyan', f'{state._cycle_overhead_ms:.0f}ms')})"
         f"  {_a('dim', '→')} {_a('magenta', f'{bps_from_cycle:.2f}')} bps")
+
+    # ── Pipeline row (only when pipelining is active) ──
+    if state.pipeline_effective > 1:
+        add(f" {_a('dim', 'Pipeline')} depth={_a('magenta', str(state.pipeline_effective))}"
+            f"  · in-flight={_a('cyan', str(state.pipeline_in_flight))}"
+            f"  · dispatched={_a('cyan', str(state.pipeline_dispatched))}")
+    elif state.pipeline_depth > 1 and state.pipeline_reason:
+        add(f" {_a('dim', 'Pipeline')} {_a('yellow', state.pipeline_reason)}")
 
     # ── Row 6: Sparkline ─────────────────────────────
     spark = _sparkline(list(state.profit_history))
@@ -3227,6 +3577,16 @@ def setup_wizard():
             state.milestone_profit = float(v) if v else 0.0
         except ValueError:
             state.milestone_profit = 0.0
+
+        # Phase 5b — pipeline depth (Flat-only, coerced at runtime for other strategies).
+        v = _ask_optional("Pipeline depth (1 = serial / off, up to 8 — Flat only)",
+                          state.pipeline_depth if state.pipeline_depth > 1 else None)
+        if v is _BACK:
+            return False
+        try:
+            state.pipeline_depth = max(1, min(8, int(v))) if v else 1
+        except ValueError:
+            state.pipeline_depth = 1
 
         console.print()
         return True
@@ -4482,10 +4842,17 @@ def main():
                         help="Backtest data source: simulate N synthetic bets (default 1000)")
     parser.add_argument("--seed", type=int, metavar="N",
                         help="RNG seed for --simulate (deterministic reproducibility)")
+    parser.add_argument("--pipeline", type=int, metavar="N", default=None,
+                        help="Pipeline depth (Flat-only, 1-8). 1 = serial (default). "
+                             "Non-Flat strategies and auto-bet games are auto-coerced to 1.")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable debug logging (dev mode)")
 
     args = parser.parse_args()
+
+    # Pipeline depth CLI override — applies after config/preset load below.
+    if args.pipeline is not None:
+        args.pipeline = max(1, min(8, args.pipeline))
 
     # ── Verbose mode ──────────────────────────────────────
     if args.verbose:
@@ -4591,6 +4958,10 @@ def main():
     else:
         setup_wizard()
 
+    # Apply CLI --pipeline override AFTER config/preset load so it wins.
+    if args.pipeline is not None:
+        state.pipeline_depth = args.pipeline
+
     state.session_id    = _db_start_session()
     state.session_start = time.time()
     state.initial_multiplier = state.multiplier
@@ -4649,7 +5020,7 @@ def main():
         signal.signal(signal.SIGUSR2, _sig_resume)
 
     # ── Betting thread ────────────────────────────────────
-    t_bet = threading.Thread(target=betting_loop, daemon=True, name="BettingLoop")
+    t_bet = threading.Thread(target=_run_betting_loop, daemon=True, name="BettingLoop")
     t_bet.start()
 
     # ── Periodic save (DB + state file) every 5s ─────────

@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.23.1 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.24.0 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -184,6 +184,31 @@ Available in wizard Step 5b and via `T` at runtime:
 - **`basebet_pct`** — dynamic base bet as % of current balance (recomputes every cycle reset).
 - **Milestones** — `milestone_bets`, `milestone_wins`, `milestone_losses`, `milestone_profit` — pause + log at each checkpoint.
 - **Profit-lock** — `profit_increment` + `profit_threshold` — raise floor as profit climbs.
+- **Pipeline depth** — `--pipeline N` / `T pipeline N` (see below).
+
+---
+
+## Pipelined betting
+
+Opt-in concurrency: place up to **N in-flight bets in parallel** for higher throughput on Flat strategies.
+
+```bash
+python3 wolfbet.py --pipeline 3           # 3 in-flight bets, Flat only
+python3 wolfbet.py --resume --pipeline 4  # override the saved config
+```
+
+**How it works.** `ThreadPoolExecutor(N)` + `threading.Semaphore(N)` bound the in-flight count. Every counter mutation is gated by `state.lock`, so `total_bets` / `wagered` / `profit` / streaks stay coherent under concurrency.
+
+**Guardrails** (mirror the Telegram bot's `_pipelined_betting_loop`):
+
+- **Flat-only.** Sequential strategies (Martingale, Anti-Martingale, D'Alembert, Paroli, WolfRider, Delay-Martingale, Rule-Based) depend on outcome ordering — running two bets in parallel changes the next-bet calculation. Any non-Flat strategy is **hard-forced to depth 1** at dispatch time; a heads-up warning is logged and shown on the dashboard.
+- **Auto-bet excluded.** `dice-auto` / `limbo-auto` are server-side single-flight (one UUID). Auto-bet games are hard-forced to depth 1.
+- **Depth capped at 8.** Higher values are silently clamped.
+- **Rate-limit drain.** When the exponential probe trips, the pipeline drains all in-flight workers before the cooldown starts — no worker races into the wait window.
+
+**Dashboard.** When active, the dashboard shows: `Pipeline depth=N · in-flight=K · dispatched=M`. When the guardrail refuses a requested depth, the row shows the coerce reason instead.
+
+**Runtime tweak.** `T pipeline 3` (or `off` / `1` to disable) — takes effect on the next loop iteration.
 
 ---
 
@@ -408,6 +433,12 @@ All configuration can be set via environment variables (recommended for servers)
 | `--replay-session ID` | Replay strategy against recorded outcomes of session `ID` |
 | `--preset NAME` | Load preset `NAME` before running (works with all modes) |
 
+**Concurrency**
+
+| Flag | Description |
+|---|---|
+| `--pipeline N` | Pipeline depth (1-8). Flat-only; auto-bet games and non-Flat strategies auto-coerce to 1. |
+
 ---
 
 ## File locations
@@ -458,6 +489,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **Phase 7 (v2.22.1)** — Wizard safety warnings.
 - **Phase 8 (v2.23.0)** — Lifetime `--analytics` command.
 - **v2.23.1** — README documentation refresh.
+- **Phase 5b (v2.24.0)** — Pipelined betting: `--pipeline N` (Flat-only, ThreadPoolExecutor + Semaphore, guardrail forces depth 1 for non-Flat / auto-bet). Last outstanding CLI ↔ TG parity gap closed.
 
 ---
 

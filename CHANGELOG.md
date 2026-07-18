@@ -1,5 +1,23 @@
 # Changelog
 
+## CLI v2.24.0 — pipelined betting (`--pipeline N`, Flat-only) (2026-07-17)
+
+- **New**: `--pipeline N` CLI flag + `pipeline_depth` state field. Concurrent in-flight bets via `ThreadPoolExecutor(N)` + `threading.Semaphore(N)`.
+- **Guardrails** — mirror `tg/engine.py:1373` `_pipelined_betting_loop`:
+  - Non-Flat strategies (Martingale / Anti-M / D'Alembert / Paroli / WolfRider / Delay-M / Rule-Based) → forced to depth 1 (outcome ordering matters).
+  - Auto-bet games (`dice-auto` / `limbo-auto`) → forced to depth 1 (server-side single-flight).
+  - Depth hard-capped at 8.
+- **Dispatcher**: new `_run_betting_loop()` picks between the unchanged `betting_loop()` (depth 1, default) and new `pipelined_betting_loop(depth)`. Zero regression when depth=1.
+- **Locking**: new `_apply_outcome_locked()` wraps every per-bet counter mutation, DB save, and metric update in `state.lock`. `_prepare_next_bet_flat()` snapshots the payload before dispatch.
+- **Rate-limit coordination**: pipeline drains all in-flight workers before honoring an exponential-probe cooldown, so no worker dispatches into the wait window.
+- **Wizard step 5b**: new "Pipeline depth" prompt (default 1 = off).
+- **Tweak grammar**: `T pipeline N` (canonical `pipeline_depth`) — clamps to [1, 8], `off` resets to 1.
+- **Preset + config round-trip**: `pipeline_depth` persists via both `_CONFIG_KEYS` and `_PRESET_KEYS` (older presets without the field just default to 1).
+- **Dashboard**: new "Pipeline" row shows `depth=N · in-flight=K · dispatched=M` when active, or the coerce-reason when the user requested pipelining but the guardrail refused.
+- **Safety warnings**: new categories added to `_check_risky_config()` — pipeline+Martingale / pipeline+auto-game.
+- **Tests**: `tests/test_phase5b_pipeline.py` — 25 tests covering guardrail matrix (Flat / Martingale / D'Alembert / Rule-Based / dice-auto / limbo-auto), payload snapshot, apply-outcome integrity (win / loss / streak / None result), 500-thread concurrent counter integrity, tweak grammar, clamps, config + preset key membership, risky-config warnings.
+- **Backward compat**: `--pipeline` omitted or `1` → byte-equivalent to v2.23.1 behavior.
+
 ## CLI v2.23.1 — README documentation refresh (docs only) (2026-07-17)
 
 - **Docs**: full `README.md` rewrite (`v2.11.0` → `v2.23.1` header). New sections: Live-session hotkeys, Runtime tweak grammar (22 params), Advanced session tuning, Observability metrics, Session summary + exports, Backtest mode, Lifetime analytics, Safety warnings, File locations, Development / testing, Version history. CLI Options table rebuilt (grouped by daemon control / inspection / export / backtest).
