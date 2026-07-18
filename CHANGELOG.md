@@ -1,5 +1,36 @@
 # Changelog
 
+## CLI v2.26.1 — BPS diagnostic tools (`--benchmark`, `--diagnose`, latency-aware `--status`) (2026-07-18)
+
+Answers the real-world question "is it WolfBet or is it my CLI?" — on a new server the user was seeing only ~7 BPS on `limbo-auto`/Martingale despite the old server hitting ~28 BPS. Same code, same account, same config — only the network path changed. Zero diagnostic tools existed on the CLI to prove where the ceiling was coming from.
+
+- **`--benchmark [N]`** (`wolfctl benchmark [N]`): standalone API-latency probe. Fires N × `GET /v1/user/balances` through `_http_session` (same transport as production; proxy + User-Agent respected). Default N=20, clamp `[3, 200]`. **No bets placed, no DB touch, no session started.** Reports min / p50 / mean / p99 / max ms plus theoretical max BPS from p50 plus a plain-English verdict:
+  - `p50 ≥ 100 ms`: "Network bottleneck — WolfBet response is the limit."
+  - Any `429`: "Rate-limited — WolfBet is throttling this IP."
+  - `p99 > 3·p50`: "Tail-latency spikes — unstable network path."
+  - `p50 < 30 ms`: "Network fast — bottleneck is elsewhere; try `--diagnose`."
+  - Otherwise: "Network OK."
+
+- **`--diagnose`** (`wolfctl diagnose`): one-shot analysis of the running daemon. Reads the live-state file (`~/.wolfbet_autobot_live.json`), picks the top blocker deterministically (Network / CLI overhead / User-configured delay), prints a Rich panel with the cycle breakdown (`api_p50 + overhead + delay = cycle_ms → BPS ceiling`), rate-limit headroom, auto-start quota, and targeted advice (run `--benchmark`, drop `bet_delay`, try `pipeline` if strategy is Flat). Read-only; no side effects.
+
+- **`--status` extension**: `cmd_status` (and thus `wolfctl status`) now surfaces the observability rows that already existed in the state file but were never printed:
+  - `API` — `p50 Nms · p99 Nms · peak Nms`
+  - `Cycle` — `Nms/bet (overhead Nms) → M.MM BPS ceiling`
+  - `Efficiency` — `N% of theoretical`
+  - `Pipeline` — `depth=N · dispatched=M` (when active)
+
+- **State file gains** `api_p99_ms`, `pipeline_effective`, `pipeline_dispatched` — so `cmd_status` and `cmd_diagnose` read the same JSON.
+
+- **wolfctl v3.4 → v3.5**: new `benchmark` and `diagnose` subcommands added to the TOOLS group of `usage()`.
+
+- **`--help` epilog**: new example lines under Inspection group.
+
+**Zero behavior changes to the bet loop.** Pure observability.
+
+**Tests**: `tests/test_phase5i_diagnostics.py` — 15 tests (percentile edge cases, N clamping, verdict tier selection under mocked latencies, missing-state-file handling, top-blocker deterministic selection under three fixture states, state-file field inventory). Extended `test_phase5e_wolfctl.py` with 2 checks (v3.5 label, `benchmark` + `diagnose` dispatch). **360 total passing.**
+
+`VERSION` `2.26.0` → `2.26.1`. `wolfctl` `v3.4` → `v3.5`.
+
 ## CLI v2.26.0 — proxy support + retention (`--cleanup`) + wolfctl HTTPS (2026-07-18)
 
 Closes the last two deferred TG↔CLI parity items from the v2.25.3 audit and fixes a small operational hazard in `wolfctl update`.

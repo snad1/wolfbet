@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.26.0 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.26.1 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -123,6 +123,8 @@ wolfctl export /tmp/out.csv [SID]       # CSV/JSON export (per session or all)
 wolfctl backtest --simulate 10000 --seed 42     # backtest (no API calls)
 wolfctl preset martingale-safe          # load preset + start daemon
 wolfctl cleanup [DAYS]                  # purge old bet rows (default: state.purge_days)
+wolfctl benchmark [N]                   # API-latency probe (no bets, default N=20)
+wolfctl diagnose                        # analyse running session bottleneck
 wolfctl version                         # print CLI + wolfctl versions
 ```
 
@@ -463,6 +465,8 @@ All configuration can be set via environment variables (recommended for servers)
 | `--export PATH` | Export all sessions to CSV or JSON (extension inferred) |
 | `--export-session-id ID` | Restrict `--export` to a single session |
 | `--cleanup [DAYS]` | Purge bet rows older than DAYS (default: state.purge_days). Session aggregates preserved. |
+| `--benchmark [N]` | Standalone API-latency probe (no bets placed). Default N=20, clamp [3, 200]. Reports p50/p99/mean + BPS ceiling + verdict. |
+| `--diagnose` | One-shot bottleneck analysis of the running daemon (top blocker + advice). Read-only. |
 
 **Backtest / replay**
 
@@ -536,6 +540,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **v2.25.2** — `wolfctl update` now uses `git pull --ff-only --autostash` with a dirty-tree preflight, so local changes are safely stashed rather than blocking the pull. On failure, prints the exact recovery command (`git stash list  |  git stash pop`). Zero destructive fallbacks.
 - **v2.25.3** — `recurring_delay` (TG↔CLI parity): configurable pause between recurring cycles (default 60s, `0` = back-to-back). Wizard prompt, `_apply_mutation` grammar (`recdelay` alias), config-show row, risky-config warning phrasing. `api_key` row now shows `(SET)` / `(NOT SET)` after the masked value.
 - **v2.26.0** — Closes remaining TG↔CLI parity gaps. **Proxy support**: shared `_http_session` routes every API call through an optional HTTP/HTTPS/SOCKS5 proxy; credentials always masked in `config-show` and logs. **Retention**: `purge_days` config + `--cleanup [DAYS]` command + startup + hourly background purge (reuses `cleanup_old_bets` / `cleanup_live_bets` from `shared/core/database`). **wolfctl v3.4**: new `wolfctl cleanup` subcommand; `casino-shared` pip install now uses `git+https://` (no more github SSH host-key prompt on fresh hosts).
+- **v2.26.1** — BPS diagnostic tools. **`--benchmark [N]`** / **`wolfctl benchmark`**: standalone API-latency probe (no bets placed) with plain-English verdict — "Network bottleneck / Rate-limited / Network fast / …". **`--diagnose`** / **`wolfctl diagnose`**: one-shot analysis of the running daemon, picks the top blocker (Network / CLI overhead / User delay) and gives targeted advice. **`--status` extension**: now surfaces `p50 / p99 / cycle_ms / efficiency%` rows that already existed in the state file but weren't printed. wolfctl v3.5. Zero behavior changes to the bet loop.
 
 ---
 

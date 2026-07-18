@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.4
+# WolfBet AutoBot — Unified Management Command v3.5
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -17,7 +17,7 @@ SCRIPT_NAME="wolfctl"
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.4"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.5"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -61,6 +61,8 @@ usage() {
     echo "    wolfctl cleanup [DAYS]      Purge old bet rows (default: state.purge_days)"
     echo ""
     echo "  TOOLS:"
+    echo "    wolfctl benchmark [N]       API-latency probe (no bets placed; default N=20)"
+    echo "    wolfctl diagnose            Analyse running session bottleneck (top blocker + advice)"
     echo "    wolfctl backtest [args…]    Backtest / replay (no API calls, no real balance)"
     echo "                                Examples: --simulate 10000 --seed 42"
     echo "                                          --replay-session 42 --preset foo"
@@ -207,7 +209,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.4"
+    echo "  wolfctl v3.5"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -268,6 +270,20 @@ cmd_cleanup() {
     else
         "$PYTHON" "$BOT" --cleanup "$days"
     fi
+}
+
+# v2.26.1 — BPS diagnostics.
+cmd_benchmark() {
+    local n="${1:-}"
+    if [ -z "$n" ]; then
+        "$PYTHON" "$BOT" --benchmark
+    else
+        "$PYTHON" "$BOT" --benchmark "$n"
+    fi
+}
+
+cmd_diagnose() {
+    "$PYTHON" "$BOT" --diagnose
 }
 
 cmd_update() {
@@ -584,6 +600,8 @@ case "${1:-}" in
     backtest)     shift; cmd_backtest "$@" ;;
     preset)       cmd_preset "${2:-}" ;;
     cleanup)      cmd_cleanup "${2:-}" ;;
+    benchmark)    cmd_benchmark "${2:-}" ;;
+    diagnose)     cmd_diagnose ;;
     version|--version|-v) cmd_version ;;
     update)       cmd_update ;;
     tg)           cmd_tg "${2:-}" ;;

@@ -146,10 +146,17 @@ def test_wolfctl_help_alias():
     assert "wolfctl —" in proc.stdout or "wolfctl" in proc.stdout
 
 
-def test_wolfctl_version_v3_4():
+def test_wolfctl_version_v3_5():
     src = _read(_WOLFCTL)
-    assert "v3.4" in src
-    assert "v3.3" not in src
+    assert "v3.5" in src
+    assert "v3.4" not in src
+
+
+def test_wolfctl_has_benchmark_diagnose_subcommands():
+    src = _read(_WOLFCTL)
+    for token in ("cmd_benchmark()", "cmd_diagnose()", "benchmark)", "diagnose)",
+                  "--benchmark", "--diagnose"):
+        assert token in src, f"missing {token!r} in wolfctl"
 
 
 def test_wolfctl_has_cleanup_subcommand():

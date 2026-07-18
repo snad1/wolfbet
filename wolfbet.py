@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.26.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.26.1  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -567,7 +567,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.26.0"
+VERSION      = "2.26.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -2451,11 +2451,14 @@ def _save_state_file():
             "api_avg_ms":          _compute_api_avg(),
             "api_peak_ms":         state.peak_api_ms,
             "api_p50_ms":          _compute_api_p50(),
+            "api_p99_ms":          _compute_api_p99(),
             "on_target_pct":       _compute_on_target_pct(),
             "cycle_ms":            state._cycle_ms,
             "overhead_ms":         state._cycle_overhead_ms,
             "efficiency_pct":      _compute_efficiency_pct(),
             "theoretical_max_bps": _compute_theoretical_max_bps(),
+            "pipeline_effective":  state.pipeline_effective,
+            "pipeline_dispatched": state.pipeline_dispatched,
             "rule": state.rule,
             "bet_value": state.bet_value,
             "bet_delay": state.bet_delay,
@@ -4438,6 +4441,33 @@ def cmd_status():
     if pi and pt:
         rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
 
+    # ── Observability (v2.26.1 — from state file) ──
+    api_p50 = d.get("api_p50_ms")
+    api_p99 = d.get("api_p99_ms")
+    api_peak = d.get("api_peak_ms")
+    if api_p50 or api_peak:
+        rows.append(("API",
+                     f"p50 [cyan]{api_p50 or 0:.0f}ms[/]  · "
+                     f"p99 [cyan]{api_p99 or 0:.0f}ms[/]  · "
+                     f"peak [cyan]{api_peak or 0:.0f}ms[/]"))
+    cycle_ms = d.get("cycle_ms")
+    overhead_ms = d.get("overhead_ms")
+    if cycle_ms:
+        bps_ceiling = (1000.0 / cycle_ms) if cycle_ms > 0 else 0.0
+        rows.append(("Cycle",
+                     f"[magenta]{cycle_ms:.0f}ms[/]/bet "
+                     f"(overhead [cyan]{overhead_ms or 0:.0f}ms[/])"
+                     f"  → [magenta]{bps_ceiling:.2f}[/] BPS ceiling"))
+    eff_pct = d.get("efficiency_pct")
+    if eff_pct is not None:
+        eff_c = "green" if eff_pct >= 90 else "yellow"
+        rows.append(("Efficiency", f"[{eff_c}]{eff_pct:.0f}%[/] of theoretical"))
+    pipe_eff = d.get("pipeline_effective") or 1
+    if pipe_eff > 1:
+        rows.append(("Pipeline",
+                     f"depth=[magenta]{pipe_eff}[/]  · "
+                     f"dispatched=[cyan]{d.get('pipeline_dispatched', 0)}[/]"))
+
     rows += [
         ("Last Status",    d.get("status", "")[:80]),
         ("Updated",        d.get("updated_at", "?").replace("T", " ")),
@@ -4696,6 +4726,184 @@ def cmd_cleanup(days=None):
         )
     else:
         console.print(f"[dim]Nothing to purge ({n}-day window; no old session bets found).[/]")
+
+
+# ══════════════════════════════════════════════════════════
+#  BPS DIAGNOSTICS  (v2.26.1 — --benchmark, --diagnose)
+# ══════════════════════════════════════════════════════════
+def _percentile(sorted_ms, pct):
+    """Percentile from a pre-sorted list of ms values. 0..1."""
+    if not sorted_ms:
+        return 0.0
+    idx = max(0, min(len(sorted_ms) - 1, int(pct * len(sorted_ms))))
+    return sorted_ms[idx]
+
+
+def cmd_benchmark(n=None):
+    """Fire N read-only API requests and report latency distribution.
+
+    Uses GET /v1/user/balances via the same _http_session as production —
+    so proxy, User-Agent, and connection pooling all match the live path.
+    No bets placed, no DB write, no session started.
+    """
+    from rich.table import Table
+    n = 20 if n is None else int(n)
+    n = max(3, min(200, n))
+    if not load_config():
+        console.print("[red]No config saved yet — run the wizard first.[/]")
+        sys.exit(1)
+    url = f"{API_BASE}/v1/user/balances"
+    console.print(
+        f"[dim]Benchmarking {n} × GET /v1/user/balances "
+        f"(proxy={_mask_proxy(state.proxy)}) …[/]"
+    )
+    samples = []
+    statuses = []
+    failures = 0
+    for i in range(n):
+        t0 = time.time()
+        try:
+            r = _http_session.get(url, headers=_headers("dice"), timeout=15)
+            samples.append((time.time() - t0) * 1000)
+            statuses.append(r.status_code)
+        except Exception:
+            failures += 1
+            statuses.append("ERR")
+    if not samples:
+        console.print("[red]All requests failed. Check API key + network.[/]")
+        sys.exit(1)
+    samples.sort()
+    p50 = _percentile(samples, 0.50)
+    p99 = _percentile(samples, 0.99)
+    mean = sum(samples) / len(samples)
+    tbl = Table(title="API latency (ms)", title_style="bold cyan", show_lines=False)
+    tbl.add_column("min",  style="green",   justify="right")
+    tbl.add_column("p50",  style="cyan",    justify="right")
+    tbl.add_column("mean", style="cyan",    justify="right")
+    tbl.add_column("p99",  style="yellow",  justify="right")
+    tbl.add_column("max",  style="red",     justify="right")
+    tbl.add_column("ok",   style="dim",     justify="right")
+    ok_count = sum(1 for s in statuses if s == 200)
+    tbl.add_row(f"{min(samples):.0f}", f"{p50:.0f}", f"{mean:.0f}",
+                f"{p99:.0f}", f"{max(samples):.0f}", f"{ok_count}/{n}")
+    console.print(tbl)
+    # Theoretical max BPS from p50
+    max_bps = 1000.0 / p50 if p50 > 0 else 0.0
+    console.print(f"\n[dim]Theoretical max BPS from p50:[/] "
+                  f"[bold magenta]{max_bps:.1f}[/] bps")
+    # Verdict — deterministic tiers
+    got_429 = sum(1 for s in statuses if s == 429)
+    if got_429:
+        console.print(f"[bold red]Rate-limited[/] ({got_429}/{n} got 429). "
+                      "WolfBet is throttling this IP. Slow down or use a proxy.")
+    elif p50 >= 100:
+        console.print(f"[bold yellow]Network bottleneck[/] (p50={p50:.0f}ms → "
+                      f"ceiling ~{max_bps:.1f} BPS). WolfBet response is the limit.")
+    elif p99 > 3 * p50 and p50 > 0:
+        console.print(f"[bold yellow]Tail-latency spikes[/] "
+                      f"(p99={p99:.0f}ms, {p99/p50:.1f}× p50). Unstable network path.")
+    elif p50 < 30:
+        console.print(f"[bold green]Network fast[/] (p50={p50:.0f}ms). "
+                      "If live BPS is lower, the bottleneck is elsewhere — try --diagnose.")
+    else:
+        console.print(f"[bold cyan]Network OK[/] (p50={p50:.0f}ms → "
+                      f"ceiling ~{max_bps:.1f} BPS).")
+    if failures:
+        console.print(f"[dim]Note: {failures}/{n} network errors.[/]")
+
+
+def cmd_diagnose():
+    """One-shot bottleneck analysis of the running daemon session.
+
+    Reads STATE_PATH and picks the top blocker (API latency vs CLI
+    overhead vs configured delay vs rate-limit vs auto-start throttle).
+    """
+    from rich.panel import Panel
+    if not os.path.exists(STATE_PATH):
+        console.print(
+            "[yellow]No running daemon session found.[/]\n"
+            "  Start one with [cyan]wolfctl start[/] then re-run "
+            "[cyan]wolfctl diagnose[/]."
+        )
+        return
+    try:
+        with open(STATE_PATH) as f:
+            d = json.load(f)
+    except Exception as e:
+        detail = f": {e}" if APP_ENV != "production" else ""
+        console.print(f"[red]Failed to read state file{detail}.[/]")
+        return
+
+    api_p50   = float(d.get("api_p50_ms") or 0)
+    api_p99   = float(d.get("api_p99_ms") or 0)
+    overhead  = float(d.get("overhead_ms") or 0)
+    cycle_ms  = float(d.get("cycle_ms") or 0)
+    bet_delay = float(d.get("bet_delay") or 0)
+    bps       = float(d.get("bets_per_second") or 0)
+    tmax      = float(d.get("theoretical_max_bps") or 0)
+    rate_rem  = d.get("rate_remaining")
+    rate_lim  = d.get("rate_limit")
+    auto_rem  = d.get("auto_start_remaining")
+    game      = d.get("game", "?")
+    strategy  = d.get("strategy", "?")
+    pipe_eff  = d.get("pipeline_effective") or 1
+    delay_ms  = bet_delay * 1000
+
+    lines = [
+        f"[dim]Game:[/] [cyan]{game}[/]  ·  "
+        f"[dim]Strategy:[/] [cyan]{strategy}[/]  ·  "
+        f"[dim]Pipeline:[/] [cyan]{pipe_eff}[/]",
+        "",
+        f"[bold]Actual:[/] [magenta]{bps:.1f}[/] BPS   "
+        f"[bold]Theoretical max:[/] [magenta]{tmax:.1f}[/] BPS",
+        f"[dim]Cycle breakdown:[/] api_p50=[cyan]{api_p50:.0f}ms[/] "
+        f"+ overhead=[cyan]{overhead:.0f}ms[/] "
+        f"+ delay=[cyan]{delay_ms:.0f}ms[/] "
+        f"= [magenta]{cycle_ms:.0f}ms[/]/bet",
+    ]
+    if rate_rem is not None and rate_lim:
+        lines.append(f"[dim]Rate limit:[/] {rate_rem}/{rate_lim} remaining")
+    if auto_rem is not None:
+        c = "yellow" if int(auto_rem) <= 3 else "cyan"
+        lines.append(f"[dim]/auto/start quota:[/] [{c}]{auto_rem}/20[/]")
+
+    # Deterministic top blocker
+    blockers = [
+        ("Network / API latency",  api_p50),
+        ("CLI overhead",           overhead),
+        ("User-configured delay",  delay_ms),
+    ]
+    top_name, top_val = max(blockers, key=lambda x: x[1])
+
+    advice = []
+    if top_name == "Network / API latency" and api_p50 >= 100:
+        advice.append("• Run [cyan]wolfctl benchmark 20[/] to isolate the network path.")
+        advice.append("• Consider a proxy in a region closer to wolfbet.com, "
+                      "or move to a faster server.")
+    elif top_name == "User-configured delay" and delay_ms > 10:
+        advice.append(f"• You have bet_delay={bet_delay:.3f}s. Drop it with "
+                      "[cyan]wolfctl config-set delay=0[/] for max throughput.")
+    elif top_name == "CLI overhead" and overhead > 30:
+        advice.append("• CLI overhead is high. Check disk I/O (DB writes) "
+                      "and CPU load on the daemon host.")
+    elif int(rate_rem or 999) <= 3:
+        advice.append("• Rate-limit headroom is low. WolfBet may throttle soon.")
+    if pipe_eff == 1 and strategy in ("Flat Bet",) and delay_ms == 0:
+        advice.append("• Strategy is Flat with no delay — try "
+                      "[cyan]wolfctl pipeline 3[/] for concurrent bets.")
+    if not advice:
+        advice.append("• Nothing obvious. Session is running near its natural ceiling.")
+
+    lines.append("")
+    lines.append(f"[bold yellow]Top blocker:[/] {top_name} "
+                 f"([magenta]{top_val:.0f}ms[/])")
+    lines.append("")
+    lines.append("[bold]Advice:[/]")
+    lines.extend(advice)
+
+    console.print(Panel("\n".join(lines),
+                        title="💡 Diagnostic bottleneck analysis",
+                        border_style="cyan"))
 
 
 def _retention_worker():
@@ -5310,6 +5518,8 @@ Examples:
     wolfbet.py --list-presets         # list named presets
     wolfbet.py --stats                # last 20 sessions in detail
     wolfbet.py --analytics            # lifetime aggregates + top 5
+    wolfbet.py --benchmark 20         # standalone API-latency probe (no bets)
+    wolfbet.py --diagnose             # analyse running session's bottleneck
 
   Config mutation (no wizard, one-shot)
     wolfbet.py --config-set max_profit=0.005 base_bet=0.0001
@@ -5370,6 +5580,12 @@ def main():
                        help="Purge old bet rows from the DB (default: state.purge_days, "
                             "explicit: --cleanup N for N days, clamped 1-30). "
                             "Session aggregates preserved.")
+    group.add_argument("--benchmark", nargs="?", type=int, metavar="N", const=20,
+                       help="Standalone API-latency probe (no bets placed). Default N=20, "
+                            "clamped 3-200. Reports p50/p99/mean + BPS ceiling + verdict.")
+    group.add_argument("--diagnose", action="store_true",
+                       help="One-shot bottleneck analysis of the running daemon session "
+                            "(reads live-state file; no side effects).")
     parser.add_argument("--preset", type=str, metavar="NAME",
                         help="Load a named preset and start (skips wizard)")
     parser.add_argument("--export", type=str, metavar="PATH",
@@ -5458,6 +5674,12 @@ def main():
         init_db()
         # `--cleanup` with no value comes through as -1 (const), meaning "use configured default".
         cmd_cleanup(None if args.cleanup == -1 else args.cleanup)
+        return
+    if args.benchmark is not None:
+        cmd_benchmark(args.benchmark)
+        return
+    if args.diagnose:
+        cmd_diagnose()
         return
 
     # ── Setup-only mode ───────────────────────────────────
