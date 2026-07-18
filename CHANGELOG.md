@@ -1,5 +1,25 @@
 # Changelog
 
+## CLI v2.28.1 — monitor UX + systemd `Restart=` fix (2026-07-19)
+
+Two real-world bugs from server usage:
+
+1. **`wolfctl interactive` didn't advertise the working keys.** The monitor viewer handles `P/R/S/Q` (via SIGUSR1/USR2/TERM to the daemon) but not `T/E/H` — those require a foreground TTY. Users would press `T` expecting a tweak prompt, get nothing, and have no idea `wolfctl config-set` was the correct answer.
+
+2. **Pressing `S` from monitor stopped the daemon — then systemd auto-restarted it ~10 s later.** Root cause was `install.sh` writing `Restart=always` in the systemd unit. When `S` sent SIGTERM the daemon exited cleanly (`code=exited, status=0/SUCCESS`), and systemd's `Restart=always` policy respawned it. The journal even printed `Scheduled restart job, restart counter is at 2`. The CLI's own `recurring` flag was `off` — the restart wasn't coming from there at all.
+
+Fixes:
+
+- **`_build_monitor_screen` footer** now includes a second line: `Tweak config: wolfctl config-set KEY=VALUE   · Export/history: wolfctl export / stats / analytics`. Correct alternative is one glance away.
+- **`cmd_monitor` attach banner** extended: `Attaching to session #N (PID …)… Keys: P/R/S/Q · Tweak: wolfctl config-set KEY=VALUE`.
+- **`cmd_monitor` stop path is now systemd-aware.** New `_is_systemd_managed(pid)` helper checks `/proc/{pid}/cgroup` for `wolfbet.service`. When true, `S` calls `systemctl --user stop wolfbet` (systemd knows to keep it down); when false, falls back to raw SIGTERM (unchanged for non-systemd installs).
+- **`install.sh:108,136`**: `Restart=always` → `Restart=on-failure`. Clean stops stay stopped; real crashes still respawn.
+- **`wolfctl update`** gains an **idempotent migration**: if `~/.config/systemd/user/wolfbet.service` (or `wolfbet-tg.service` / `wolfbet-web.service`) contains `Restart=always`, patches to `Restart=on-failure` and `daemon-reload`s. Existing installs get the fix automatically on their next `wolfctl update`. Subsequent updates find no match and skip.
+
+**Tests**: `tests/test_phase5m_monitor_ux.py` — 15 tests (footer string presence, attach banner content, `_is_systemd_managed` under 3 fixture scenarios including a missing-`/proc/` fallback, `install.sh` `Restart=on-failure` grep, `wolfctl` migration branch grep, bash syntax valid for both scripts). **425 total passing.**
+
+`VERSION` `2.28.0` → `2.28.1`. `wolfctl` unchanged (v3.5).
+
 ## CLI v2.28.0 + TG v1.17.0 — extract shared helpers to `core/` (CLI ↔ TG dedup + TG bug fixes) (2026-07-18)
 
 User asked: "stop reimplementing what already exists — TG is the baseline, CLI ≥ TG, merge duplicated functions." Six pure-Python helpers were duplicated between `wolfbet.py` and `tg/*.py`. This release consolidates them, fixes two real bugs in the TG bot that only existed because the two engines evolved separately, and adds one small parity gain in `/benchmark`.

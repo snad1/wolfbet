@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.28.0 + Telegram Bot v1.17.0
+# WolfBet AutoBot v2.28.1 + Telegram Bot v1.17.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -165,6 +165,8 @@ Available while the dashboard is running:
 | `E` | Export the current session (CSV or JSON) |
 | `H` | Show history — recent bets, session stats |
 | `Q` | Quit — saves session, renders the summary panel |
+
+**Monitor mode caveat** (`wolfctl monitor` / `wolfctl interactive`): the daemon runs headless (no TTY), so only `P` / `R` / `S` / `Q` are wired through signals (SIGUSR1 / SIGUSR2 / SIGTERM). `T` / `E` / `H` are foreground-TUI-only. For tweaks while a daemon session runs, use `wolfctl config-set KEY=VALUE`; for exports and history, use `wolfctl export`, `wolfctl stats`, `wolfctl analytics`.
 
 ---
 
@@ -556,6 +558,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **v2.26.1** — BPS diagnostic tools. **`--benchmark [N]`** / **`wolfctl benchmark`**: standalone API-latency probe (no bets placed) with plain-English verdict — "Network bottleneck / Rate-limited / Network fast / …". **`--diagnose`** / **`wolfctl diagnose`**: one-shot analysis of the running daemon, picks the top blocker (Network / CLI overhead / User delay) and gives targeted advice. **`--status` extension**: now surfaces `p50 / p99 / cycle_ms / efficiency%` rows that already existed in the state file but weren't printed. wolfctl v3.5. Zero behavior changes to the bet loop.
 - **v2.27.0** — Async bet-writer + SQLite tuning. Kills the per-bet CLI overhead (~67 ms → ~10 ms on typical VPS SSD) via a background writer thread with a persistent tuned connection (`synchronous=NORMAL`, `busy_timeout=5000`, `cache_size=-32000`, `temp_store=MEMORY`) and batched `executemany` inserts. Bounded queue with nothing-lost sync fallback on overflow, drained on shutdown. New `db_write_mode` config (`async` default, `sync` opt-out). `--diagnose` gains a DB writer row with queue depth + fallback counter + advice.
 - **v2.28.0 + TG v1.17.0** — Extract shared helpers to `core/`. Six pure-Python helpers duplicated between the CLI and TG bot (`validate_proxy`, `mask_proxy`, `classify_auto_stop_reason`, `parse_streak_delay`, `percentile`, `benchmark_verdict`) move to `core/net_helpers.py` + `core/diagnostics.py`. **TG bot fixes for free**: gains max-nonce recovery (previously fell through to generic "Bet request failed") and a proxy-mask that no longer leaks `"None"` on port-less URLs. TG `/benchmark` gains p50/p99 and a plain-English verdict line. Zero CLI behaviour change.
+- **v2.28.1** — Monitor UX + systemd `Restart=` fix. Monitor footer advertises `wolfctl config-set` for tweaks + `wolfctl export/stats/analytics` for data. `S` from monitor now routes through `systemctl --user stop wolfbet` when the daemon is systemd-managed, so it stays stopped (previously systemd's `Restart=always` respawned the daemon within ~10 s). `install.sh` writes `Restart=on-failure` for CLI + TG units; `wolfctl update` idempotently migrates existing installs (`Restart=always` → `Restart=on-failure` + `daemon-reload`). Real crashes still auto-recover.
 
 ---
 

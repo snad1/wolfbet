@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.28.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.28.1  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -577,7 +577,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.28.0"
+VERSION      = "2.28.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -4336,8 +4336,27 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     status_txt = status[:60] if status else "Monitoring…"
     keys = "[P]ause [R]esume [Q]uit/Detach [S]top daemon"
     add(f" {_a('bold_white', 'MONITOR')} {_a('white', status_txt)}  {_a('dim', keys)}")
+    # v2.28.1 — advertise the config-change path since T/E/H are foreground-TUI only.
+    add(f" {_a('dim', 'Tweak config:')} {_a('cyan', 'wolfctl config-set KEY=VALUE')}   "
+        f"{_a('dim', '· Export/history:')} {_a('cyan', 'wolfctl export / stats / analytics')}")
 
     return "\r\n".join(lines)
+
+
+def _is_systemd_managed(pid) -> bool:
+    """Return True when the given pid runs inside a systemd wolfbet unit.
+
+    Used by cmd_monitor's stop path so pressing 'S' from monitor goes through
+    `systemctl --user stop wolfbet` (systemd knows to keep it stopped) instead
+    of raw SIGTERM (systemd sees a clean exit and respawns per Restart= policy).
+    """
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{pid}/cgroup", "r") as f:
+            return "wolfbet.service" in f.read()
+    except OSError:
+        return False
 
 
 def cmd_monitor():
@@ -4352,7 +4371,8 @@ def cmd_monitor():
         return
 
     sid = d.get("session_id", 0)
-    console.print(f"[dim]Attaching to session #{sid} (PID {pid})… Press Q to detach.[/]")
+    console.print(f"[dim]Attaching to session #{sid} (PID {pid})… "
+                  f"Keys: P/R/S/Q · Tweak: [cyan]wolfctl config-set KEY=VALUE[/][/]")
     time.sleep(0.5)
 
     # Save terminal state
@@ -4430,9 +4450,20 @@ def cmd_monitor():
             sys.stdout.flush()
             time.sleep(0.5)
 
-        # Handle stop action
+        # Handle stop action — go through systemctl when systemd manages the
+        # daemon so the unit's Restart= policy doesn't respawn on a clean exit.
+        # Fall back to SIGTERM for non-systemd installs.
         if _monitor_action[0] == "stop" or (locals().get("action") == "stop"):
-            if pid:
+            stopped_via_systemd = False
+            if _is_systemd_managed(pid):
+                try:
+                    import subprocess as _sp
+                    _sp.run(["systemctl", "--user", "stop", "wolfbet"],
+                            check=False, timeout=10)
+                    stopped_via_systemd = True
+                except Exception:
+                    pass
+            if not stopped_via_systemd and pid:
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except OSError:

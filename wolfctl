@@ -351,6 +351,23 @@ cmd_update() {
         fi
     fi
 
+    # v2.28.1 — migrate old Restart=always → Restart=on-failure so that
+    # `wolfctl stop` and monitor's [S] stay stopped instead of triggering a
+    # systemd respawn. Idempotent: subsequent runs find no match and skip.
+    local _sd_reload=0
+    for _unit in wolfbet.service wolfbet-tg.service wolfbet-web.service; do
+        local _unit_path="$HOME/.config/systemd/user/$_unit"
+        if [ -f "$_unit_path" ] && grep -q '^Restart=always$' "$_unit_path"; then
+            sed -i.bak 's/^Restart=always$/Restart=on-failure/' "$_unit_path" \
+                && rm -f "$_unit_path.bak" \
+                && echo "Migrated $_unit: Restart=always → Restart=on-failure" \
+                && _sd_reload=1
+        fi
+    done
+    if [ "$_sd_reload" = "1" ]; then
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
+
     # Re-install deps
     "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
