@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.25.0 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.25.1 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -107,6 +107,22 @@ wolfctl tg logs         # Stream Telegram bot logs
 wolfctl start-all       # Start both CLI + Telegram bots
 wolfctl stop-all        # Stop both bots
 wolfctl status-all      # Check all services
+```
+
+**Config + tools** (v2.25.1 — parity with `python3 wolfbet.py --<flag>`):
+
+```bash
+wolfctl config-show                     # dump current config (API key masked)
+wolfctl config-set maxprofit=0.005 delay=0.35   # non-interactive tweak
+wolfctl pipeline 3                      # set pipeline depth (Flat-only)
+
+wolfctl analytics                       # lifetime aggregates + top 5
+wolfctl last-bets 20                    # last N bets across sessions
+wolfctl export /tmp/out.csv [SID]       # CSV/JSON export (per session or all)
+
+wolfctl backtest --simulate 10000 --seed 42     # backtest (no API calls)
+wolfctl preset martingale-safe          # load preset + start daemon
+wolfctl version                         # print CLI + wolfctl versions
 ```
 
 ### Non-interactive config
@@ -511,6 +527,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **v2.23.1** — README documentation refresh.
 - **Phase 5b (v2.24.0)** — Pipelined betting: `--pipeline N` (Flat-only, ThreadPoolExecutor + Semaphore, guardrail forces depth 1 for non-Flat / auto-bet). Last outstanding CLI ↔ TG parity gap closed.
 - **v2.25.0** — Auto-bet max-nonce recovery (seed rotation, circuit breaker, same-CLI-session guarantee); non-interactive config surface (`--config-show`, `--config-set`); rich `--help` with grouped examples; monitor stats (ROI %, API p50/p99 unconditional, Efficiency + Cycle unconditional, `/auto/start` quota with low-warning colour).
+- **v2.25.1** — `wolfctl` refresh (v3.3) — feature parity with the Python CLI: nine new subcommands (`config-show`, `config-set`, `analytics`, `backtest`, `export`, `last-bets`, `preset`, `pipeline`, `version`). `install.sh` no longer inlines a stale v3.1 heredoc; installs the repo `wolfctl` directly. One source of truth.
 
 ---
 

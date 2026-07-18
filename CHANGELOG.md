@@ -1,5 +1,29 @@
 # Changelog
 
+## CLI v2.25.1 — wolfctl refresh (subcommand parity + install.sh drift fix) (2026-07-18)
+
+**Fixes real-world discoverability gap** — `wolfctl --help` was still labelled v3.1 on production servers and didn't expose any of the flags shipped after v2.19 (`--analytics`, `--backtest`, `--export`, `--pipeline`, `--config-show`, `--config-set`, `--version`, `--last-bets`, `--preset`). Two drift sources fixed at once:
+
+- **wolfctl v3.2 → v3.3**: nine new subcommands mapping 1:1 to CLI flags:
+  - `wolfctl config-show` → `--config-show`
+  - `wolfctl config-set KEY=VALUE …` → `--config-set KEY=VALUE …`
+  - `wolfctl analytics` → `--analytics`
+  - `wolfctl backtest [args…]` → `--backtest [args…]`
+  - `wolfctl export PATH [SID]` → `--export PATH [--export-session-id SID]`
+  - `wolfctl last-bets N` → `--last-bets N`
+  - `wolfctl preset NAME` → `--preset NAME --daemon`
+  - `wolfctl pipeline N` → `--config-set pipeline_depth=N` (convenience alias)
+  - `wolfctl version` → `--version` + prints wolfctl's own v3.3
+- **`usage()` refresh** — new `CONFIG` and `TOOLS` groups; 26+ subcommand rows (was 20).
+- **Argument validation** — each new subcommand prints a one-line `Usage:` on missing args and exits 2. Matches existing `cmd_session` / `cmd_tg` pattern.
+- **`help` / `--help` / `-h` / `--version` / `-v` aliases** — added to dispatch.
+
+**install.sh drift fix**: the previous version inlined a 350-line heredoc of a stale v3.1 wolfctl — fresh installs got the old copy regardless of what the repo shipped. Replaced with `install -m 0755 "$SCRIPT_DIR/wolfctl" "$WOLFCTL"`. One source of truth: install.sh + `git pull` + `wolfctl update` all converge on the same script.
+
+**Tests**: `tests/test_phase5e_wolfctl.py` — 16 tests (string presence + `bash wolfctl` subprocess smoke). Validates every new `cmd_*` / dispatch case / flag reference, `usage()` row count, install.sh drift removal + `install -m 0755` presence, bash syntax valid. **276 total passing.**
+
+**Zero Python code changes.** `VERSION` bumped `2.25.0` → `2.25.1` (docs / wrapper / installer only).
+
 ## CLI v2.25.0 — max-nonce recovery + non-interactive config + monitor stats (2026-07-18)
 
 **Fixes real-world dashboard spam** — when the WolfBet server-side auto-bet cycle hit `Max nonce achieved` (server seed nonce exhausted), the CLI kept re-calling `/auto/start` every 2 s with the same seed, one new dashboard row per attempt. Recovery function `_recover_expired_session` existed but was dead code — now wired in.

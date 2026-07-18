@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.2
+# WolfBet AutoBot — Unified Management Command v3.3
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -17,49 +17,64 @@ SCRIPT_NAME="wolfctl"
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.2"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.3"
     echo ""
     echo "  CLI BOT:"
-    echo "    wolfctl setup       Run wizard to configure"
-    echo "    wolfctl start       Start CLI bot as daemon"
-    echo "    wolfctl stop        Stop CLI bot"
-    echo "    wolfctl restart     Restart CLI bot"
-    echo "    wolfctl status      Show CLI bot status"
-    echo "    wolfctl monitor     Attach live TUI to running daemon"
-    echo "    wolfctl logs        Stream CLI bot logs"
-    echo "    wolfctl logs-full   Show last 200 log lines"
+    echo "    wolfctl setup         Run wizard to configure"
+    echo "    wolfctl start         Start CLI bot as daemon"
+    echo "    wolfctl stop          Stop CLI bot"
+    echo "    wolfctl restart       Restart CLI bot"
+    echo "    wolfctl status        Show CLI bot status"
+    echo "    wolfctl monitor       Attach live TUI to running daemon"
+    echo "    wolfctl logs          Stream CLI bot logs"
+    echo "    wolfctl logs-full     Show last 200 log lines"
     echo ""
     echo "  TELEGRAM BOT:"
-    echo "    wolfctl tg start    Start Telegram bot"
-    echo "    wolfctl tg stop     Stop Telegram bot"
-    echo "    wolfctl tg restart  Restart Telegram bot"
-    echo "    wolfctl tg status   Show Telegram bot status"
-    echo "    wolfctl tg logs     Stream Telegram bot logs"
-    echo "    wolfctl tg env      Edit .env file (token, config)"
+    echo "    wolfctl tg start      Start Telegram bot"
+    echo "    wolfctl tg stop       Stop Telegram bot"
+    echo "    wolfctl tg restart    Restart Telegram bot"
+    echo "    wolfctl tg status     Show Telegram bot status"
+    echo "    wolfctl tg logs       Stream Telegram bot logs"
+    echo "    wolfctl tg env        Edit .env file (token, config)"
     echo ""
     echo "  ALL SERVICES:"
-    echo "    wolfctl start-all   Start both CLI + Telegram bots"
-    echo "    wolfctl stop-all    Stop both bots"
-    echo "    wolfctl status-all  Show status of all services"
+    echo "    wolfctl start-all     Start both CLI + Telegram bots"
+    echo "    wolfctl stop-all      Stop both bots"
+    echo "    wolfctl status-all    Show status of all services"
     echo ""
     echo "  SHORTCUTS:"
-    echo "    wolfctl interactive Start CLI daemon + attach monitor"
-    echo "    wolfctl tmux        Monitor in detachable tmux session"
+    echo "    wolfctl interactive   Start CLI daemon + attach monitor"
+    echo "    wolfctl tmux          Monitor in detachable tmux session"
     echo ""
-    echo "  WEB ADMIN:"
-    echo "    wolfctl web install  Install web admin dashboard"
-    echo "    wolfctl web start    Start web app"
-    echo "    wolfctl web stop     Stop web app"
-    echo "    wolfctl web restart  Restart web app"
-    echo "    wolfctl web status   Show web app status"
-    echo "    wolfctl web logs     Stream web app logs"
-    echo "    wolfctl web update   Update web app files"
+    echo "  CONFIG:"
+    echo "    wolfctl config-show                    Show current config (API key masked)"
+    echo "    wolfctl config-set KEY=VALUE [K=V …]   Non-interactive tweak (delay=0.35, maxprofit=0.005, …)"
+    echo "    wolfctl pipeline N                     Set pipeline depth (1..8; Flat-only)"
     echo ""
     echo "  DATA:"
-    echo "    wolfctl stats       Show all-time session statistics"
-    echo "    wolfctl session ID  Full stats + streak distribution"
-    echo "    wolfctl presets     List saved presets"
-    echo "    wolfctl update      Update bot from current directory"
+    echo "    wolfctl stats               Recent 20 sessions in detail"
+    echo "    wolfctl analytics           Lifetime aggregates + top 5 best/worst"
+    echo "    wolfctl session ID          Full stats + streaks for one session"
+    echo "    wolfctl last-bets N         Last N bets across all sessions (default 20)"
+    echo "    wolfctl presets             List saved presets"
+    echo "    wolfctl export PATH [SID]   Export sessions (CSV/JSON by extension)"
+    echo ""
+    echo "  TOOLS:"
+    echo "    wolfctl backtest [args…]    Backtest / replay (no API calls, no real balance)"
+    echo "                                Examples: --simulate 10000 --seed 42"
+    echo "                                          --replay-session 42 --preset foo"
+    echo "    wolfctl preset NAME         Load preset + start daemon"
+    echo "    wolfctl update              Pull latest + reinstall (git repo required)"
+    echo "    wolfctl version             Show CLI + wolfctl versions"
+    echo ""
+    echo "  WEB ADMIN:"
+    echo "    wolfctl web install         Install web admin dashboard"
+    echo "    wolfctl web start           Start web app"
+    echo "    wolfctl web stop            Stop web app"
+    echo "    wolfctl web restart         Restart web app"
+    echo "    wolfctl web status          Show web app status"
+    echo "    wolfctl web logs            Stream web app logs"
+    echo "    wolfctl web update          Update web app files"
     echo ""
 }
 
@@ -173,6 +188,75 @@ cmd_session() {
 
 cmd_presets() {
     "$PYTHON" "$BOT" --list-presets
+}
+
+# ── v2.25.0 parity — read-only inspection ─────────────
+cmd_analytics() {
+    "$PYTHON" "$BOT" --analytics
+}
+
+cmd_last_bets() {
+    local n="${1:-20}"
+    "$PYTHON" "$BOT" --last-bets "$n"
+}
+
+cmd_config_show() {
+    "$PYTHON" "$BOT" --config-show
+}
+
+cmd_version() {
+    "$PYTHON" "$BOT" --version
+    echo "  wolfctl v3.3"
+}
+
+# ── v2.25.0 parity — mutation ──────────────────────────
+cmd_config_set() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: wolfctl config-set KEY=VALUE [KEY=VALUE …]"
+        echo "  Aliases match the T-hotkey grammar (delay, maxprofit, pipeline, …)."
+        echo "  api_key is refused — set WOLFBET_API_KEY env var instead."
+        exit 2
+    fi
+    "$PYTHON" "$BOT" --config-set "$@"
+}
+
+cmd_pipeline() {
+    local n="${1:-}"
+    if [ -z "$n" ]; then
+        echo "Usage: wolfctl pipeline N   (N = 1..8; Flat-only, 1 disables)"
+        exit 2
+    fi
+    "$PYTHON" "$BOT" --config-set "pipeline_depth=$n"
+}
+
+# ── v2.25.0 parity — data + tools ──────────────────────
+cmd_export() {
+    local path="${1:-}"
+    local sid="${2:-}"
+    if [ -z "$path" ]; then
+        echo "Usage: wolfctl export PATH [SESSION_ID]"
+        echo "  Format inferred from .csv / .json extension."
+        exit 2
+    fi
+    if [ -n "$sid" ]; then
+        "$PYTHON" "$BOT" --export "$path" --export-session-id "$sid"
+    else
+        "$PYTHON" "$BOT" --export "$path"
+    fi
+}
+
+cmd_backtest() {
+    "$PYTHON" "$BOT" --backtest "$@"
+}
+
+cmd_preset() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        echo "Usage: wolfctl preset NAME"
+        echo "  Loads named preset and starts as a daemon. Attach with: wolfctl monitor"
+        exit 2
+    fi
+    "$PYTHON" "$BOT" --preset "$name" --daemon
 }
 
 cmd_update() {
@@ -455,26 +539,36 @@ cmd_web() {
 
 # ── Dispatch ─────────────────────────────────────────
 case "${1:-}" in
-    setup)       cmd_setup ;;
-    start)       cmd_start ;;
-    stop)        cmd_stop ;;
-    restart)     cmd_restart ;;
-    status)      cmd_status ;;
-    monitor)     cmd_monitor ;;
-    logs)        cmd_logs ;;
-    logs-full)   cmd_logs_full ;;
-    interactive) cmd_interactive ;;
-    tmux)        cmd_tmux ;;
-    stats)       cmd_stats ;;
-    session)     cmd_session "${2:-}" ;;
-    presets)     cmd_presets ;;
-    update)      cmd_update ;;
-    tg)          cmd_tg "${2:-}" ;;
-    web)         cmd_web "${@:2}" ;;
-    start-all)   cmd_start_all ;;
-    stop-all)    cmd_stop_all ;;
-    status-all)  cmd_status_all ;;
-    *)           usage ;;
+    setup)        cmd_setup ;;
+    start)        cmd_start ;;
+    stop)         cmd_stop ;;
+    restart)      cmd_restart ;;
+    status)       cmd_status ;;
+    monitor)      cmd_monitor ;;
+    logs)         cmd_logs ;;
+    logs-full)    cmd_logs_full ;;
+    interactive)  cmd_interactive ;;
+    tmux)         cmd_tmux ;;
+    stats)        cmd_stats ;;
+    session)      cmd_session "${2:-}" ;;
+    presets)      cmd_presets ;;
+    analytics)    cmd_analytics ;;
+    last-bets)    cmd_last_bets "${2:-}" ;;
+    export)       cmd_export "${2:-}" "${3:-}" ;;
+    config-show)  cmd_config_show ;;
+    config-set)   shift; cmd_config_set "$@" ;;
+    pipeline)     cmd_pipeline "${2:-}" ;;
+    backtest)     shift; cmd_backtest "$@" ;;
+    preset)       cmd_preset "${2:-}" ;;
+    version|--version|-v) cmd_version ;;
+    update)       cmd_update ;;
+    tg)           cmd_tg "${2:-}" ;;
+    web)          cmd_web "${@:2}" ;;
+    start-all)    cmd_start_all ;;
+    stop-all)     cmd_stop_all ;;
+    status-all)   cmd_status_all ;;
+    help|--help|-h) usage ;;
+    *)            usage ;;
 esac
 exit
 }
