@@ -1,5 +1,31 @@
 # Changelog
 
+## CLI v2.25.3 — `recurring_delay` (TG↔CLI parity) + api_key SET/NOT SET (2026-07-18)
+
+Closes a real CLI ↔ TG parity gap surfaced by the user's config-show audit: `recurring_delay` existed only in `tg/handlers.py` (default 60 s, floor 5 s). The CLI's `_reset_session_for_recurring` dropped straight into the next cycle with no pause — cycles were back-to-back.
+
+- **New**: `BotState.recurring_delay: float = 60.0` — seconds to pause between one recurring cycle ending and the next starting. `0` allows back-to-back; clamped to `[0, 3600]`.
+- **Sleep site**: top of `_reset_session_for_recurring` — dashboard shows `"Recurring pause 60s before next cycle…"` for the pause window; logged at INFO. Covers both `betting_loop` and `pipelined_betting_loop` since both call the same reset function.
+- **Full plumbing**:
+  - `_CONFIG_KEYS` + `_PRESET_KEYS`: `recurring_delay` round-trips through JSON.
+  - `_TWEAK_ALIAS`: `recdelay` and `recurringdelay` both resolve to `recurring_delay` (TG alias parity).
+  - `_TWEAK_PARAMS`: mutable via the `T` hotkey, `wolfctl config-set`, `--config-set`.
+  - `_apply_mutation`: parses, clamps to `[0, 3600]`, `off` / `0` disables.
+  - `_CONFIG_SHOW_FIELDS`: new row in `wolfctl config-show` / `--config-show`.
+  - Wizard step 5b: new prompt after the `recurring` yes/no.
+  - `_HELP_EPILOG`: `--config-set recurring=on recdelay=90 maxbets=1000` example.
+- **`_check_risky_config`**: extended "Recurring runaway" warning to include the pause length (`"delay 60s between cycles"`) or `"back-to-back (no delay)"` when `recurring_delay=0`.
+- **`cmd_config_show`**: `api_key` row now shows `(SET)` (bold green) or `(NOT SET)` (bold red) after the masked value — parity with TG `/config` Yes/No indicator.
+
+**Deferred (out of scope, documented in audit)**:
+
+- `purge_days` — TG-only DB retention config. CLI would need a `--cleanup` command; separate phase.
+- `proxy` — TG-only HTTP routing. CLI would need HTTP-client rework; separate phase.
+
+**Tests**: `tests/test_phase5f_recurring_delay.py` — 20 tests (default value, membership across all config surfaces, mutation clamps, alias resolution, sleep behavior with mocked `time.sleep`, dashboard smoke via `cmd_config_show` source-string check, risky-config warning phrasing). **299 total passing.**
+
+`VERSION` bumped `2.25.2` → `2.25.3`. `wolfctl` stays at v3.3 (same public surface).
+
 ## CLI v2.25.2 — `wolfctl update` survives a dirty working tree (2026-07-18)
 
 **Fixes real-world blocker** on the production server:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.25.2  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.25.3  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -197,9 +197,12 @@ def _check_risky_config() -> list:
         )
     # Recurring runaway
     if state.recurring and state.max_profit is None and state.max_bets is None:
+        rd = getattr(state, "recurring_delay", 0.0) or 0.0
+        gap = f"delay {rd:.0f}s between cycles" if rd > 0 else "back-to-back (no delay)"
         warnings.append(
             "Recurring restart is on with no max_profit and no max_bets — "
-            "sessions could restart indefinitely. Consider setting at least one cap."
+            f"sessions could restart indefinitely ({gap}). "
+            "Consider setting at least one cap."
         )
     # Rule-based without cap
     if sk == "8" and state.max_bets is None:
@@ -229,6 +232,13 @@ def _check_risky_config() -> list:
 
 def _reset_session_for_recurring() -> None:
     """Reset per-session counters while preserving config. Starts a new DB session row."""
+    # Recurring delay — pause BEFORE the next cycle so the user has time to
+    # intervene, the server settles, and the dashboard shows why the bot is idle.
+    if state.recurring_delay > 0:
+        with state.lock:
+            state.status = f"Recurring pause {state.recurring_delay:.0f}s before next cycle…"
+        logger.info("RECURRING pause %.0fs before next cycle", state.recurring_delay)
+        time.sleep(state.recurring_delay)
     with state.lock:
         state.session_id     = _db_start_session()
         state.session_start  = time.time()
@@ -285,13 +295,15 @@ _TWEAK_ALIAS = {
     "lossmult":    "loss_mult",
     "winmult":     "win_mult",
     "pipeline":    "pipeline_depth",
+    "recdelay":    "recurring_delay",
+    "recurringdelay": "recurring_delay",
 }
 _TWEAK_PARAMS = {
     "bet_delay", "basebet_pct",
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
-    "profit_increment", "profit_threshold", "recurring",
+    "profit_increment", "profit_threshold", "recurring", "recurring_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
     "pipeline_depth",
 }
@@ -380,6 +392,19 @@ def _apply_mutation(changes: dict) -> list:
         v = str(changes["recurring"]).lower()
         state.recurring = v in ("on", "true", "yes", "y", "1")
         msgs.append(f"Recurring: {'on' if state.recurring else 'off'}")
+
+    # Recurring delay — pause between cycles in seconds (0 = back-to-back).
+    if "recurring_delay" in changes:
+        v = changes["recurring_delay"]
+        if _is_off(v):
+            state.recurring_delay = 0.0
+        else:
+            try:
+                state.recurring_delay = max(0.0, min(3600.0, float(v)))
+            except (TypeError, ValueError):
+                raise ValueError(f"recurring_delay must be a number 0-3600, got {v!r}")
+        msgs.append(f"Recurring delay: {state.recurring_delay:.0f}s"
+                    if state.recurring_delay > 0 else "Recurring delay: off")
 
     # Pipeline depth — instant int (dispatcher re-evaluates on next iteration).
     # Guardrail is enforced by _effective_pipeline_depth(); we just clamp to [1, 8].
@@ -510,7 +535,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.25.2"
+VERSION      = "2.25.3"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -546,7 +571,7 @@ _CONFIG_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold",
-    "pipeline_depth",
+    "pipeline_depth", "recurring_delay",
 ]
 
 def _mask_key(key: str) -> str:
@@ -601,6 +626,8 @@ _PRESET_KEYS = [
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     # Phase 5b — pipeline depth persists per preset:
     "pipeline_depth",
+    # v2.25.3 — pause between recurring cycles (TG↔CLI parity):
+    "recurring_delay",
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -869,6 +896,9 @@ class BotState:
         self._last_profit_milestone: float = 0.0
         # Recurring: restart session after non-loss, non-insufficient-balance stop with profit≥0
         self.recurring        : bool = False
+        # Seconds to pause between one recurring cycle ending and the next starting.
+        # Mirrors TG bot's tg/handlers.py:801 (default 60, floor 0, cap 3600).
+        self.recurring_delay  : float = 60.0
 
         # ── Phase 5c — auto-bet recovery (max nonce / session expired) ──
         # Tag from _classify_auto_stop_reason: "max_nonce", "expired", or "".
@@ -3631,6 +3661,16 @@ def setup_wizard():
                    default="y" if state.recurring else "n", choices=["y", "n"])
         state.recurring = (rec.lower() == "y")
 
+        # Recurring delay — seconds to pause between cycles (TG parity, default 60).
+        v = _ask_optional("Pause between recurring cycles in seconds (0 = back-to-back)",
+                          state.recurring_delay if state.recurring_delay > 0 else None)
+        if v is _BACK:
+            return False
+        try:
+            state.recurring_delay = max(0.0, min(3600.0, float(v))) if v else 0.0
+        except ValueError:
+            state.recurring_delay = 60.0
+
         # basebet_pct — dynamic base bet as % of balance.
         v = _ask_optional("Base bet as % of balance (0-1, blank/none to disable)",
                           state.basebet_pct or None)
@@ -4378,6 +4418,7 @@ _CONFIG_SHOW_FIELDS = [
     ("profit_increment",      "Bump base_bet by this at every profit milestone"),
     ("profit_threshold",      "Profit interval between increments"),
     ("recurring",             "Auto-restart cycle on non-loss stop"),
+    ("recurring_delay",       "Seconds to pause between recurring cycles (0 = back-to-back)"),
     ("basebet_pct",           "Base bet as % of balance (0 = off)"),
     ("streak_delay_loss",     "Extra pause after N losses in a row  (N:sec)"),
     ("streak_delay_win",      "Extra pause after N wins in a row  (N:sec)"),
@@ -4428,7 +4469,8 @@ def cmd_config_show():
     tbl.add_column("Value",       style="cyan")
     tbl.add_column("Description", style="dim")
 
-    tbl.add_row("api_key", f"[dim]{_mask_key(state.api_key)}[/]",
+    key_state = "[bold green](SET)[/]" if state.api_key else "[bold red](NOT SET)[/]"
+    tbl.add_row("api_key", f"[dim]{_mask_key(state.api_key)}[/] {key_state}",
                 "API bearer token (set via WOLFBET_API_KEY env var)")
     for field, desc in _CONFIG_SHOW_FIELDS:
         try:
@@ -5114,7 +5156,7 @@ Examples:
   Config mutation (no wizard, one-shot)
     wolfbet.py --config-set max_profit=0.005 base_bet=0.0001
     wolfbet.py --config-set delay=0.35 pipeline=3
-    wolfbet.py --config-set recurring=on maxbets=1000
+    wolfbet.py --config-set recurring=on recdelay=90 maxbets=1000
     wolfbet.py --preset martingale-safe --daemon
 
   Data

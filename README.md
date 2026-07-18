@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.25.2 + Telegram Bot v1.16.0
+# WolfBet AutoBot v2.25.3 + Telegram Bot v1.16.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -210,6 +210,7 @@ Pass `off` / `none` / `0` to clear an optional value (e.g. `maxloss off`).
 Available in wizard Step 5b and via `T` at runtime:
 
 - **Recurring restart** — when a stop condition fires, auto-open a new cycle with the same config (bounded by `max_bets` / `max_profit` for safety).
+- **Recurring delay** — `recurring_delay` (alias `recdelay`) — seconds to pause between cycles (default 60, `0` = back-to-back, max 3600). Dashboard shows `"Recurring pause Ns before next cycle…"` during the pause. TG↔CLI parity.
 - **Streak delays** — `streak_delay_loss`, `streak_delay_win`, `streak_delay_bets` — extra pause after N-in-a-row.
 - **`streakbet_loss`** — after N losses in a row, flip base bet direction (used by WolfRider-style strategies).
 - **`basebet_pct`** — dynamic base bet as % of current balance (recomputes every cycle reset).
@@ -529,6 +530,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **v2.25.0** — Auto-bet max-nonce recovery (seed rotation, circuit breaker, same-CLI-session guarantee); non-interactive config surface (`--config-show`, `--config-set`); rich `--help` with grouped examples; monitor stats (ROI %, API p50/p99 unconditional, Efficiency + Cycle unconditional, `/auto/start` quota with low-warning colour).
 - **v2.25.1** — `wolfctl` refresh (v3.3) — feature parity with the Python CLI: nine new subcommands (`config-show`, `config-set`, `analytics`, `backtest`, `export`, `last-bets`, `preset`, `pipeline`, `version`). `install.sh` no longer inlines a stale v3.1 heredoc; installs the repo `wolfctl` directly. One source of truth.
 - **v2.25.2** — `wolfctl update` now uses `git pull --ff-only --autostash` with a dirty-tree preflight, so local changes are safely stashed rather than blocking the pull. On failure, prints the exact recovery command (`git stash list  |  git stash pop`). Zero destructive fallbacks.
+- **v2.25.3** — `recurring_delay` (TG↔CLI parity): configurable pause between recurring cycles (default 60s, `0` = back-to-back). Wizard prompt, `_apply_mutation` grammar (`recdelay` alias), config-show row, risky-config warning phrasing. `api_key` row now shows `(SET)` / `(NOT SET)` after the masked value.
 
 ---
 
