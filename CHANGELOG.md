@@ -1,5 +1,38 @@
 # Changelog
 
+## CLI v2.26.0 — proxy support + retention (`--cleanup`) + wolfctl HTTPS (2026-07-18)
+
+Closes the last two deferred TG↔CLI parity items from the v2.25.3 audit and fixes a small operational hazard in `wolfctl update`.
+
+- **Proxy support (A)**:
+  - `BotState.proxy: Optional[str] = None` — full URL. `None` = direct.
+  - `_validate_proxy(url)` — accepts `http://`, `https://`, `socks5://`; `off/none/direct/0/'' ` → `None`; raises `ValueError` on any other scheme. Mirrors `tg/handlers.py:569-581`.
+  - `_mask_proxy(url)` — `urlparse` → `scheme://host:port`; strips userinfo. Used everywhere proxy is displayed / logged. Mirrors `tg/handlers.py:530-540`.
+  - `_http_session: requests.Session` — new module-level shared session with `User-Agent: wolfbet-cli/<VERSION>` and (optional) proxies. **Every** wolfbet.com call (5 sites: `api_get_balances`, `_rotate_server_seed`, `api_auto_start`, `api_auto_stop`, `api_place_bet`) now goes through it. Zero bare `requests.get/post` calls remain.
+  - `_apply_proxy_to_session()` — sets `_http_session.proxies`. Called from `load_config` (on boot) and `_apply_mutation` (on tweak).
+  - `_apply_mutation` logs the **masked** URL, never the raw credentials.
+  - `_check_risky_config` warns non-blockingly when `proxy` scheme is `http://` (cleartext credentials on the wire).
+  - **SOCKS5 without `requests[socks]`**: `_validate_proxy` accepts the URL; the actual `requests` call will surface the missing-dep error to the user. Kept as an optional install to avoid inflating the base requirement set.
+
+- **Retention (B)**:
+  - `BotState.purge_days: int = 3` — bet-row retention window, clamped `[1, 30]`. Alias `purgedays`.
+  - `_retention_worker()` — background thread, sleeps 3600 s, calls `cleanup_live_bets(DB_PATH, state.purge_days)`. Mirrors `tg/engine.py:747-758`.
+  - **Startup call** — `cleanup_old_bets(DB_PATH, state.purge_days)` right after `init_db()`, matching `tg/engine.py:979`. First time the CLI daemon boots, old bet rows from long-ended sessions are purged; session aggregates preserved.
+  - New `--cleanup [DAYS]` flag (arg optional; defaults to `state.purge_days`). Dispatches to `cmd_cleanup(days)` which prints a Rich summary of rows deleted.
+  - New `wolfctl cleanup [DAYS]` subcommand.
+
+- **`wolfctl` (C)**:
+  - Version `v3.3` → `v3.4`.
+  - New `cmd_cleanup [DAYS]` + dispatch + usage() row (DATA group).
+  - `git+ssh://git@github.com/snad1/casino-shared.git` → `git+https://github.com/snad1/casino-shared.git`. No SSH key needed for a public repo; no interactive host-key prompt on fresh hosts.
+
+- **`--help` epilog (D)**:
+  - New example lines for `--config-set proxy=https://…`, `--config-set purgedays=7`, and `--cleanup 7`.
+
+**Tests**: `tests/test_phase5g_proxy.py` (25 tests — defaults, `_validate_proxy` scheme matrix, off-value coverage, `_mask_proxy` credential stripping, `_apply_mutation` state+session sync, `_check_risky_config` `http://` warning, source-scan for zero bare `requests.*` calls, ≥5 `_http_session.*` sites); `tests/test_phase5h_purge_days.py` (14 tests — defaults, membership, alias, clamp edges, `cmd_cleanup` delegates to `cleanup_old_bets` with expected args); extended `tests/test_phase5e_wolfctl.py` (3 new — v3.4 label, `cmd_cleanup` presence, `git+https://` casino-shared URL). **343 total passing.**
+
+`VERSION` `2.25.3` → `2.26.0` (minor — real new features). `wolfctl` `v3.3` → `v3.4`.
+
 ## CLI v2.25.3 — `recurring_delay` (TG↔CLI parity) + api_key SET/NOT SET (2026-07-18)
 
 Closes a real CLI ↔ TG parity gap surfaced by the user's config-show audit: `recurring_delay` existed only in `tg/handlers.py` (default 60 s, floor 5 s). The CLI's `_reset_session_for_recurring` dropped straight into the next cycle with no pause — cycles were back-to-back.

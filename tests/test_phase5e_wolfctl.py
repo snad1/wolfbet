@@ -53,11 +53,6 @@ def test_wolfctl_wires_expected_flags():
 
 
 # ── Version bump v3.2 → v3.3 ──────────────────────────────
-def test_wolfctl_version_v3_3():
-    src = _read(_WOLFCTL)
-    assert "v3.3" in src
-    assert "v3.2" not in src
-
 
 # ── usage() coverage floor ────────────────────────────────
 def test_wolfctl_usage_lists_new_subcommands():
@@ -149,6 +144,25 @@ def test_wolfctl_syntax_valid():
 def test_wolfctl_help_alias():
     proc = subprocess.run(["bash", _WOLFCTL, "help"], capture_output=True, text=True, timeout=5)
     assert "wolfctl —" in proc.stdout or "wolfctl" in proc.stdout
+
+
+def test_wolfctl_version_v3_4():
+    src = _read(_WOLFCTL)
+    assert "v3.4" in src
+    assert "v3.3" not in src
+
+
+def test_wolfctl_has_cleanup_subcommand():
+    src = _read(_WOLFCTL)
+    assert "cmd_cleanup()" in src
+    assert "cleanup)" in src
+    assert "--cleanup" in src
+
+
+def test_wolfctl_uses_https_for_casino_shared():
+    src = _read(_WOLFCTL)
+    assert "git+https://github.com/snad1/casino-shared" in src
+    assert "git+ssh://" not in src
 
 
 def test_update_uses_autostash():

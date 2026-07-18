@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.3
+# WolfBet AutoBot — Unified Management Command v3.4
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -17,7 +17,7 @@ SCRIPT_NAME="wolfctl"
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.3"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.4"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -58,6 +58,7 @@ usage() {
     echo "    wolfctl last-bets N         Last N bets across all sessions (default 20)"
     echo "    wolfctl presets             List saved presets"
     echo "    wolfctl export PATH [SID]   Export sessions (CSV/JSON by extension)"
+    echo "    wolfctl cleanup [DAYS]      Purge old bet rows (default: state.purge_days)"
     echo ""
     echo "  TOOLS:"
     echo "    wolfctl backtest [args…]    Backtest / replay (no API calls, no real balance)"
@@ -206,7 +207,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.3"
+    echo "  wolfctl v3.4"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -259,6 +260,16 @@ cmd_preset() {
     "$PYTHON" "$BOT" --preset "$name" --daemon
 }
 
+# v2.26.0 — bet-row retention purge (delegates to CLI's --cleanup).
+cmd_cleanup() {
+    local days="${1:-}"
+    if [ -z "$days" ]; then
+        "$PYTHON" "$BOT" --cleanup
+    else
+        "$PYTHON" "$BOT" --cleanup "$days"
+    fi
+}
+
 cmd_update() {
     # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -308,7 +319,7 @@ cmd_update() {
     # Update casino-shared pip package
     if [ -f "$INSTALL_DIR/venv/bin/pip" ]; then
         "$INSTALL_DIR/venv/bin/pip" install --force-reinstall --no-cache-dir --quiet \
-            "casino-shared @ git+ssh://git@github.com/snad1/casino-shared.git" 2>/dev/null && \
+            "casino-shared @ git+https://github.com/snad1/casino-shared.git" 2>/dev/null && \
             echo "casino-shared pip package updated." || \
             echo "casino-shared pip update skipped (network issue)."
     fi
@@ -572,6 +583,7 @@ case "${1:-}" in
     pipeline)     cmd_pipeline "${2:-}" ;;
     backtest)     shift; cmd_backtest "$@" ;;
     preset)       cmd_preset "${2:-}" ;;
+    cleanup)      cmd_cleanup "${2:-}" ;;
     version|--version|-v) cmd_version ;;
     update)       cmd_update ;;
     tg)           cmd_tg "${2:-}" ;;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.25.3  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.26.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -40,6 +40,7 @@ from core.strategy import (
     cmp as _cmp, load_rules_from_text as _load_rules_from_text,
 )
 from core.database import init_db as _core_init_db, migrate_db, db_connect, secure_path
+from core.database import cleanup_old_bets, cleanup_live_bets
 from core.engine import (
     compute_next_bet as _core_compute_next_bet,
     wolfrider_switch as _core_wolfrider_switch,
@@ -227,6 +228,13 @@ def _check_risky_config() -> list:
             f"pipeline_depth={state.pipeline_depth} but game is {state.game} — "
             "auto-bet is server-side single-flight, will be forced to 1."
         )
+    # Proxy on cleartext channel — credentials on the wire (non-blocking)
+    if state.proxy and state.proxy.startswith("http://"):
+        warnings.append(
+            f"proxy scheme is http:// ({_mask_proxy(state.proxy)}) — "
+            "credentials + traffic travel unencrypted between you and the proxy. "
+            "Prefer https:// or socks5:// when possible."
+        )
     return warnings
 
 
@@ -297,6 +305,7 @@ _TWEAK_ALIAS = {
     "pipeline":    "pipeline_depth",
     "recdelay":    "recurring_delay",
     "recurringdelay": "recurring_delay",
+    "purgedays":   "purge_days",
 }
 _TWEAK_PARAMS = {
     "bet_delay", "basebet_pct",
@@ -306,6 +315,7 @@ _TWEAK_PARAMS = {
     "profit_increment", "profit_threshold", "recurring", "recurring_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
     "pipeline_depth",
+    "proxy", "purge_days",
 }
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
@@ -405,6 +415,28 @@ def _apply_mutation(changes: dict) -> list:
                 raise ValueError(f"recurring_delay must be a number 0-3600, got {v!r}")
         msgs.append(f"Recurring delay: {state.recurring_delay:.0f}s"
                     if state.recurring_delay > 0 else "Recurring delay: off")
+
+    # Proxy — validated + applied to the shared HTTP session.
+    if "proxy" in changes:
+        try:
+            state.proxy = _validate_proxy(changes["proxy"])
+        except ValueError as e:
+            raise ValueError(f"proxy: {e}")
+        _apply_proxy_to_session()
+        msgs.append(f"Proxy: {_mask_proxy(state.proxy)}")
+
+    # Purge days — bet-row retention window (1-30). "off" resets to default 3;
+    # numeric values (including 0) clamp to [1, 30] — 0 days is nonsensical, so it maps to 1.
+    if "purge_days" in changes:
+        v = changes["purge_days"]
+        if isinstance(v, str) and v.strip().lower() in ("off", "none", "false", "disable", "no"):
+            state.purge_days = 3
+        else:
+            try:
+                state.purge_days = max(1, min(30, int(v)))
+            except (TypeError, ValueError):
+                raise ValueError(f"purge_days must be an integer 1-30, got {v!r}")
+        msgs.append(f"Purge days: {state.purge_days}")
 
     # Pipeline depth — instant int (dispatcher re-evaluates on next iteration).
     # Guardrail is enforced by _effective_pipeline_depth(); we just clamp to [1, 8].
@@ -535,7 +567,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.25.3"
+VERSION      = "2.26.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -572,6 +604,7 @@ _CONFIG_KEYS = [
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold",
     "pipeline_depth", "recurring_delay",
+    "proxy", "purge_days",
 ]
 
 def _mask_key(key: str) -> str:
@@ -608,6 +641,12 @@ def load_config() -> bool:
         # parse rules if present
         if state.custom_rules_text:
             state.custom_rules = _load_rules_from_text(state.custom_rules_text)
+        # v2.26.0 — normalize + apply loaded proxy to the shared session.
+        try:
+            state.proxy = _validate_proxy(state.proxy)
+        except ValueError:
+            state.proxy = None
+        _apply_proxy_to_session()
         return True
     except Exception:
         return False
@@ -628,6 +667,8 @@ _PRESET_KEYS = [
     "pipeline_depth",
     # v2.25.3 — pause between recurring cycles (TG↔CLI parity):
     "recurring_delay",
+    # v2.26.0 — proxy + retention (TG↔CLI parity):
+    "proxy", "purge_days",
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -900,6 +941,13 @@ class BotState:
         # Mirrors TG bot's tg/handlers.py:801 (default 60, floor 0, cap 3600).
         self.recurring_delay  : float = 60.0
 
+        # ── v2.26.0 — proxy + retention (TG↔CLI parity) ──
+        # HTTP/HTTPS/SOCKS5 proxy URL, or None for direct connection.
+        # Credentials in the URL are masked in show + logs via _mask_proxy.
+        self.proxy            : Optional[str] = None
+        # Bet-row retention window in days (used by hourly cleanup thread + --cleanup).
+        self.purge_days       : int = 3
+
         # ── Phase 5c — auto-bet recovery (max nonce / session expired) ──
         # Tag from _classify_auto_stop_reason: "max_nonce", "expired", or "".
         # Signals the loop to call _recover_expired_session (seed rotation)
@@ -921,6 +969,64 @@ class BotState:
 
 state   = BotState()
 console = Console()
+
+# ══════════════════════════════════════════════════════════
+#  v2.26.0 — Shared HTTP session (proxy-aware)
+# ══════════════════════════════════════════════════════════
+# All wolfbet.com API calls go through _http_session so proxy config lives in
+# ONE place. Mirrors tg/engine.py:_recreate_http (httpx.AsyncClient(proxy=…))
+# but stays on `requests` for CLI's synchronous / threaded model.
+_http_session = requests.Session()
+_http_session.headers.update({"User-Agent": f"wolfbet-cli/{VERSION}"})
+
+
+def _validate_proxy(url) -> Optional[str]:
+    """Return normalized proxy URL or None.
+
+    Accepted schemes: http, https, socks5. Off-values (off/none/direct/0/'')
+    return None. Raises ValueError on any other input.
+
+    Mirrors tg/handlers.py:569-581 for TG↔CLI parity.
+    """
+    if url is None:
+        return None
+    s = str(url).strip()
+    if s.lower() in ("", "off", "none", "direct", "0", "false", "disable", "no"):
+        return None
+    if not (s.startswith("http://") or s.startswith("https://") or s.startswith("socks5://")):
+        raise ValueError(
+            f"Proxy must start with http://, https://, or socks5:// (got {s!r})"
+        )
+    return s
+
+
+def _mask_proxy(url) -> str:
+    """Return scheme://host:port form of a proxy URL — strips userinfo.
+
+    Mirrors tg/handlers.py:530-540. Never leaks credentials into logs, config
+    show, or the dashboard status line.
+    """
+    if not url:
+        return "direct"
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        if p.hostname:
+            host = p.hostname
+            if p.port:
+                return f"{p.scheme}://{host}:{p.port}"
+            return f"{p.scheme}://{host}"
+    except Exception:
+        pass
+    return "set"
+
+
+def _apply_proxy_to_session() -> None:
+    """Update _http_session.proxies from state.proxy — single point of change."""
+    if state.proxy:
+        _http_session.proxies = {"http": state.proxy, "https": state.proxy}
+    else:
+        _http_session.proxies = {}
 
 # ══════════════════════════════════════════════════════════
 #  API HELPERS
@@ -954,7 +1060,7 @@ def _update_rate_limit(resp):
         pass
 
 def api_get_balances():
-    r = requests.get(f"{API_BASE}/v1/user/balances", headers=_headers("dice"), timeout=12)
+    r = _http_session.get(f"{API_BASE}/v1/user/balances", headers=_headers("dice"), timeout=12)
     _update_rate_limit(r)
     r.raise_for_status()
     return r.json().get("balances", [])
@@ -1031,7 +1137,7 @@ def _rotate_server_seed() -> bool:
     """Rotate the WolfBet server seed via GET /v1/game/seed/refresh."""
     url = f"{API_BASE}/v1/game/seed/refresh"
     try:
-        r = requests.get(url, headers=_headers("dice"), timeout=12)
+        r = _http_session.get(url, headers=_headers("dice"), timeout=12)
         if r.status_code == 200:
             logger.info("Server seed rotated")
             return True
@@ -1069,7 +1175,7 @@ def api_auto_start() -> bool:
         state._auto_start_last_time = time.monotonic()
         try:
             t0 = time.time()
-            r = requests.post(url, headers=_headers(body_str=body_str),
+            r = _http_session.post(url, headers=_headers(body_str=body_str),
                               json=payload, timeout=15)
             _record_api_ms((time.time() - t0) * 1000)
             _update_auto_start_remaining(r.headers)
@@ -1125,7 +1231,7 @@ def api_auto_stop() -> None:
     payload = {"uuid": state._auto_uuid}
     body_str = json.dumps(payload, separators=(",", ":"))
     try:
-        requests.post(url, headers=_headers(body_str=body_str),
+        _http_session.post(url, headers=_headers(body_str=body_str),
                       json=payload, timeout=12)
         logger.info("Auto-bet stopped, uuid=%s", state._auto_uuid)
     except Exception:
@@ -1203,7 +1309,7 @@ def api_place_bet(amount: float) -> Optional[dict]:
     logger.debug("BET payload=%s url=%s", body_str, url)
     try:
         t0 = time.time()
-        r = requests.post(url, headers=_headers(body_str=body_str),
+        r = _http_session.post(url, headers=_headers(body_str=body_str),
                           json=payload, timeout=15)
         _record_api_ms((time.time() - t0) * 1000)
         _update_rate_limit(r)
@@ -4429,6 +4535,8 @@ _CONFIG_SHOW_FIELDS = [
     ("milestone_losses",      "Milestone every N losses (0 = off)"),
     ("milestone_profit",      "Milestone every X profit crossed (0 = off)"),
     ("pipeline_depth",        "Pipelined betting depth (1 = serial, Flat-only)"),
+    ("proxy",                 "HTTP/HTTPS/SOCKS5 proxy URL (credentials masked)"),
+    ("purge_days",            "Bet-row retention window in days (1-30)"),
     ("custom_rules_text",     "Rule-Based custom rules (JSON per line)"),
 ]
 
@@ -4437,7 +4545,10 @@ def _fmt_config_value(field: str, val) -> str:
     """Render a config value for the --config-show table.
 
     Streak tuples → "N:X"; None → "off"; long strings truncated.
+    Proxy is credential-masked via _mask_proxy — NEVER leak userinfo.
     """
+    if field == "proxy":
+        return f"[cyan]{_mask_proxy(val)}[/]" if val else "[dim]direct[/]"
     if val is None:
         return "[dim]off[/]"
     if isinstance(val, bool):
@@ -4556,6 +4667,53 @@ def cmd_config_set(pairs: list):
             f"  →  [green]{_fmt_config_value(canonical, new)}[/]"
         )
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
+
+
+# ══════════════════════════════════════════════════════════
+#  RETENTION / CLEANUP  (v2.26.0)
+# ══════════════════════════════════════════════════════════
+def cmd_cleanup(days=None):
+    """Purge old bet rows from the DB, preserving session aggregates.
+
+    Delegates to shared/core/database.cleanup_old_bets — session rows
+    (with pre-aggregated stats) are preserved, only per-bet rows for
+    sessions ended more than `days` ago are deleted.
+    """
+    load_config()
+    n = int(days) if days is not None else state.purge_days
+    n = max(1, min(30, n))
+    try:
+        deleted = cleanup_old_bets(DB_PATH, bet_age_days=n)
+    except Exception as e:
+        detail = f": {e}" if APP_ENV != "production" else ""
+        console.print(f"[red]Cleanup failed{detail}.[/]")
+        sys.exit(1)
+    deleted = int(deleted or 0)
+    if deleted:
+        console.print(
+            f"[green]✓[/] Purged [bold]{deleted}[/] bet rows from sessions older than "
+            f"[bold]{n}[/] days. Session aggregates preserved."
+        )
+    else:
+        console.print(f"[dim]Nothing to purge ({n}-day window; no old session bets found).[/]")
+
+
+def _retention_worker():
+    """Hourly bet-row purge — mirrors tg/engine.py:747-758.
+
+    Runs on the CLI daemon; exits when the session ends.
+    """
+    while state.running or state.paused:
+        for _ in range(3600):
+            if not (state.running or state.paused):
+                return
+            time.sleep(1)
+        try:
+            deleted = cleanup_live_bets(DB_PATH, bet_age_days=state.purge_days)
+            if deleted:
+                logger.info("RETENTION purged %d bet rows (>%dd)", deleted, state.purge_days)
+        except Exception as e:
+            logger.warning("retention purge failed: %s", e)
 
 
 # ══════════════════════════════════════════════════════════
@@ -5157,12 +5315,15 @@ Examples:
     wolfbet.py --config-set max_profit=0.005 base_bet=0.0001
     wolfbet.py --config-set delay=0.35 pipeline=3
     wolfbet.py --config-set recurring=on recdelay=90 maxbets=1000
+    wolfbet.py --config-set proxy=https://user:pass@10.0.0.1:8080
+    wolfbet.py --config-set purgedays=7
     wolfbet.py --preset martingale-safe --daemon
 
   Data
     wolfbet.py --last-bets 20         # last 20 bets across sessions
     wolfbet.py --session-bets 42      # every bet from session #42
     wolfbet.py --export /tmp/out.csv  # export sessions (CSV or JSON by ext)
+    wolfbet.py --cleanup 7            # purge bet rows > 7 days (aggregates kept)
 
   Backtest / replay (no API calls, no real balance risk)
     wolfbet.py --backtest --simulate 10000 --seed 42
@@ -5205,6 +5366,10 @@ def main():
                        help="Non-interactive config mutation. Aliases match the T-hotkey grammar "
                             "(delay=0.35, maxprofit=0.005, pipeline=3, …). api_key is refused — "
                             "use the WOLFBET_API_KEY env var.")
+    group.add_argument("--cleanup", nargs="?", type=int, metavar="DAYS", const=-1,
+                       help="Purge old bet rows from the DB (default: state.purge_days, "
+                            "explicit: --cleanup N for N days, clamped 1-30). "
+                            "Session aggregates preserved.")
     parser.add_argument("--preset", type=str, metavar="NAME",
                         help="Load a named preset and start (skips wizard)")
     parser.add_argument("--export", type=str, metavar="PATH",
@@ -5288,6 +5453,11 @@ def main():
         return
     if args.config_set:
         cmd_config_set(args.config_set)
+        return
+    if args.cleanup is not None:
+        init_db()
+        # `--cleanup` with no value comes through as -1 (const), meaning "use configured default".
+        cmd_cleanup(None if args.cleanup == -1 else args.cleanup)
         return
 
     # ── Setup-only mode ───────────────────────────────────
@@ -5405,9 +5575,22 @@ def main():
     if hasattr(signal, "SIGUSR2"):
         signal.signal(signal.SIGUSR2, _sig_resume)
 
+    # ── Startup retention purge — matches TG's tg/engine.py:979 pattern.
+    try:
+        _startup_deleted = cleanup_old_bets(DB_PATH, bet_age_days=state.purge_days)
+        if _startup_deleted:
+            logger.info("STARTUP RETENTION purged %d old bet rows (>%dd)",
+                        int(_startup_deleted), state.purge_days)
+    except Exception as _e:
+        logger.warning("startup retention purge failed: %s", _e)
+
     # ── Betting thread ────────────────────────────────────
     t_bet = threading.Thread(target=_run_betting_loop, daemon=True, name="BettingLoop")
     t_bet.start()
+
+    # ── Retention thread (hourly bet-row purge) ───────────
+    t_retention = threading.Thread(target=_retention_worker, daemon=True, name="Retention")
+    t_retention.start()
 
     # ── Periodic save (DB + state file) every 5s ─────────
     def periodic_save():
