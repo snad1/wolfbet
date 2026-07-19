@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.28.3  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.28.4  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -239,6 +239,13 @@ def _check_risky_config() -> list:
 
 def _reset_session_for_recurring() -> None:
     """Reset per-session counters while preserving config. Starts a new DB session row."""
+    # v2.28.4 — freeze the "bet end" timestamp BEFORE the sleep so uptime +
+    # DB ended_at reflect the real betting window (not "5 min bet + 1 h pause"
+    # lumped together). Cleared just before we set the new session_start.
+    _bet_end = time.time()
+    with state.lock:
+        state.session_bet_ended_at = _bet_end
+        state.session_pause_started_at = _bet_end
     # Recurring delay — pause BEFORE the next cycle so the user has time to
     # intervene, the server settles, and the dashboard shows why the bot is idle.
     if state.recurring_delay > 0:
@@ -247,6 +254,9 @@ def _reset_session_for_recurring() -> None:
         logger.info("RECURRING pause %.0fs before next cycle", state.recurring_delay)
         time.sleep(state.recurring_delay)
     with state.lock:
+        # Clear frozen timestamps as we enter the new session.
+        state.session_bet_ended_at = None
+        state.session_pause_started_at = None
         state.session_id     = _db_start_session()
         state.session_start  = time.time()
         state.total_bets     = 0
@@ -577,7 +587,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.28.3"
+VERSION      = "2.28.4"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -958,6 +968,13 @@ class BotState:
         # ── session info ──
         self.session_id     = None
         self.session_start  = time.time()
+        # v2.28.4 — when a session enters `_reset_session_for_recurring`, this
+        # is set to time.time() BEFORE the sleep so uptime + ended_at freeze
+        # at the real bet-end. Cleared right before the new session's
+        # session_start is set. None during active betting.
+        self.session_bet_ended_at : Optional[float] = None
+        # Pause start timestamp (for "Paused Xm/Ym" display in monitor/status).
+        self.session_pause_started_at : Optional[float] = None
         self.total_bets     = 0
         self.wins           = 0
         self.losses         = 0
@@ -2599,6 +2616,11 @@ def _db_save_session():
     try:
         conn = _db_conn()
         lo_bal = state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance
+        # v2.28.4 — when a session is in the recurring pause, freeze ended_at
+        # at bet-end time (session_bet_ended_at) so the DB reflects the real
+        # betting window instead of tracking the sleep.
+        _ended_at_ts = state.session_bet_ended_at or time.time()
+        _ended_at_iso = datetime.fromtimestamp(_ended_at_ts).isoformat()
         conn.execute("""
             UPDATE sessions SET
                 ended_at=?, total_bets=?, wins=?, losses=?,
@@ -2610,7 +2632,7 @@ def _db_save_session():
                 peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
             WHERE id=?
         """, (
-            datetime.now().isoformat(),
+            _ended_at_iso,
             state.total_bets, state.wins, state.losses,
             state.profit, state.wagered, state.current_balance,
             state.max_win_streak, state.max_loss_streak,
@@ -2729,7 +2751,17 @@ def _save_state_file():
             # rule-based info
             "rule_count": len(state.custom_rules) if state.strategy_key == "8" else 0,
             "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "8" else [],
-            "uptime_sec": int(time.time() - state.session_start),
+            # v2.28.4 — uptime freezes at bet-end when session is in recurring
+            # pause, so "5 min bet + 1 h pause" no longer displays as "1 h 5 min
+            # session". Pause remaining is surfaced separately for the monitor.
+            "uptime_sec": int(
+                (state.session_bet_ended_at or time.time()) - state.session_start
+            ),
+            "pause_remaining_sec": (
+                max(0, int(state.recurring_delay - (time.time() - state.session_pause_started_at)))
+                if state.session_pause_started_at else 0
+            ),
+            "recurring_delay_sec": int(state.recurring_delay),
             "status": state.status,
             "last_error": state.last_error,
             "updated_at": datetime.now().isoformat(),
@@ -4356,13 +4388,24 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     status    = d.get("status", "")
 
     # ── Row 1: Header ─────────────────────────────────
-    if pid_alive and not paused:
+    # v2.28.4 — surface recurring-pause countdown right in the LIVE indicator
+    # so the user can see "sleeping 45m/60m of the recurring_delay" at a glance.
+    _pause_left = int(d.get("pause_remaining_sec", 0) or 0)
+    _pause_total = int(d.get("recurring_delay_sec", 0) or 0)
+    if pid_alive and _pause_left > 0:
+        st_ind = _a("bold_cyan",
+                    f"◐ PAUSED {timedelta(seconds=_pause_left)}/{timedelta(seconds=_pause_total)}")
+        st_ind_plain = f"◐ PAUSED {timedelta(seconds=_pause_left)}/{timedelta(seconds=_pause_total)}"
+    elif pid_alive and not paused:
         st_ind = _a("bold_green", "● LIVE")
+        st_ind_plain = "● LIVE"
     elif pid_alive and paused:
         st_ind = _a("bold_yellow", "● PAUSED")
+        st_ind_plain = "● PAUSED"
     else:
         st_ind = _a("bold_red", "● STOPPED")
-    hdr_vis = 4 + len(f"WolfBet v{VERSION}  #{sid}  {uptime}  ") + len("● STOPPED") + 1
+        st_ind_plain = "● STOPPED"
+    hdr_vis = 4 + len(f"WolfBet v{VERSION}  #{sid}  {uptime}  ") + len(st_ind_plain) + 1
     fill = max(0, term_w - hdr_vis)
     add(f"{_a('dim_blue', '─── ')}{_a('bold_cyan', f'WolfBet v{VERSION}')}"
         f"{_a('white', f'  #{sid}  {uptime}')}  {st_ind} "
@@ -4647,6 +4690,13 @@ def cmd_status():
     pc = "green" if p >= 0 else "red"
     wr = (d["wins"] / d["total_bets"] * 100) if d.get("total_bets") else 0
     uptime = str(timedelta(seconds=d.get("uptime_sec", 0)))
+    # v2.28.4 — recurring-pause countdown: uptime freezes at bet-end; this
+    # line surfaces "Xm remaining / Ym total" so users know why the session
+    # isn't placing bets.
+    _pause_left = int(d.get("pause_remaining_sec", 0) or 0)
+    _pause_total = int(d.get("recurring_delay_sec", 0) or 0)
+    pause_str = (f"[cyan]{timedelta(seconds=_pause_left)}[/] remaining / "
+                 f"{timedelta(seconds=_pause_total)} total") if _pause_left > 0 else None
 
     # extract all fields
     bets = d.get("total_bets", 0)
@@ -4686,7 +4736,7 @@ def cmd_status():
         strat_str += f"  [dim](win mult: {d.get('win_mult', '?')}x)[/]"
 
     rows = [
-        ("Uptime",         uptime),
+        ("Uptime",         uptime + (f"  [dim]· Recurring pause:[/] {pause_str}" if pause_str else "")),
         ("Currency",       d.get("currency", "?").upper()),
         ("Strategy",       strat_str),
         ("Base / Current", f"{d.get('base_bet', 0):.8f} / {d.get('current_bet', 0):.8f}"),

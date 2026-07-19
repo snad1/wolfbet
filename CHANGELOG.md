@@ -1,5 +1,23 @@
 # Changelog
 
+## CLI v2.28.4 — Uptime freezes during recurring pause (bet-time vs pause-time split) (2026-07-19)
+
+User confusion: `wolfctl status` showed a session's `Uptime` as ~1 h 5 min when only ~5 min of that was actual betting — the rest was the `recurring_delay=3600` sleep. Same session ran ~8000 bets in ~5 min then slept 1 h; the uptime clock kept ticking during the sleep because `state.session_start` wasn't advanced.
+
+- **New `BotState.session_bet_ended_at` + `session_pause_started_at`** — frozen `time.time()` snapshots. Both are `None` during active betting.
+- **`_reset_session_for_recurring` sets both timestamps immediately BEFORE `time.sleep(recurring_delay)`** and clears them right before the new `session_id` / `session_start` are set. Zero change to the reset semantics — only new bookkeeping.
+- **`_save_state_file`** now computes `uptime_sec = int((session_bet_ended_at or now) - session_start)`. During the pause, uptime freezes at bet-end.
+- **`_save_state_file`** also emits `pause_remaining_sec` (`max(0, recurring_delay - elapsed_since_pause_start)`) and `recurring_delay_sec` so the monitor + `--status` can show "45m remaining / 60m total" without recomputing.
+- **`_db_save_session`** uses the frozen bet-end timestamp for `sessions.ended_at` during the pause. `wolfctl stats` now shows the real bet-window duration per session instead of "5 min bet + 1 h pause" lumped together.
+- **Monitor Row 1 header** — when `pause_remaining_sec > 0`, the `● LIVE` indicator becomes `◐ PAUSED HH:MM:SS/HH:MM:SS` (bold cyan). Header width is recomputed against the plain-text length so the trailing `───` fill is correct.
+- **`cmd_status` Uptime row** — appends `· Recurring pause: 45:00 remaining / 60:00 total` when in the pause window.
+
+**Tests**: `tests/test_phase5q_uptime_pause.py` — 11 tests. Defaults, `_reset_session_for_recurring` freezes-then-clears (captured via a `time.sleep` monkeypatch that snapshots state during the pause), skip-when-delay-zero, `_save_state_file` uptime + pause remaining under three fixture states, `pause_remaining_sec` clamps to 0 when expired, `_db_save_session` freezes `ended_at` during pause and uses `now` when no freeze, monitor + status render pause indicator, state file always emits pause fields. **477 total passing.**
+
+Zero behaviour change to the bet loop, recovery, retention, or config surfaces. Purely time-accounting.
+
+`VERSION` `2.28.3` → `2.28.4`. `wolfctl` unchanged (v3.5).
+
 ## CLI v2.28.3 — SIGHUP-driven live config reload (fix silent mid-session tweaks) (2026-07-19)
 
 Real-world bug: user set `recurring=on` via `wolfctl config-set`, saw the "Saved" confirmation and `wolfctl config-show` reported `on`. But when the daemon's session #30 hit `max_profit`, the cycle exited normally and no recurring restart fired.
