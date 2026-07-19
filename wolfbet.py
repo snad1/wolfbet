@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.1  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -279,6 +279,12 @@ def _reset_session_for_recurring() -> None:
         # Reset auto-bet UUID so betting_loop fires a fresh /auto/start next tick.
         state._auto_uuid     = None
         state._last_profit_milestone = 0.0
+        # v2.30.1 — reset the profit-increment milestone so each cycle hunts
+        # a fresh target. Base_bet is deliberately preserved above (bumps
+        # stack across cycles). Without this, cycle 2+ would need to accumulate
+        # past cycle 1's high-water mark before any bump could fire.
+        if state.profit_threshold:
+            state.next_profit_milestone = state.profit_threshold
         state.consecutive_errors = 0
         state.backoff_delay  = 1.0
         state.last_error     = ""
@@ -587,7 +593,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.0"
+VERSION      = "2.30.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -2741,6 +2747,9 @@ def _save_state_file():
             "milestone_losses":  state.milestone_losses or None,
             "milestone_profit":  state.milestone_profit or None,
             "last_profit_milestone": state._last_profit_milestone,
+            # v2.30.1 — actionable profit-increment target (distinct from
+            # last_profit_milestone which is the notification tracker).
+            "next_profit_milestone": state.next_profit_milestone,
             # Phase 3 observability metrics
             "api_ms":              state._last_api_ms,
             "api_avg_ms":          _compute_api_avg(),
@@ -4376,8 +4385,11 @@ def _build_config_progress_row(d: dict) -> str:
     profit_threshold  = d.get("profit_threshold")
     profit_increment  = d.get("profit_increment")
     if profit_threshold and profit_increment is not None:
-        last_ms = float(d.get("last_profit_milestone", 0.0) or 0.0)
-        next_ms = last_ms + float(profit_threshold)
+        # v2.30.1 — use the actionable target the bump code writes, not the
+        # notification-milestone tracker. Fall back to profit_threshold for
+        # pre-v2.30.1 state files that never persisted next_profit_milestone.
+        next_ms = float(d.get("next_profit_milestone")
+                        or profit_threshold or 0.0)
         profit  = float(d.get("profit", 0.0) or 0.0)
         pct = max(0.0, min(100.0, (profit / next_ms * 100) if next_ms > 0 else 0.0))
         segments.append(

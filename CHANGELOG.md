@@ -1,5 +1,27 @@
 # Changelog
 
+## CLI v2.30.1 — fix profit_increment: CFG row lies + milestone doesn't reset across recurring cycles (2026-07-19)
+
+Two independent v2.30.0 regressions that together made `profit_increment` look broken across recurring cycles.
+
+Real-world report — user had `profit_threshold=0.00696011` + `profit_increment` (small positive) with `recurring=on`. Monitor showed `CFG  Ms +0.04527414/0.00696011 (100%)` for the entire third cycle, but base_bet had only bumped once (~`0.00000144 → 0.00000161`) instead of the 6+ bumps `profit / threshold` should have implied.
+
+### Bug A — CFG row read the wrong milestone field
+
+`_build_config_progress_row` (v2.30.0) read `last_profit_milestone` from the state file — but that field is the **notification** tracker (mutated only by `_check_milestone` under `state.milestone_profit > 0`), *not* the **actionable** target `state.next_profit_milestone` used by the profit-increment branch. With no notification milestone set, `last_profit_milestone` stayed at 0, so the row rendered `next_ms = 0 + threshold = threshold` and every profit above the threshold clamped to `100%`. Two unrelated variables were conflated by name and state-file key.
+
+Fix: `state.next_profit_milestone` is now persisted to the state file (new `next_profit_milestone` key at `_save_state_file`). `_build_config_progress_row` reads it directly, with `profit_threshold` as fallback so pre-v2.30.1 state files still render sensibly. `last_profit_milestone` is untouched — still used correctly by the notification path.
+
+### Bug B — `_reset_session_for_recurring` never reset the milestone
+
+The recurring reset cleared `state.profit`, `state.total_bets`, `_last_profit_milestone`, etc., but left `state.next_profit_milestone` at cycle 1's high-water mark. Cycle 2's fresh `profit=0` would then need to accumulate up to `k × profit_threshold` before firing a single bump — cycle 3 needed even more. In practice, exactly one bump fired in cycle 1 and then the target was permanently out of reach. `state.base_bet` correctly persisted (matches the user's observed monitor).
+
+Fix: `_reset_session_for_recurring` now sets `state.next_profit_milestone = state.profit_threshold` immediately after clearing `state.profit`. Each recurring cycle now hunts a fresh milestone from zero-profit. `state.base_bet` is deliberately preserved — bumps stack across cycles, matching the progressive-increment mental model.
+
+**Tests**: `tests/test_phase5u_profit_increment_persistence.py` — 8 tests covering state-file persistence, CFG row read + backward-compat fallback, milestone reset, base_bet preservation, and a 3-cycle regression simulating the user's scenario (base bumps 3× instead of 1×). **529 total passing.**
+
+`VERSION` `2.30.0` → `2.30.1`. TG untouched. `wolfctl` unchanged.
+
 ## CLI v2.30.0 — Monitor Row 6 filled with live config-progress (2026-07-19)
 
 Row 6 of `wolfctl monitor` was a blank `" P/L —"` — a sparkline placeholder that never had backing history. User running with `profit_threshold=0.00050207` + `profit_increment=0.00000001` asked for the row to show *what is configured* alongside *what is happening*, so a glance tells them which stop conditions are armed and how close each budget is to firing.
