@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.28.4  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.29.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -587,7 +587,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.28.4"
+VERSION      = "2.29.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1698,10 +1698,25 @@ def betting_loop():
                     and state.profit >= state.next_profit_milestone):
                 state.base_bet += state.profit_increment
                 state.next_profit_milestone += state.profit_threshold
-                logger.info(
-                    "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
-                    state.base_bet, state.next_profit_milestone,
-                )
+                # v2.29.0 — for auto-games the Martingale progression runs
+                # server-side on WolfBet using the base_bet submitted at
+                # /auto/start. A CLI-side base_bet bump means nothing until
+                # we restart the WolfBet auto-cycle. Clearing _auto_uuid
+                # makes the next loop tick call api_auto_start with the
+                # fresh base — same CLI session, new WolfBet UUID. Same
+                # invariant as v2.25.0 max-nonce recovery.
+                if is_auto_game(state.game) and state._auto_uuid:
+                    state._auto_uuid = None
+                    logger.info(
+                        "PROFIT INCREMENT: base_bet → %.8f + auto-bet UUID "
+                        "cleared for restart with new base (next milestone at "
+                        "%.8f profit)", state.base_bet, state.next_profit_milestone,
+                    )
+                else:
+                    logger.info(
+                        "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
+                        state.base_bet, state.next_profit_milestone,
+                    )
 
             # profit graph snapshot (every 5 bets)
             if state.total_bets % 5 == 0:
@@ -1924,10 +1939,19 @@ def _apply_outcome_locked(envelope: dict) -> None:
                 and state.profit >= state.next_profit_milestone):
             state.base_bet += state.profit_increment
             state.next_profit_milestone += state.profit_threshold
-            logger.info(
-                "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
-                state.base_bet, state.next_profit_milestone,
-            )
+            # v2.29.0 — auto-game UUID reset so WolfBet-side base_bet follows.
+            if is_auto_game(state.game) and state._auto_uuid:
+                state._auto_uuid = None
+                logger.info(
+                    "PROFIT INCREMENT: base_bet → %.8f + auto-bet UUID "
+                    "cleared for restart with new base (next milestone at "
+                    "%.8f profit)", state.base_bet, state.next_profit_milestone,
+                )
+            else:
+                logger.info(
+                    "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
+                    state.base_bet, state.next_profit_milestone,
+                )
 
         if state.total_bets % 5 == 0:
             state.profit_history.append(state.profit)

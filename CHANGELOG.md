@@ -1,5 +1,28 @@
 # Changelog
 
+## CLI v2.29.0 / TG v1.18.0 — profit_increment restarts auto-bet cycle + TG parity ports (2026-07-19)
+
+Two threads landed in the same release.
+
+### CLI — `profit_increment` restarts the WolfBet auto-bet UUID (bug fix)
+
+Real-world bug: with `profit_increment=0.00000001` + `profit_threshold=0.00050207` + `game=limbo-auto`, the daemon's monitor showed `Base 0.00000011` mid-session — but the actual bets on WolfBet stayed on the original base. Every subsequent auto-cycle from the same session kept the old base until session end.
+
+Root cause: for auto-games (`limbo-auto`, `dice-auto`) the Martingale progression runs **server-side** on WolfBet — the CLI just polls `/auto/play` and gets each next bet amount computed from the `base_bet` submitted at `/auto/start`. When `state.base_bet` changes mid-session, the CLI never told WolfBet. The new base only took effect at the next `_reset_session_for_recurring` (cycle end) or full restart.
+
+Fix — clear `state._auto_uuid` when the increment fires under `is_auto_game(state.game)`. Both call sites patched (`betting_loop` serial path + `_apply_outcome_locked` pipelined path). The next loop iteration's existing auto-restart branch calls `api_auto_start()` with the fresh `state.base_bet`. Same-session invariant preserved — `session_id`, `session_start`, counters, DB row all unchanged. One CLI session now spans multiple WolfBet auto UUIDs, one per increment tick, each with escalating base_bet.
+
+### TG — /diagnose + /analytics + uptime freeze + SQLite PRAGMAs
+
+- **`/diagnose`** (mirrors CLI `wolfctl diagnose`): top blocker between Network / CLI overhead / User delay, plain-English advice line. Reuses `core.diagnostics.percentile`. No new engine fields.
+- **`/analytics`** (mirrors CLI `wolfctl analytics`): lifetime totals + by-game + by-strategy + top-5 best + top-5 worst. Uses the CLI's SQL aggregation patterns verbatim; renders as Telegram-Markdown.
+- **Uptime freeze during pause** (mirrors CLI v2.28.4): `BettingEngine` gains `session_bet_ended_at` + `session_pause_started_at`. `pause()` freezes both; `resume()` clears. `get_status()` uses the frozen bet-end as the uptime ceiling. `_db_save_session(final=True)` writes the frozen `ended_at` when set. `/status` now emits `uptime_sec` + `pause_remaining_sec` for downstream renderers.
+- **SQLite PRAGMA tuning** (mirrors CLI v2.27.0): `_get_conn` adds `synchronous=NORMAL` + `busy_timeout=5000` + `cache_size=-32000` + `temp_store=MEMORY` after the existing `journal_mode=WAL`. Same 30–40 ms per-commit fsync savings, WAL-safe.
+
+**Tests**: `tests/test_phase5r_tg_ports.py` (19 tests) + `tests/test_phase5s_cli_profit_increment_auto.py` (7 tests). **503 total passing.**
+
+`VERSION` `2.28.4` → `2.29.0`. `tg/__init__.py` `1.17.0` → `1.18.0`. `wolfctl` unchanged (v3.5).
+
 ## CLI v2.28.4 — Uptime freezes during recurring pause (bet-time vs pause-time split) (2026-07-19)
 
 User confusion: `wolfctl status` showed a session's `Uptime` as ~1 h 5 min when only ~5 min of that was actual betting — the rest was the `recurring_delay=3600` sleep. Same session ran ~8000 bets in ~5 min then slept 1 h; the uptime clock kept ticking during the sleep because `state.session_start` wasn't advanced.
