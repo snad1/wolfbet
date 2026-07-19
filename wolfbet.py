@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.28.2  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.28.3  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -577,7 +577,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.28.2"
+VERSION      = "2.28.3"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -710,6 +710,95 @@ _STREAK_TUPLE_KEYS = [
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets",
     "streakbet_loss",
 ]
+
+# v2.28.3 — fields that can safely be re-read from disk into a running daemon
+# on SIGHUP without corrupting the active session identity or the Martingale
+# ladder. Everything NOT in this set requires `wolfctl restart`.
+_LIVE_RELOAD_KEYS = {
+    # Recurring + delays
+    "recurring", "recurring_delay",
+    # Stop conditions
+    "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
+    # Pacing + basebet scaling
+    "bet_delay", "basebet_pct",
+    # Streak-based pacing
+    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
+    # Milestones + profit ramp
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+    "profit_increment", "profit_threshold",
+    # Concurrency + retention + network
+    "pipeline_depth", "proxy", "purge_days", "db_write_mode",
+    # Rule DSL (regenerated wholesale by _load_rules_from_text; strategy_key stays)
+    "custom_rules_text",
+}
+
+
+def _reload_live_config() -> dict:
+    """Re-read CONFIG_PATH and apply only safe fields; return {field: (old, new)}.
+
+    Never touches session_id / session_start / counters. Streak-tuple fields
+    decode from "N:X" strings via parse_streak_delay (v2.28.2 grammar). Unsafe
+    keys present in the file get logged at WARN so the user knows they need
+    to `wolfctl restart` for those.
+    """
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH) as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning("live reload: failed to parse config: %s", e)
+        return {}
+
+    applied = {}
+    skipped_unsafe = []
+    streak_keys_set = set(_STREAK_TUPLE_KEYS)
+    config_keys_set = set(_CONFIG_KEYS)
+    with state.lock:
+        for k, v in data.items():
+            if k in _LIVE_RELOAD_KEYS:
+                new_val = parse_streak_delay(v) if k in streak_keys_set else v
+                old_val = getattr(state, k, None)
+                if old_val != new_val:
+                    setattr(state, k, new_val)
+                    applied[k] = (old_val, new_val)
+            elif k in config_keys_set or k in streak_keys_set:
+                # Present but not live-safe — warn if it actually changed.
+                if getattr(state, k, None) != v:
+                    skipped_unsafe.append(k)
+
+    # Side effects for keys that need them.
+    if "proxy" in applied:
+        _apply_proxy_to_session()
+    if "custom_rules_text" in applied and state.custom_rules_text:
+        try:
+            state.custom_rules = _load_rules_from_text(state.custom_rules_text)
+        except Exception as e:
+            logger.warning("live reload: rule reparse failed: %s", e)
+    if skipped_unsafe:
+        logger.warning(
+            "live reload: skipped %d unsafe field(s) — restart daemon to apply: %s",
+            len(skipped_unsafe), ", ".join(sorted(skipped_unsafe)),
+        )
+    return applied
+
+
+def _sig_reload(sig, frame):
+    """SIGHUP handler — re-read config file for live-safe fields.
+
+    Signal handlers must be short and never raise. Any error is logged
+    and swallowed.
+    """
+    try:
+        applied = _reload_live_config()
+        if applied:
+            logger.info("SIGHUP: reloaded %d live field(s): %s",
+                        len(applied), ", ".join(sorted(applied.keys())))
+        else:
+            logger.info("SIGHUP: no live-safe changes to apply")
+    except Exception as e:
+        logger.warning("SIGHUP handler raised: %s", e)
+
 
 def _load_all_presets() -> dict:
     if not os.path.exists(PRESET_PATH):
@@ -4912,6 +5001,35 @@ def cmd_config_set(pairs: list):
         )
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
 
+    # v2.28.3 — hot-reload the running daemon via SIGHUP so mid-session
+    # tweaks (recurring, stop conditions, delays, milestones, proxy, etc.)
+    # take effect immediately without `wolfctl restart`. Unsafe keys
+    # (game / strategy_key / base_bet / api_key / …) get a heads-up here
+    # AND are logged by the daemon's SIGHUP handler.
+    unsafe = [k for k in parsed if k not in _LIVE_RELOAD_KEYS]
+    if unsafe:
+        console.print(
+            f"[yellow]Note:[/] {len(unsafe)} field(s) need a full restart to apply — "
+            f"{', '.join(sorted(unsafe))}. Run [cyan]wolfctl restart[/] when ready."
+        )
+
+    try:
+        if not os.path.exists(PID_PATH):
+            console.print("[dim]Daemon not running; changes apply on next "
+                          "[cyan]wolfctl start[/].[/]")
+            return
+        with open(PID_PATH) as f:
+            daemon_pid = int(f.read().strip())
+        if not hasattr(signal, "SIGHUP"):
+            console.print("[dim]SIGHUP not supported on this platform; "
+                          "restart the daemon to apply.[/]")
+            return
+        os.kill(daemon_pid, signal.SIGHUP)
+        console.print("[dim]Daemon reloaded live config.[/]")
+    except (OSError, ValueError):
+        console.print("[dim]Daemon PID stale; changes apply on next "
+                      "[cyan]wolfctl start[/].[/]")
+
 
 # ══════════════════════════════════════════════════════════
 #  RETENTION / CLEANUP  (v2.26.0)
@@ -6019,6 +6137,10 @@ def main():
         signal.signal(signal.SIGUSR1, _sig_pause)
     if hasattr(signal, "SIGUSR2"):
         signal.signal(signal.SIGUSR2, _sig_resume)
+    # v2.28.3 — SIGHUP triggers live config reload from disk (used by
+    # `wolfctl config-set` after save to hot-apply mid-session tweaks).
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _sig_reload)
 
     # ── Startup retention purge — matches TG's tg/engine.py:979 pattern.
     try:

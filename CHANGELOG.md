@@ -1,5 +1,24 @@
 # Changelog
 
+## CLI v2.28.3 — SIGHUP-driven live config reload (fix silent mid-session tweaks) (2026-07-19)
+
+Real-world bug: user set `recurring=on` via `wolfctl config-set`, saw the "Saved" confirmation and `wolfctl config-show` reported `on`. But when the daemon's session #30 hit `max_profit`, the cycle exited normally and no recurring restart fired.
+
+Root cause: `wolfctl config-set` mutates only the CLI process's `state` object and persists to disk. The **running daemon** captured `state.recurring` at boot and never re-reads. No SIGHUP handler, no file watcher, no IPC existed. Every mid-session `wolfctl config-set` was silently ignored by the daemon until a full `wolfctl restart`. Classic S-13 "silent success then no-op" antipattern.
+
+Fix — bounded reload via SIGHUP:
+
+- **New `_LIVE_RELOAD_KEYS` allowlist** (24 fields safe to change mid-session): recurring + recurring_delay, all 5 stop conditions, bet_delay + basebet_pct + 4 streak-tuple fields + 4 milestones + profit_increment/threshold, pipeline_depth + proxy + purge_days + db_write_mode, custom_rules_text. Deliberately excludes api_key / currency / game / rule / multiplier / bet_value / strategy / strategy_key / base_bet / loss_mult / win_mult / delay_martin_threshold — those would corrupt session identity or the Martingale ladder mid-flight.
+- **New `_reload_live_config()`**: re-reads `CONFIG_PATH` JSON, applies only allowlist keys under `state.lock`, decodes streak tuples via `parse_streak_delay` (v2.28.2 grammar), applies `_apply_proxy_to_session()` if `proxy` changed, re-parses custom rules if `custom_rules_text` changed. Returns `{field: (old, new)}` for logging. Never touches `session_id` / counters / DB.
+- **New `_sig_reload(sig, frame)`**: SIGHUP handler. Calls `_reload_live_config`, logs applied fields at INFO. Never raises — errors are logged and swallowed (signal handlers must be short + safe).
+- **SIGHUP registered in `main()`** alongside SIGUSR1/2, guarded by `hasattr(signal, "SIGHUP")` for Windows portability.
+- **`cmd_config_set` extended**: after `save_config()`, reads `PID_PATH`, sends `SIGHUP` to the daemon via `os.kill`, prints "Daemon reloaded live config." On missing/stale PID: "Daemon not running; changes apply on next `wolfctl start`". If any mutation touches a NON-allowlist field, prints a heads-up: `N field(s) need a full restart to apply — game, strategy_key. Run wolfctl restart when ready.`
+- **Daemon-side warning**: `_reload_live_config` also logs skipped unsafe keys at WARN so `journalctl --user -u wolfbet` shows what would need a restart.
+
+**Tests**: `tests/test_phase5p_live_reload.py` — 20 tests. Allowlist membership (recurring in, api_key out, etc.), round-trip for recurring/max_profit/streak-tuples/pipeline/db_write_mode, unsafe-key skip semantics + WARN log, missing/malformed config file safety, `_sig_reload` exception-swallowing, `cmd_config_set` sends SIGHUP with correct PID when daemon alive + skips when PID_PATH missing, `main()` registers the handler. **466 total passing.**
+
+`VERSION` `2.28.2` → `2.28.3`. `wolfctl` unchanged (v3.5).
+
 ## CLI v2.28.2 — monitor header restored + silent config-key persistence gap closed (2026-07-19)
 
 Two real-world bugs found on the server, fixed in one release.

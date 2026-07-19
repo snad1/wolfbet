@@ -1,4 +1,4 @@
-# WolfBet AutoBot v2.28.1 + Telegram Bot v1.17.0
+# WolfBet AutoBot v2.28.3 + Telegram Bot v1.17.0
 
 High-speed auto-betting engine for WolfBet with multi-game support (Dice, Dice Manual, Limbo, Dice-Auto, Limbo-Auto), per-session proxy routing, async I/O, live TUI dashboard, session summary + exports, backtest / replay mode, lifetime analytics, and a Telegram bot with full feature parity. Runs on any server or local machine — leave it running and manage via CLI or Telegram.
 
@@ -142,6 +142,7 @@ python3 wolfbet.py --config-set pipeline=3 recurring=on
 - `--config-set KEY=VALUE [KEY=VALUE …]` mutates one or more fields, then persists via `save_config()`. Aliases are the same as the `T` hotkey grammar (`delay` → `bet_delay`, `maxprofit` → `max_profit`, `pipeline` → `pipeline_depth`, …).
 - **`api_key=…` is refused.** Credentials belong in the `WOLFBET_API_KEY` env var, not shell history.
 - Unknown fields and malformed pairs exit non-zero with a clear error.
+- **Live reload** (v2.28.3): if the daemon is running, `wolfctl config-set` sends `SIGHUP` after saving, and the daemon hot-applies safe fields (recurring, stop conditions, delays, milestones, pipeline depth, proxy, retention, …) in place. Unsafe fields (`game`, `strategy_key`, `base_bet`, `api_key`, …) print a heads-up that a full `wolfctl restart` is required. Nothing to remember — the command tells you which path it took.
 
 ### First real run
 
@@ -559,6 +560,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones
 - **v2.27.0** — Async bet-writer + SQLite tuning. Kills the per-bet CLI overhead (~67 ms → ~10 ms on typical VPS SSD) via a background writer thread with a persistent tuned connection (`synchronous=NORMAL`, `busy_timeout=5000`, `cache_size=-32000`, `temp_store=MEMORY`) and batched `executemany` inserts. Bounded queue with nothing-lost sync fallback on overflow, drained on shutdown. New `db_write_mode` config (`async` default, `sync` opt-out). `--diagnose` gains a DB writer row with queue depth + fallback counter + advice.
 - **v2.28.0 + TG v1.17.0** — Extract shared helpers to `core/`. Six pure-Python helpers duplicated between the CLI and TG bot (`validate_proxy`, `mask_proxy`, `classify_auto_stop_reason`, `parse_streak_delay`, `percentile`, `benchmark_verdict`) move to `core/net_helpers.py` + `core/diagnostics.py`. **TG bot fixes for free**: gains max-nonce recovery (previously fell through to generic "Bet request failed") and a proxy-mask that no longer leaks `"None"` on port-less URLs. TG `/benchmark` gains p50/p99 and a plain-English verdict line. Zero CLI behaviour change.
 - **v2.28.1** — Monitor UX + systemd `Restart=` fix. Monitor footer advertises `wolfctl config-set` for tweaks + `wolfctl export/stats/analytics` for data. `S` from monitor now routes through `systemctl --user stop wolfbet` when the daemon is systemd-managed, so it stays stopped (previously systemd's `Restart=always` respawned the daemon within ~10 s). `install.sh` writes `Restart=on-failure` for CLI + TG units; `wolfctl update` idempotently migrates existing installs (`Restart=always` → `Restart=on-failure` + `daemon-reload`). Real crashes still auto-recover.
+- **v2.28.2** — Restored the monitor's session-title row (v2.28.1's footer had pushed it above the viewport). `_MONITOR_FIXED_ROWS = 11` constant with a regression test locks the layout invariant. Also closed a silent-persistence gap present since Phase 2 (v2.16.0): `_CONFIG_KEYS` was missing `recurring`, `basebet_pct`, and all four `milestone_*` fields; streak-tuple fields had no round-trip in `save_config`/`load_config`. Now honestly persisted.
+- **v2.28.3** — SIGHUP-driven live config reload. `wolfctl config-set` now hot-reloads the running daemon for a bounded allowlist of safe fields (recurring, all stop conditions, delays, milestones, pipeline depth, proxy, retention, custom rules, streak tuples). Unsafe fields (game / strategy_key / base_bet / api_key / …) print a heads-up that `wolfctl restart` is required. Kills the "silent success then no-op" antipattern.
 
 ---
 
