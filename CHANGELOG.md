@@ -1,5 +1,24 @@
 # Changelog
 
+## CLI v2.30.0 — Monitor Row 6 filled with live config-progress (2026-07-19)
+
+Row 6 of `wolfctl monitor` was a blank `" P/L —"` — a sparkline placeholder that never had backing history. User running with `profit_threshold=0.00050207` + `profit_increment=0.00000001` asked for the row to show *what is configured* alongside *what is happening*, so a glance tells them which stop conditions are armed and how close each budget is to firing.
+
+New `_build_config_progress_row(d)` — pure function, one line, elides unset fields:
+
+- **`Ms`** — profit-increment milestone: `Ms +0.00042/0.00050 (84%)`. Rendered only when `profit_threshold` + `profit_increment` set. Target = `last_profit_milestone + profit_threshold` (same derivation as `state.next_profit_milestone` at the two profit-increment call sites).
+- **`MaxP` / `MaxL` / `MaxB` / `MaxW`** — stop-condition progress with `current/target (pct%)`. `MaxL` uses `abs(profit)/abs(max_loss)` when profit < 0; dim when profit ≥ 0.
+- **`MinBal`** — floor semantics, no pct. `yellow` when balance ≤ floor × 1.05, else `dim`.
+- **`Rec on(60s)`** — cyan; skipped when `recurring=False`.
+- **Progress-tinting** — `green` <80%, `yellow` ≥80%, `bold_red` ≥95%. Same visual alarm across every budget-style condition.
+- **Fallback** — with nothing armed, row renders `" CFG  ─  no goals set"` (dim). Row is never blank.
+
+Zero new state fields — every value already lives in `_save_state_file`'s dict. Zero changes to the bet loop, `_LIVE_RELOAD_KEYS`, or `_MONITOR_FIXED_ROWS` (still 11). Row 6 label in the layout-budget comment updated from *"P/L sparkline placeholder"* to *"Config-progress row"*.
+
+**Tests**: `tests/test_phase5t_monitor_config_row.py` — 18 tests covering fallback, single-line invariant, per-field elision, milestone %, MaxL sign handling, MinBal proximity, Rec on/off, all three color tiers. **521 total passing.**
+
+`VERSION` `2.29.0` → `2.30.0`. TG untouched. `wolfctl` unchanged.
+
 ## CLI v2.29.0 / TG v1.18.0 — profit_increment restarts auto-bet cycle + TG parity ports (2026-07-19)
 
 Two threads landed in the same release.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.29.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -587,7 +587,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.29.0"
+VERSION      = "2.30.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -4350,7 +4350,7 @@ def _monitor_get_recent_bets(session_id: int, limit: int) -> list:
 #   Row 3: Stats line 1 (Bets / W / L / Str / Best)
 #   Row 4: Stats line 2 (Bet / Base / Hi / Strategy / mult / BPS / BPM / RL / Speed)
 #   Row 5: s5 (Peak / Low / BestW / WorstL / Avg / Bal)
-#   Row 6: P/L sparkline placeholder
+#   Row 6: Config-progress row (Ms/MaxP/MaxL/MaxB/MaxW/MinBal/Rec)
 #   Row 7: top separator
 #   Row 8: bets-table header
 #   Row N-2: bottom separator
@@ -4359,6 +4359,86 @@ def _monitor_get_recent_bets(session_id: int, limit: int) -> list:
 # = 11 rows total. Update this constant whenever you add/remove a header
 # or footer row, or v2.28.1's regression (top row clipped) reappears.
 _MONITOR_FIXED_ROWS = 11
+
+
+def _pct_color(pct: float) -> str:
+    if pct >= 95:
+        return "bold_red"
+    if pct >= 80:
+        return "yellow"
+    return "green"
+
+
+def _build_config_progress_row(d: dict) -> str:
+    """Row 6 — live config-progress summary. One line, elides unset fields."""
+    segments = []
+
+    profit_threshold  = d.get("profit_threshold")
+    profit_increment  = d.get("profit_increment")
+    if profit_threshold and profit_increment is not None:
+        last_ms = float(d.get("last_profit_milestone", 0.0) or 0.0)
+        next_ms = last_ms + float(profit_threshold)
+        profit  = float(d.get("profit", 0.0) or 0.0)
+        pct = max(0.0, min(100.0, (profit / next_ms * 100) if next_ms > 0 else 0.0))
+        segments.append(
+            f"{_a('dim','Ms')} "
+            f"{_a(_pct_color(pct), f'+{max(0.0, profit):.8f}/{next_ms:.8f} ({pct:.0f}%)')}"
+        )
+
+    max_profit = d.get("max_profit")
+    if max_profit is not None:
+        profit = float(d.get("profit", 0.0) or 0.0)
+        pct = max(0.0, min(100.0, (profit / float(max_profit) * 100) if max_profit else 0.0))
+        segments.append(
+            f"{_a('dim','MaxP')} "
+            f"{_a(_pct_color(pct), f'+{max(0.0, profit):.8f}/{float(max_profit):.8f} ({pct:.0f}%)')}"
+        )
+
+    max_loss = d.get("max_loss")
+    if max_loss is not None:
+        profit = float(d.get("profit", 0.0) or 0.0)
+        loss_target = abs(float(max_loss))
+        loss_now = abs(profit) if profit < 0 else 0.0
+        pct = max(0.0, min(100.0, (loss_now / loss_target * 100) if loss_target > 0 else 0.0))
+        color = _pct_color(pct) if profit < 0 else "dim"
+        segments.append(
+            f"{_a('dim','MaxL')} "
+            f"{_a(color, f'-{loss_now:.8f}/-{loss_target:.8f} ({pct:.0f}%)')}"
+        )
+
+    max_bets = d.get("max_bets")
+    if max_bets is not None:
+        total = int(d.get("total_bets", 0) or 0)
+        pct = max(0.0, min(100.0, (total / int(max_bets) * 100) if max_bets else 0.0))
+        segments.append(
+            f"{_a('dim','MaxB')} "
+            f"{_a(_pct_color(pct), f'{total}/{int(max_bets)} ({pct:.0f}%)')}"
+        )
+
+    max_wins = d.get("max_wins")
+    if max_wins is not None:
+        wins = int(d.get("wins", 0) or 0)
+        pct = max(0.0, min(100.0, (wins / int(max_wins) * 100) if max_wins else 0.0))
+        segments.append(
+            f"{_a('dim','MaxW')} "
+            f"{_a(_pct_color(pct), f'{wins}/{int(max_wins)} ({pct:.0f}%)')}"
+        )
+
+    floor = d.get("stop_on_balance")
+    if floor is not None:
+        bal = float(d.get("current_balance", 0.0) or 0.0)
+        color = "yellow" if bal <= float(floor) * 1.05 else "dim"
+        segments.append(
+            f"{_a('dim','MinBal')} {_a(color, f'{bal:.8f}/{float(floor):.8f}')}"
+        )
+
+    if d.get("recurring"):
+        delay = int(d.get("recurring_delay_sec", 0) or 0)
+        segments.append(f"{_a('dim','Rec')} {_a('cyan', f'on({delay}s)')}")
+
+    if not segments:
+        return f" {_a('dim','CFG')}  {_a('dim','─')}  {_a('dim','no goals set')}"
+    return " " + _a("dim", "CFG") + "  " + "  ".join(segments)
 
 
 def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
@@ -4488,8 +4568,8 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
           f"  {_a('dim', 'Bal')} {_a(bc_c, f'{bc_s}{bal_change:.8f}')}")
     add(s5)
 
-    # ── Row 6: Sparkline placeholder (no history in state file) ──
-    add(f" {_a('dim', 'P/L')} {_a('dim', '—')}")
+    # ── Row 6: Config-progress row (v2.30.0) ──
+    add(_build_config_progress_row(d))
 
     # ── Row 7: Separator ──────────────────────────────
     add(_a("dim_blue", "─" * term_w))
