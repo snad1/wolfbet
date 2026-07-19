@@ -1,5 +1,27 @@
 # Changelog
 
+## CLI v2.28.2 — monitor header restored + silent config-key persistence gap closed (2026-07-19)
+
+Two real-world bugs found on the server, fixed in one release.
+
+**Bug A — monitor session-title row clipped since v2.28.1.** The v2.28.1 tweak/export hint footer was added without updating `_build_monitor_screen`'s `bets_avail = term_h - 10` budget. Total rows overshot the terminal by one, so the top row (`─── WolfBet v… #N uptime ● LIVE ────`) scrolled off. Fixed by introducing `_MONITOR_FIXED_ROWS = 11` (with an inline row-inventory comment) and switching `bets_avail = max(0, term_h - _MONITOR_FIXED_ROWS)`. Bet list shows one fewer row; session-title returns to the top.
+
+**Bug B — `wolfctl config-set recurring=on` silently reverted.** `_CONFIG_KEYS` was missing SIX fields that live in `_PRESET_KEYS`, `_CONFIG_SHOW_FIELDS`, and `_TWEAK_PARAMS`: `recurring`, `basebet_pct`, and all four `milestone_*`. Every `wolfctl config-set` mutation on those fields printed the diff, printed "Saved to …", but never wrote to `~/.wolfbet_autobot.json` — the next process launch (including the daemon's `--resume`) reverted them to `BotState.__init__` defaults. Silently broken since Phase 2 (v2.16.0). Additionally, the four streak-tuple fields (`streak_delay_loss/win/bets`, `streakbet_loss`) had a `_STREAK_TUPLE_KEYS` list for the preset system but no round-trip handling in `save_config` / `load_config` — same silent-failure symptom.
+
+Fixed by:
+
+- Adding the six missing fields to `_CONFIG_KEYS`.
+- Extending `save_config` to encode `_STREAK_TUPLE_KEYS` as `"N:X"` strings (same grammar the preset system uses; `null` when disabled).
+- Extending `load_config` to decode `_STREAK_TUPLE_KEYS` via `parse_streak_delay` (already imported from `core.net_helpers`).
+- Backward compat: older configs without the new keys keep working; `load_config` skips missing keys, `BotState.__init__` defaults apply.
+
+**Two regression guards** ship with the fix:
+
+- `tests/test_phase5n_monitor_layout.py` — 7 tests locking the invariant that `_build_monitor_screen` renders exactly `term_h` lines for `term_h ∈ {24, 40, 80}`, and that the first line is the session title, and the last is the tweak hint. Any future footer/header add that breaks the budget fails this test.
+- `tests/test_phase5o_config_persistence.py` — 14 tests round-tripping every newly-persisted field: `recurring` on/off, `basebet_pct`, all four `milestone_*`, all four streak-tuple keys (as strings for enabled tuples, `null` for disabled ones), plus a backward-compat check that legacy config files load without error.
+
+**446 total passing.** `VERSION` `2.28.1` → `2.28.2`. `wolfctl` unchanged (v3.5).
+
 ## CLI v2.28.1 — monitor UX + systemd `Restart=` fix (2026-07-19)
 
 Two real-world bugs from server usage:

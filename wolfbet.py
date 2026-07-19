@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.28.1  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.28.2  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -577,7 +577,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.28.1"
+VERSION      = "2.28.2"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -616,6 +616,12 @@ _CONFIG_KEYS = [
     "pipeline_depth", "recurring_delay",
     "proxy", "purge_days",
     "db_write_mode",
+    # v2.28.2 — previously missing from _CONFIG_KEYS despite living in
+    # _PRESET_KEYS / _CONFIG_SHOW_FIELDS / _TWEAK_PARAMS. Every wolfctl
+    # config-set on these fields silently reverted on the next process
+    # launch since Phase 2 (v2.16.0). Now honestly persisted.
+    "recurring", "basebet_pct",
+    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
 ]
 
 def _mask_key(key: str) -> str:
@@ -626,6 +632,14 @@ def _mask_key(key: str) -> str:
 
 def save_config():
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
+    # v2.28.2 — streak-tuple fields round-trip as "N:X" strings (or null when
+    # disabled). Same encoding presets already use — one grammar, no forks.
+    for k in _STREAK_TUPLE_KEYS:
+        tup = getattr(state, k, None)
+        if tup and tup[0] > 0:
+            data[k] = f"{tup[0]}:{tup[1]}"
+        else:
+            data[k] = None
     fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
@@ -640,6 +654,12 @@ def load_config() -> bool:
         for k in _CONFIG_KEYS:
             if k in data:
                 setattr(state, k, data[k])
+        # v2.28.2 — decode streak-tuple fields via parse_streak_delay.
+        # Older configs (pre-v2.28.2) lack these keys; the loop silently
+        # skips them and defaults from BotState.__init__ apply.
+        for k in _STREAK_TUPLE_KEYS:
+            if k in data:
+                setattr(state, k, parse_streak_delay(data[k]))
         # Environment variable override for API key (ISO 27001: no hardcoded secrets)
         env_key = os.environ.get("WOLFBET_API_KEY")
         if env_key:
@@ -4178,6 +4198,24 @@ def _monitor_get_recent_bets(session_id: int, limit: int) -> list:
     except Exception:
         return []
 
+# ── Monitor layout budget ────────────────────────────
+# Fixed rows produced by _build_monitor_screen (must match add() calls):
+#   Row 1: session-title header (WolfBet v… #N uptime ● LIVE)
+#   Row 2: BAL / PnL / WAG / WR
+#   Row 3: Stats line 1 (Bets / W / L / Str / Best)
+#   Row 4: Stats line 2 (Bet / Base / Hi / Strategy / mult / BPS / BPM / RL / Speed)
+#   Row 5: s5 (Peak / Low / BestW / WorstL / Avg / Bal)
+#   Row 6: P/L sparkline placeholder
+#   Row 7: top separator
+#   Row 8: bets-table header
+#   Row N-2: bottom separator
+#   Row N-1: MONITOR + keys
+#   Row N:   v2.28.1 tweak/export hint
+# = 11 rows total. Update this constant whenever you add/remove a header
+# or footer row, or v2.28.1's regression (top row clipped) reappears.
+_MONITOR_FIXED_ROWS = 11
+
+
 def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     """Build full-screen ANSI dashboard from state dict + bet list."""
     try:
@@ -4304,7 +4342,7 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     add(_a("dim", f"{'#':>6}  {'Time':<9} {'Amount':>14}  {'Roll':>7}  {'W/L':^4}  {'P/L':>15}  {'Balance':>15}"))
 
     # ── Rows 9..N-2: Recent bet rows ─────────────────
-    bets_avail = max(0, term_h - 10)
+    bets_avail = max(0, term_h - _MONITOR_FIXED_ROWS)
     shown = bets[:bets_avail]  # already newest-first from DB
 
     for b in shown:
