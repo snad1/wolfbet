@@ -1,5 +1,39 @@
 # Changelog
 
+## CLI v2.30.2 / wolfctl v3.6 — wolfctl update can now self-heal + CLI daemon auto-restarts + wizard banner (2026-07-20)
+
+Real-world ops report: user ran `wolfctl update` on their server, `git pull` said `a25f600..bdefbe4` (our latest), and yet `wolfctl config-show` returned the v3.1 help menu and the wizard banner still read "WolfBet AutoBot v2.6". Three independent defects diagnosed and fixed.
+
+### Defect A — `wolfctl update` couldn't self-upgrade old (v3.1) installs
+
+The stale installed wolfctl at `~/.local/bin/wolfctl` predated the v3.5 self-copy block, so its `cmd_update` pulled bot files but never overwrote itself. Result: every update ran the same v3.1 dispatcher, no v3.3+ subcommand was reachable, and no drift warning surfaced. Chicken-and-egg — the old wolfctl can't be forced to self-upgrade retroactively.
+
+Fix: introduced `WOLFCTL_VERSION=3.6` constant. `cmd_update` now reads the repo copy's version, compares it to the running interpreter's `$WOLFCTL_VERSION`, and prints a yellow "wolfctl was stale" warning + one-liner escape hatch (`exec wolfctl update`) when they diverge. Once operators break out of the v3.1 chicken-and-egg (one-liner below), every future update self-heals AND surfaces drift if it ever recurs.
+
+### Defect B — `wolfctl update` never restarted the CLI daemon
+
+`cmd_update` restarted `wolfbet-tg` and `wolfbet-web` (when active) but not `wolfbet.service`. The CLI daemon kept the pre-pull `wolfbet.py` mapped in memory until the operator ran `wolfctl restart` manually. That explains why "fixed" bugs (e.g. v2.30.1's profit_increment reset) could keep silently failing on the server — the daemon was running old code.
+
+Fix: added a systemctl restart block mirroring the TG block. `wolfctl update` now: pulls → refreshes files → self-copies wolfctl → migrates systemd Restart= → reinstalls deps → restarts web (if active) → restarts TG (if active) → **restarts CLI (if active)**. --resume preserves session state.
+
+### Defect C — wizard banner hardcoded to `v2.6`
+
+`setup_wizard()` rendered `[bold cyan]WolfBet AutoBot v2.6[/]` — a literal that never got updated after v2.6.0 (2026-03-12). Dashboard header + `--version` correctly interpolated `VERSION`, but the wizard banner was stuck. Fix: one-line f-string swap — banner now reads `v{VERSION}` like the rest.
+
+### Server upgrade one-liner
+
+Operators still on the v3.1 chicken-and-egg need to run this **once** to break out:
+
+```bash
+cd ~/wolfbet && git pull --ff-only && install -m 0755 wolfctl ~/.local/bin/wolfctl && systemctl --user restart wolfbet wolfbet-tg
+```
+
+That gets them onto v3.6 wolfctl (all subcommands work) and forces the CLI daemon onto v2.30.2 wolfbet.py. Every subsequent `wolfctl update` self-heals AND restarts the CLI daemon AND surfaces drift automatically.
+
+**Tests**: `tests/test_phase5v_wolfctl_update_self_heal.py` — 10 tests covering version bumps, drift-warning marker, CLI restart block, wizard-banner f-string, and a defensive dispatcher-lock test that asserts every `wolfctl X` command advertised in `usage()` maps to a `case` handler (prevents a future v3.1-style regression from shipping a stale dispatcher). **539 total passing.**
+
+`VERSION` `2.30.1` → `2.30.2`. `wolfctl` `v3.5` → `v3.6`. TG untouched. install.sh unchanged.
+
 ## CLI v2.30.1 — fix profit_increment: CFG row lies + milestone doesn't reset across recurring cycles (2026-07-19)
 
 Two independent v2.30.0 regressions that together made `profit_increment` look broken across recurring cycles.

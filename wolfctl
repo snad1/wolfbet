@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.5
+# WolfBet AutoBot — Unified Management Command v3.6
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -14,10 +14,15 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_NAME="wolfctl"
+# v3.6 — surface installed-vs-repo drift so operators stuck on an old
+# wolfctl (from before the self-copy block landed) see a warning instead
+# of a silent "already up to date". This constant is grep-parsed by
+# cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
+WOLFCTL_VERSION=3.6
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.5"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.6"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -209,7 +214,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.5"
+    echo "  wolfctl v3.6"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -342,12 +347,25 @@ cmd_update() {
 
     # Self-update: copy this script to its installed location
     if [ -f "$SCRIPT_NAME" ]; then
-        local installed
+        local installed repo_ver
         installed="$(command -v "$SCRIPT_NAME" 2>/dev/null || true)"
         if [ -n "$installed" ] && [ -f "$installed" ]; then
             cp "$SCRIPT_NAME" "$installed"
             chmod +x "$installed"
             echo "Updated $SCRIPT_NAME → $installed"
+        fi
+        # v3.6 — surface drift when the currently-executing wolfctl is older
+        # than the repo copy. Chicken-and-egg: the OLD installed wolfctl won't
+        # run this block at all, so on the FIRST upgrade the operator must
+        # rerun `wolfctl update` (or `exec wolfctl update`) once to pick up
+        # the new dispatcher. Subsequent runs self-heal.
+        repo_ver="$(grep -m1 '^WOLFCTL_VERSION=' "$SCRIPT_NAME" 2>/dev/null | cut -d= -f2)"
+        if [ -n "$repo_ver" ] && [ "$repo_ver" != "${WOLFCTL_VERSION:-unknown}" ]; then
+            echo ""
+            echo "  ⚠  wolfctl was stale: ${WOLFCTL_VERSION:-unknown} → $repo_ver"
+            echo "     Re-run once to activate the new dispatcher:"
+            echo "       exec wolfctl update"
+            echo ""
         fi
     fi
 
@@ -395,7 +413,22 @@ cmd_update() {
     else
         echo "Updated. TG bot not running (skipped restart)."
     fi
-    echo "  CLI bot: wolfctl restart"
+
+    # v3.6 — auto-restart CLI daemon so the running process picks up the new
+    # wolfbet.py. Before this, `wolfctl update` only refreshed the file on
+    # disk and left the daemon on the pre-pull code until manual restart.
+    # --resume preserves session state across the restart.
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        systemctl --user restart "$SERVICE"
+        sleep 1
+        if systemctl --user is-active --quiet "$SERVICE"; then
+            echo "CLI daemon restarted (session auto-resumed)."
+        else
+            echo "CLI restart failed. Check: wolfctl logs"
+        fi
+    else
+        echo "  CLI bot: wolfctl restart"
+    fi
 }
 
 # ── Telegram bot commands ────────────────────────────
