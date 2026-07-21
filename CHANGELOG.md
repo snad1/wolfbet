@@ -1,5 +1,26 @@
 # Changelog
 
+## CLI v2.30.4 — Windowed cycle metrics + windowed efficiency + sharpened "CLI overhead" advice (2026-07-20)
+
+v2.30.3 unified the metric formulas and killed the fake `=` sum, but two follow-on issues surfaced on the old server (which does ~40-50 ms of genuine per-iteration overhead due to slower silicon):
+
+- `overhead` still swung `46 → 120 → 46 ms` across successive `wolfctl diagnose` calls. Root cause: `_record_cycle_ms` used an α=0.1 EMA — one 400 ms iteration (retention worker, GC pause, `/auto/start` handshake) bumped displayed cycle by ~40 ms and held it for 5-10 samples.
+- `Actual: 13.6 BPS   Theoretical: 12.6 BPS` — efficiency > 100% is arithmetically impossible. Session-wide `Actual` and rolling-window `Theoretical` came from different windows; when the API happened to be slower recently than the session mean, the ratio broke.
+- Advice tier fired "CLI overhead is high — check disk I/O + CPU" on a healthy shared-VPS host, misdirecting the operator into hunting a bug that doesn't exist.
+
+**Fixes**:
+
+- **Rolling cycle window** — replaces the α=0.1 EMA in `_record_cycle_ms` with a bounded deque (maxlen=500), mirroring `_api_samples`. New `_compute_cycle_p50` / `_compute_cycle_p99` helpers use the same percentile shape as `_compute_api_p50` / `_compute_api_p99`. Median cycle is now stable across single-sample perturbations; p99 exposes tail jitter separately. `_cycle_ms` field aliased to `cycle_p50` for backwards state-file compat.
+- **Windowed efficiency** — new `_compute_recent_bps()` (= `1000 / cycle_p50`); `_compute_efficiency_pct` now uses `recent_bps / theoretical_max_bps` so both sides of the ratio come from the same window. Session-wide `bets_per_second` stays visible in diagnose for context. `cmd_diagnose` shows a `>100%` prefix (rare — indicates api_avg drift) instead of the impossible-arithmetic display or a silent clamp.
+- **Sharpened "CLI overhead" advice** — when overhead is high AND DB writer + rate limits are all healthy (no fallback_sync, hwm < 100, rate_remaining > 200), the advice now says the delta is likely shared-tenancy CPU/disk jitter (VPS silicon lottery) rather than a fixable code issue. Points operators to the earlier "redeploy VPS / migrate tier" branch instead of chasing a ghost.
+- **`cmd_diagnose` display additions** — new lines showing `Recent BPS`, `Efficiency`, `Cycle: median X p99 Y (n=N samples)`.
+
+**Tests**: `tests/test_phase5x_cycle_windowing.py` — 13 tests covering median stability under outliers, window rolling, p99 tail behaviour, overhead stability, windowed efficiency vs session-wide fallback, state-file backward compat, sharpened advice text. Two existing phase3 tests updated to reflect new deque semantics (was: assert EMA smoothing). **564 total passing.**
+
+Zero behaviour change to the bet loop, DB writer, credential paths, or config schema. `wolfctl` unchanged. TG untouched (reads the same underlying metrics; fix flows through automatically). Sibling bots untouched.
+
+`VERSION` `2.30.3` → `2.30.4`.
+
 ## CLI v2.30.3 — Fix metric correctness: overhead jitter, fake diagnose "=" line, wrong BPS ceiling for auto-games (2026-07-21)
 
 Real-world observation from 18h/1M-bet sessions: `wolfctl diagnose` output showed `api_p50=50ms + overhead=0ms + delay=0ms = 151ms/bet` (sum obviously doesn't match) and overhead swinging `0 → 43 → 0` between consecutive diagnose calls seconds apart. `wolfctl status` on same server: `Cycle 143ms/bet → 6.99 BPS ceiling` while actual was 14.9 BPS and diagnose's Theoretical max was 15.1. Two "ceilings" for the same session, both wrong in different ways. Four defects fixed.

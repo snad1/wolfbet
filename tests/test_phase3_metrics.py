@@ -28,6 +28,7 @@ def _reset_metrics():
     s._on_target_count = 0
     s._cycle_ms = 0.0
     s._cycle_overhead_ms = 0.0
+    s._cycle_samples = deque(maxlen=500)  # v2.30.4
     s.bet_delay = 0.0
     s.bets_per_second = 0.0
 
@@ -181,24 +182,32 @@ def test_record_cycle_ms_first_sample():
     assert wb.state._cycle_ms == 320.0
 
 
-def test_record_cycle_ms_ema_smooths():
+def test_record_cycle_ms_windowed_median():
+    """v2.30.4 — cycle_ms is now the median of the rolling window, not an EMA.
+    Feed a mix of samples; median should reflect them (was EMA-smoothed)."""
     _reset_metrics()
-    wb.state._cycle_ms = 300.0
-    wb._record_cycle_ms(400.0)
-    # 300 * 0.9 + 400 * 0.1 = 310
-    assert abs(wb.state._cycle_ms - 310.0) < 1e-6
+    for ms in [300.0, 400.0]:
+        wb._record_cycle_ms(ms)
+    # With 2 samples, median-of-sorted[len//2] returns the upper sample (400).
+    # The point is: it's a percentile, not an EMA weighted at 0.9/0.1.
+    assert wb.state._cycle_ms in (300.0, 400.0)
 
 
 def test_record_cycle_ms_overhead_derived():
+    """v2.30.4 — overhead uses cycle_p50 - api_p50 - delay. Both are windowed."""
     _reset_metrics()
-    wb.state._last_api_ms = 50.0
     wb.state.bet_delay = 0.1  # 100ms
-    wb._record_cycle_ms(200.0)
-    # overhead = 200 - 50 - 100 = 50
+    # Populate api window so _compute_api_p50 returns 50.
+    for _ in range(20):
+        wb.state._api_samples.append(50.0)
+    for _ in range(20):
+        wb._record_cycle_ms(200.0)
+    # overhead = 200 (cycle p50) - 50 (api p50) - 100 (delay) = 50
     assert wb.state._cycle_overhead_ms == 50.0
 
 
 def test_record_cycle_ms_overhead_floors_at_zero():
+    """v2.30.4 — falls back to _last_api_ms when api deque empty."""
     _reset_metrics()
     wb.state._last_api_ms = 500.0  # implausibly larger than cycle
     wb.state.bet_delay = 0.0

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.3  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.4  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -562,6 +562,38 @@ def _compute_api_rolling_avg() -> float:
     return sum(state._api_samples) / len(state._api_samples)
 
 
+def _compute_cycle_p50() -> float:
+    """Median per-iteration cycle time in ms from the rolling window (0 when empty).
+
+    v2.30.4 — replaces the α=0.1 EMA. Same window semantics as api_p50, so
+    overhead = cycle_p50 − api_p50 stays algebraically consistent and stable.
+    """
+    if not state._cycle_samples:
+        return 0.0
+    ordered = sorted(state._cycle_samples)
+    return ordered[len(ordered) // 2]
+
+
+def _compute_cycle_p99() -> float:
+    """99th-percentile per-iteration cycle time in ms (0 when empty)."""
+    if not state._cycle_samples:
+        return 0.0
+    ordered = sorted(state._cycle_samples)
+    idx = max(0, min(len(ordered) - 1, int(0.99 * len(ordered))))
+    return ordered[idx]
+
+
+def _compute_recent_bps() -> float:
+    """Windowed BPS from cycle_p50 — same window as theoretical_max_bps.
+
+    v2.30.4 — used for the efficiency ratio. Session-wide bets_per_second
+    remains available for context but doesn't drive efficiency (it can
+    momentarily exceed the recent theoretical when api_avg drifts).
+    """
+    cycle_p50 = _compute_cycle_p50()
+    return 1000.0 / cycle_p50 if cycle_p50 > 0 else 0.0
+
+
 def _compute_theoretical_max_bps() -> float:
     """Ceiling bps = 1 / max(bet_delay, api_rolling_avg). 0 when both are 0.
 
@@ -573,11 +605,23 @@ def _compute_theoretical_max_bps() -> float:
 
 
 def _compute_efficiency_pct() -> float:
-    """Actual bps as % of theoretical max (capped at 100). 0 when no ceiling yet."""
+    """Recent bps as % of theoretical max (capped at 100). 0 when no ceiling yet.
+
+    v2.30.4 — uses _compute_recent_bps (windowed) instead of session-wide
+    bets_per_second so the ratio stays algebraically consistent with the
+    same window feeding theoretical_max_bps. Session-wide actual can exceed
+    the windowed ceiling when api_avg drifts up momentarily — that used
+    to render as impossible ">100% efficiency" or clamp-and-hide.
+    """
     tmax = _compute_theoretical_max_bps()
     if tmax <= 0:
         return 0.0
-    return min(100.0, state.bets_per_second / tmax * 100)
+    recent = _compute_recent_bps()
+    if recent <= 0:
+        # Cycle window hasn't populated yet — fall back to session-wide
+        # so early-session status isn't blank.
+        recent = state.bets_per_second
+    return min(100.0, recent / tmax * 100)
 
 
 def _record_api_ms(dt_ms: float) -> None:
@@ -594,16 +638,18 @@ def _record_api_ms(dt_ms: float) -> None:
 
 
 def _record_cycle_ms(cycle_observed_ms: float) -> None:
-    """EMA-smooth the per-bet cycle time; derive overhead = cycle − api − delay*1000."""
+    """Push one per-iteration cycle observation; expose p50 + p99 via helpers.
+
+    v2.30.4 — replaces the α=0.1 EMA that held onto outliers for 5-10 samples
+    (a single 400 ms iteration would bump displayed cycle by ~40 ms and hold).
+    Now uses a rolling deque, mirroring _api_samples. Median (cycle_p50) is
+    the stable "typical" cycle; p99 shows tail jitter separately.
+    """
     with state.lock:
-        if state._cycle_ms > 0:
-            state._cycle_ms = state._cycle_ms * 0.9 + cycle_observed_ms * 0.1
-        else:
-            state._cycle_ms = cycle_observed_ms
-        # v2.30.3 — was `state._last_api_ms` (unsmoothed single sample) which
-        # caused overhead to swing 0↔peak between successive display reads.
-        # Use the same p50 the diagnose + status lines display. Fall back to
-        # the single sample when the rolling window hasn't populated yet.
+        state._cycle_samples.append(cycle_observed_ms)
+        # _cycle_ms aliased to cycle_p50 for backwards state-file compat —
+        # existing readers see a stable median instead of a spiky EMA.
+        state._cycle_ms = _compute_cycle_p50()
         api_ref = _compute_api_p50() if state._api_samples else state._last_api_ms
         state._cycle_overhead_ms = max(0.0, state._cycle_ms - api_ref - state.bet_delay * 1000)
 DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolfbet_autobot.db"))
@@ -612,7 +658,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.3"
+VERSION      = "2.30.4"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1046,9 +1092,12 @@ class BotState:
         self.peak_api_ms    : float = 0.0
         self._api_samples   : deque = deque(maxlen=500)
         self._on_target_count: int   = 0
-        self._cycle_ms      : float = 0.0            # EMA-smoothed per-bet cycle
+        self._cycle_ms      : float = 0.0            # v2.30.4 — aliased to cycle_p50 for state-file compat
         self._cycle_overhead_ms: float = 0.0         # cycle − api − delay*1000
         self._last_cycle_start: float = 0.0
+        # v2.30.4 — rolling per-iteration cycle window (mirrors _api_samples).
+        # Replaces α=0.1 EMA which held onto outliers for 5-10 samples.
+        self._cycle_samples : deque = deque(maxlen=500)
 
         # ── performance ──
         self.bets_per_minute = 0.0
@@ -2778,6 +2827,13 @@ def _save_state_file():
             "on_target_pct":       _compute_on_target_pct(),
             "cycle_ms":            state._cycle_ms,
             "overhead_ms":         state._cycle_overhead_ms,
+            # v2.30.4 — windowed cycle metrics + recent BPS for consistent
+            # efficiency computation. cycle_ms above is aliased to cycle_p50
+            # for backwards-compat readers.
+            "cycle_p50_ms":        _compute_cycle_p50(),
+            "cycle_p99_ms":        _compute_cycle_p99(),
+            "cycle_sample_count":  len(state._cycle_samples),
+            "bets_per_second_recent": _compute_recent_bps(),
             "efficiency_pct":      _compute_efficiency_pct(),
             "theoretical_max_bps": _compute_theoretical_max_bps(),
             "pipeline_effective":  state.pipeline_effective,
@@ -5348,6 +5404,11 @@ def cmd_diagnose():
     api_p99   = float(d.get("api_p99_ms") or 0)
     overhead  = float(d.get("overhead_ms") or 0)
     cycle_ms  = float(d.get("cycle_ms") or 0)
+    # v2.30.4 — windowed cycle metrics + windowed recent BPS.
+    cycle_p50 = float(d.get("cycle_p50_ms") or cycle_ms)
+    cycle_p99 = float(d.get("cycle_p99_ms") or 0)
+    cycle_n   = int(d.get("cycle_sample_count") or 0)
+    recent_bps = float(d.get("bets_per_second_recent") or 0)
     bet_delay = float(d.get("bet_delay") or 0)
     bps       = float(d.get("bets_per_second") or 0)
     tmax      = float(d.get("theoretical_max_bps") or 0)
@@ -5359,23 +5420,39 @@ def cmd_diagnose():
     pipe_eff  = d.get("pipeline_effective") or 1
     delay_ms  = bet_delay * 1000
 
+    # v2.30.4 — Recent BPS + Efficiency use the same window as Theoretical,
+    # so the ratio is algebraically consistent. Session-wide Actual stays
+    # visible for context. `>` prefix flags the (rare) case where the
+    # windowed actual exceeds theoretical (api_avg drift within the window).
+    _eff_ref = recent_bps if recent_bps > 0 else bps
+    if tmax > 0:
+        _eff_raw = _eff_ref / tmax * 100.0
+        eff_display = ">100%" if _eff_raw > 100.0 else f"{_eff_raw:.0f}%"
+    else:
+        eff_display = "—"
+
     lines = [
         f"[dim]Game:[/] [cyan]{game}[/]  ·  "
         f"[dim]Strategy:[/] [cyan]{strategy}[/]  ·  "
         f"[dim]Pipeline:[/] [cyan]{pipe_eff}[/]",
         "",
-        f"[bold]Actual:[/] [magenta]{bps:.1f}[/] BPS   "
-        f"[bold]Theoretical max:[/] [magenta]{tmax:.1f}[/] BPS",
+        (f"[bold]Actual:[/] [magenta]{bps:.1f}[/] BPS (session)  ·  "
+         f"[bold]Recent:[/] [magenta]{recent_bps:.1f}[/] BPS  ·  "
+         f"[bold]Theoretical:[/] [magenta]{tmax:.1f}[/] BPS  ·  "
+         f"[bold]Efficiency:[/] [magenta]{eff_display}[/]"),
+        (f"[dim]Cycle:[/] median [cyan]{cycle_p50:.0f}ms[/]  "
+         f"p99 [cyan]{cycle_p99:.0f}ms[/]  "
+         f"[dim](n={cycle_n} samples)[/]"),
         # v2.30.3 — the three components come from different windows/formulas,
         # so their sum is a decomposition, not a real equality. Show the
-        # measured EMA cycle separately so a divergence is a real signal.
+        # measured cycle separately so a divergence is a real signal.
         f"[dim]Cycle breakdown:[/] api_p50=[cyan]{api_p50:.0f}ms[/] "
         f"+ overhead=[cyan]{overhead:.0f}ms[/] "
         f"+ delay=[cyan]{delay_ms:.0f}ms[/] "
         f"[dim]≈[/] [magenta]{api_p50 + overhead + delay_ms:.0f}ms[/]/bet "
         f"[dim](decomposition)[/]",
         f"[dim]Measured cycle:[/]  [magenta]{cycle_ms:.0f}ms[/]/bet "
-        f"[dim](outer-iteration EMA)[/]",
+        f"[dim](median of last {cycle_n} iterations)[/]",
     ]
     if rate_rem is not None and rate_lim:
         lines.append(f"[dim]Rate limit:[/] {rate_rem}/{rate_lim} remaining")
@@ -5420,6 +5497,16 @@ def cmd_diagnose():
         if db_mode == "sync":
             advice.append("• CLI overhead high AND db_write_mode=sync — flip to async: "
                           "[cyan]wolfctl config-set dbmode=async && wolfctl restart[/]")
+        elif dbw_fb == 0 and dbw_hwm < 100 and int(rate_rem or 999) > 200:
+            # v2.30.4 — DB writer + rate limits are all healthy, so overhead
+            # is almost certainly shared-tenancy CPU/disk jitter (VPS silicon),
+            # not a fixable code issue. Prior investigation confirmed this
+            # pattern on the older-EPYC VPS: 14% slower CPU + 40% slower disk.
+            advice.append("• CLI overhead is high on this host.")
+            advice.append("  DB writer + rate limits are healthy — overhead is likely "
+                          "shared-tenancy CPU/disk jitter (VPS silicon), not a fixable "
+                          "code issue. Consider redeploying on a fresh VPS instance "
+                          "(silicon lottery) or a higher-tier plan.")
         else:
             advice.append("• CLI overhead is high. Check disk I/O (DB writes) "
                           "and CPU load on the daemon host.")

@@ -43,7 +43,7 @@ def _reset_metric_state():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.30.3"
+    assert wb.VERSION == "2.30.4"
 
 
 # ── Defect A: overhead stable across single-sample perturbation ─
@@ -70,11 +70,16 @@ def test_overhead_stable_when_single_sample_spikes():
 
 
 def test_overhead_falls_back_to_last_api_ms_when_deque_empty():
-    """No API samples yet → no p50 available → falls back to _last_api_ms."""
+    """No API samples yet → no p50 available → falls back to _last_api_ms.
+
+    v2.30.4 — also requires the cycle deque to be reset alongside so the
+    first sample IS the median (test invariant unchanged from v2.30.3)."""
     _reset_metric_state()
+    from collections import deque
+    wb.state._cycle_samples = deque(maxlen=500)
     wb.state._last_api_ms = 50.0
     wb._record_cycle_ms(80.0)
-    # overhead = cycle (80) - api_ref (50) - delay*1000 (0) = 30, clamped 0
+    # overhead = cycle_p50 (80) - api_ref (50) - delay*1000 (0) = 30
     assert abs(wb.state._cycle_overhead_ms - 30.0) < 1e-9
 
 
@@ -91,7 +96,8 @@ def test_diagnose_uses_approx_not_equals():
     assert "≈" in src
     assert "Measured cycle" in src
     assert "decomposition" in src
-    assert "outer-iteration EMA" in src
+    # v2.30.4 — "outer-iteration EMA" is retired; label now reads "median of last N iterations".
+    assert "median of last" in src
     # Old fake-equality line is gone.
     assert "= [magenta]{cycle_ms:.0f}ms[/]/bet" not in src
 
