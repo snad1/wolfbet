@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.6
+# WolfBet AutoBot — Unified Management Command v3.7
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -14,15 +14,15 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_NAME="wolfctl"
-# v3.6 — surface installed-vs-repo drift so operators stuck on an old
+# v3.7 — surface installed-vs-repo drift so operators stuck on an old
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.6
+WOLFCTL_VERSION=3.7
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.6"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.7"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -68,6 +68,7 @@ usage() {
     echo "  TOOLS:"
     echo "    wolfctl benchmark [N]       API-latency probe (no bets placed; default N=20)"
     echo "    wolfctl diagnose            Analyse running session bottleneck (top blocker + advice)"
+    echo "    wolfctl doctor [--fix] [-y] Health check + prescriptive fixes (VACUUM, journal, cleanup)"
     echo "    wolfctl backtest [args…]    Backtest / replay (no API calls, no real balance)"
     echo "                                Examples: --simulate 10000 --seed 42"
     echo "                                          --replay-session 42 --preset foo"
@@ -214,7 +215,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.6"
+    echo "  wolfctl v3.7"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -291,6 +292,150 @@ cmd_diagnose() {
     "$PYTHON" "$BOT" --diagnose
 }
 
+# v3.7 — health check + prescriptive advice for reducing per-bet overhead.
+# Read-only by default. `--fix` applies the three safe cleanups
+# (cleanup + VACUUM + journal vacuum); privileged fixes (renice / ionice /
+# cpupower) are prescribed only, never auto-applied. On virtualized hosts
+# (QEMU-KVM VPS) the governor prescription is downgraded to [SKIP] because
+# guests can't influence host CPU governor from inside.
+cmd_doctor() {
+    local do_fix=0 do_yes=0
+    for arg in "$@"; do
+        case "$arg" in
+            --fix)     do_fix=1 ;;
+            --yes|-y)  do_yes=1 ;;
+        esac
+    done
+
+    echo "─── wolfctl doctor ───"
+    echo ""
+    echo "1. Live diagnostic (wolfctl diagnose):"
+    "$PYTHON" "$BOT" --diagnose 2>/dev/null || echo "  (daemon not running — start with 'wolfctl start')"
+
+    echo ""
+    echo "2. Database health:"
+    local db_size page_count freelist frag_pct
+    frag_pct=0
+    if [ -f "$HOME/.wolfbet_autobot.db" ]; then
+        local db="$HOME/.wolfbet_autobot.db"
+        db_size=$(du -h "$db" 2>/dev/null | awk '{print $1}')
+        page_count=$(sqlite3 "$db" "PRAGMA page_count" 2>/dev/null || echo 0)
+        freelist=$(sqlite3 "$db" "PRAGMA freelist_count" 2>/dev/null || echo 0)
+        if [ "$page_count" -gt 0 ] 2>/dev/null; then
+            frag_pct=$(( freelist * 100 / page_count ))
+        fi
+        echo "  DB: $db  size=$db_size  fragmentation=${frag_pct}% (freelist=$freelist / pages=$page_count)"
+    else
+        echo "  DB: $HOME/.wolfbet_autobot.db not found (daemon has never run?)"
+    fi
+
+    echo ""
+    echo "3. Journal size (wolfbet.service):"
+    journalctl --user -u "$SERVICE" --disk-usage 2>/dev/null | sed 's/^/  /' \
+        || echo "  (not managed by systemd)"
+
+    echo ""
+    echo "4. System resources:"
+    echo "  Load: $(uptime | awk -F'load average: ' '{print $2}')"
+    echo "  Memory:"
+    free -h | sed 's/^/    /'
+    echo "  Disk on \$HOME:"
+    df -h "$HOME" | tail -1 | sed 's/^/    /'
+    echo "  CPU governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"
+
+    echo ""
+    echo "5. Daemon priority:"
+    local pid nice_val ionice_val
+    pid=$(pgrep -f 'wolfbet\.py.*--daemon' | head -1)
+    if [ -n "$pid" ]; then
+        nice_val=$(ps -o ni= -p "$pid" 2>/dev/null | tr -d ' ')
+        ionice_val=$(ionice -p "$pid" 2>/dev/null || echo "unknown")
+        echo "  PID $pid  nice=${nice_val:-?}  ${ionice_val}"
+    else
+        echo "  (daemon not running)"
+    fi
+
+    echo ""
+    echo "─── Prescriptions ───"
+
+    local do_vacuum=0 do_journal=0
+    if [ "$frag_pct" -ge 20 ] 2>/dev/null; then
+        echo "  [SAFE]  SQLite VACUUM (fragmentation ${frag_pct}% ≥ 20%):"
+        echo "          sqlite3 \$HOME/.wolfbet_autobot.db 'VACUUM;'"
+        do_vacuum=1
+    fi
+    echo "  [SAFE]  Force bet-row retention now:"
+    echo "          wolfctl cleanup 1"
+
+    local jsz
+    jsz=$(journalctl --user -u "$SERVICE" --disk-usage 2>/dev/null \
+          | grep -oE '[0-9.]+[KMG]' | head -1)
+    if [ -n "$jsz" ] && echo "$jsz" | grep -qE '[0-9]+G|[5-9][0-9][0-9]M'; then
+        echo "  [SAFE]  Journal is large ($jsz) — vacuum to 100 M:"
+        echo "          journalctl --user --vacuum-size=100M"
+        do_journal=1
+    fi
+
+    if [ -n "$pid" ] && [ -n "$nice_val" ] && [ "$nice_val" -gt -5 ] 2>/dev/null; then
+        echo "  [PRIV]  Raise daemon scheduling priority (needs sudo):"
+        echo "          sudo renice -n -5 -p $pid"
+        echo "          sudo ionice -c 2 -n 0 -p $pid"
+    fi
+
+    # v3.7 — governor prescription only if the host actually allows it.
+    # QEMU-KVM guests (most VPS) can't change the governor from inside;
+    # cpupower returns "Error setting new values" and confuses the operator.
+    local virt=""
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        virt=$(systemd-detect-virt 2>/dev/null || echo "")
+    fi
+    local gov
+    gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
+    if [ -n "$gov" ] && [ "$gov" != "performance" ]; then
+        if [ -n "$virt" ] && [ "$virt" != "none" ]; then
+            echo "  [SKIP]  CPU governor is '$gov' (not performance) but this host"
+            echo "          is virtualized ($virt) — guests cannot set the governor."
+            echo "          Ask your VPS provider or migrate to a dedicated-CPU plan."
+        else
+            echo "  [PRIV]  Pin CPU governor to performance (needs sudo):"
+            echo "          sudo cpupower frequency-set -g performance"
+        fi
+    fi
+
+    if [ "$do_fix" = "1" ]; then
+        echo ""
+        echo "─── Applying safe fixes (--fix) ───"
+        _doctor_run_fix() {
+            local desc="$1" cmd="$2"
+            if [ "$do_yes" = "0" ]; then
+                read -r -p "  $desc — apply? [y/N] " reply
+                case "$reply" in
+                    y|Y|yes|YES) ;;
+                    *) echo "    skipped." ; return ;;
+                esac
+            fi
+            echo "  \$ $cmd"
+            eval "$cmd"
+        }
+        _doctor_run_fix "Force bet-row retention (age > 1 day)" \
+                        "\"$PYTHON\" \"$BOT\" --cleanup 1"
+        if [ "$do_vacuum" = "1" ]; then
+            _doctor_run_fix "SQLite VACUUM (reclaim fragmented pages)" \
+                            "sqlite3 \"$HOME/.wolfbet_autobot.db\" 'VACUUM;'"
+        fi
+        if [ "$do_journal" = "1" ]; then
+            _doctor_run_fix "Journal vacuum to 100 M" \
+                            "journalctl --user --vacuum-size=100M"
+        fi
+        echo ""
+        echo "Done. Run 'wolfctl diagnose' again in 5 minutes to see the delta."
+    else
+        echo ""
+        echo "To apply the [SAFE] fixes automatically, run: wolfctl doctor --fix"
+        echo "Add --yes to skip per-fix confirmation."
+    fi
+}
+
 cmd_update() {
     # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -354,7 +499,7 @@ cmd_update() {
             chmod +x "$installed"
             echo "Updated $SCRIPT_NAME → $installed"
         fi
-        # v3.6 — surface drift when the currently-executing wolfctl is older
+        # v3.7 — surface drift when the currently-executing wolfctl is older
         # than the repo copy. Chicken-and-egg: the OLD installed wolfctl won't
         # run this block at all, so on the FIRST upgrade the operator must
         # rerun `wolfctl update` (or `exec wolfctl update`) once to pick up
@@ -414,7 +559,7 @@ cmd_update() {
         echo "Updated. TG bot not running (skipped restart)."
     fi
 
-    # v3.6 — auto-restart CLI daemon so the running process picks up the new
+    # v3.7 — auto-restart CLI daemon so the running process picks up the new
     # wolfbet.py. Before this, `wolfctl update` only refreshed the file on
     # disk and left the daemon on the pre-pull code until manual restart.
     # --resume preserves session state across the restart.
@@ -652,6 +797,7 @@ case "${1:-}" in
     cleanup)      cmd_cleanup "${2:-}" ;;
     benchmark)    cmd_benchmark "${2:-}" ;;
     diagnose)     cmd_diagnose ;;
+    doctor)       shift; cmd_doctor "$@" ;;
     version|--version|-v) cmd_version ;;
     update)       cmd_update ;;
     tg)           cmd_tg "${2:-}" ;;

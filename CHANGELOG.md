@@ -1,5 +1,47 @@
 # Changelog
 
+## wolfctl v3.7 — `wolfctl doctor` (health check + safe automated fixes) (2026-07-20)
+
+After v2.30.4 sharpened the "CLI overhead is high" advice, you correctly asked: **"Is there anything I need to grant on the server to reduce overhead? Any command to clear space or free up resources?"** The answer turned out to be yes — a manual runbook applied on the old server (VACUUM, journal vacuum, renice, ionice) dropped cycle from **143 → 79 ms** and stabilised overhead from a **0→120 ms** swing to a stable 39 ms. Most of the win came from `journalctl --user --vacuum-size=100M` freeing **3.9 GB** of accumulated journals.
+
+`wolfctl doctor` bundles that runbook into one discoverable subcommand.
+
+**New `wolfctl doctor`** — read-only health check:
+
+- Runs `wolfctl diagnose` inline (current bottleneck breakdown).
+- Reports DB size + page fragmentation ratio.
+- Reports journal size for `wolfbet.service`.
+- Reports system resources (load average, memory + swap, disk usage on `$HOME`, CPU governor).
+- Reports daemon PID + nice + ionice class.
+- Emits a **prescriptions** block: exact commands to fix each detected issue, grouped by `[SAFE]` (no privilege) / `[PRIV]` (needs sudo) / `[SKIP]` (impossible on virtualized hosts).
+
+**New `wolfctl doctor --fix`** — applies the SAFE subset only, with per-fix confirmation (`--yes` / `-y` to bypass). Ordered:
+
+1. `wolfctl cleanup 1` — force bet-row retention.
+2. `sqlite3 VACUUM` — only if fragmentation ≥ 20%.
+3. `journalctl --user --vacuum-size=100M` — only if journal > 500 MB.
+
+Privileged fixes (renice, ionice, cpupower) are prescribed as text only — never auto-applied. On virtualized hosts (QEMU-KVM VPS), `cpupower` is downgraded from `[PRIV]` to `[SKIP]` with honest advice ("guests cannot set the governor; ask your VPS provider or migrate to dedicated CPU") — this was the specific gotcha you hit when the real-world runbook errored out on `cpupower frequency-set`. Detected via `systemd-detect-virt`.
+
+**Server-side runbook (works today, without waiting for the update)**:
+
+```bash
+wolfctl cleanup 1
+sqlite3 ~/.wolfbet_autobot.db "VACUUM;"
+journalctl --user --vacuum-size=100M
+PID=$(pgrep -f 'wolfbet\.py.*--daemon' | head -1)
+sudo renice -n -5 -p $PID && sudo ionice -c 2 -n 0 -p $PID
+wolfctl diagnose   # confirm delta
+```
+
+After v3.7 ships, the equivalent is one command: `wolfctl doctor --fix`.
+
+**Tests**: `tests/test_phase5y_wolfctl_doctor.py` — 12 tests covering version bump, dispatcher wiring, prescription block content, VACUUM threshold gating (freelist ratio ≥ 20%), journal-size threshold gating, virt detection + `[SKIP]` on VPS, `--fix` block never invokes sudo/renice/cpupower. Version assertions bumped in phase5v/5e. **576 total passing.**
+
+Zero changes to `wolfbet.py`, `install.sh`, `tg/*`, `core/*`, sibling bots, bet loop, DB writer, credential paths, or config schema.
+
+`wolfctl` `v3.6` → `v3.7`. `wolfbet.py` remains at v2.30.4.
+
 ## CLI v2.30.4 — Windowed cycle metrics + windowed efficiency + sharpened "CLI overhead" advice (2026-07-20)
 
 v2.30.3 unified the metric formulas and killed the fake `=` sum, but two follow-on issues surfaced on the old server (which does ~40-50 ms of genuine per-iteration overhead due to slower silicon):

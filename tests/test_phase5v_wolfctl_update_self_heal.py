@@ -40,18 +40,20 @@ def test_wolfbet_version_bumped():
     assert wb.VERSION == "2.30.4"
 
 
-def test_wolfctl_version_constant_3_6():
+def test_wolfctl_version_constant_current():
     src = _wolfctl_src()
-    assert re.search(r"^WOLFCTL_VERSION=3\.6\b", src, re.MULTILINE), \
-        "WOLFCTL_VERSION=3.6 constant is missing"
+    # Test the SHAPE of the constant, not a specific version (avoids
+    # test churn on every wolfctl bump).
+    assert re.search(r"^WOLFCTL_VERSION=\d+\.\d+\b", src, re.MULTILINE), \
+        "WOLFCTL_VERSION=X.Y constant is missing"
 
 
-def test_wolfctl_header_and_usage_bumped_to_3_6():
+def test_wolfctl_header_and_usage_bumped_to_3_7():
     src = _wolfctl_src()
-    assert "Management Command v3.6" in src
-    assert "WolfBet AutoBot Manager v3.6" in src
-    assert "wolfctl v3.6" in src
-    assert "v3.5" not in src, "stale v3.5 references remain"
+    assert "Management Command v3.7" in src
+    assert "WolfBet AutoBot Manager v3.7" in src
+    assert "wolfctl v3.7" in src
+    assert "v3.6" not in src, "stale v3.6 references remain"
 
 
 # ── Defect A: drift warning ──────────────────────────────
