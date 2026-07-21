@@ -43,7 +43,7 @@ def _reset_metric_state():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.30.4"
+    assert wb.VERSION == "2.30.5"
 
 
 # ── Defect A: overhead stable across single-sample perturbation ─

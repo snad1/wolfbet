@@ -1,4 +1,4 @@
-"""Phase 5v — wolfctl v3.6 self-heal + CLI restart + wizard banner (v2.30.2).
+"""Phase 5v — wolfctl v3.7 self-heal + CLI restart + wizard banner (v2.30.2).
 
 Three defects (v2.30.1 era):
   A) `wolfctl update` couldn't self-upgrade old (v3.1) installs — no drift
@@ -37,7 +37,7 @@ def _wolfctl_src() -> str:
 
 # ── Version bumps ────────────────────────────────────────
 def test_wolfbet_version_bumped():
-    assert wb.VERSION == "2.30.4"
+    assert wb.VERSION == "2.30.5"
 
 
 def test_wolfctl_version_constant_current():
@@ -48,12 +48,12 @@ def test_wolfctl_version_constant_current():
         "WOLFCTL_VERSION=X.Y constant is missing"
 
 
-def test_wolfctl_header_and_usage_bumped_to_3_7():
+def test_wolfctl_header_and_usage_bumped_to_3_8():
     src = _wolfctl_src()
-    assert "Management Command v3.7" in src
-    assert "WolfBet AutoBot Manager v3.7" in src
-    assert "wolfctl v3.7" in src
-    assert "v3.6" not in src, "stale v3.6 references remain"
+    assert "Management Command v3.8" in src
+    assert "WolfBet AutoBot Manager v3.8" in src
+    assert "wolfctl v3.8" in src
+    assert "v3.7" not in src, "stale v3.7 references remain"
 
 
 # ── Defect A: drift warning ──────────────────────────────

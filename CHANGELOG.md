@@ -1,5 +1,44 @@
 # Changelog
 
+## CLI v2.30.5 + wolfctl v3.8 + install.sh — three follow-up defects from real-world doctor run (2026-07-20)
+
+You pulled v2.30.4 + wolfctl v3.7, ran `wolfctl doctor --fix` on the old server, and surfaced three real defects. All three fixed in this patch.
+
+### Defect A — `Efficiency: >100%` was firing on every diagnose call
+
+v2.30.4's Efficiency ratio was `Recent (cycle_p50) / Theoretical (api_mean)` — median vs mean from different distributions. On right-skewed traffic (a few slow API requests dragging the mean up while the median stayed low), Recent > Theoretical made `>100%` the default reading instead of a rare drift signal.
+
+Fix: new `_compute_cycle_mean()` (arithmetic mean over the rolling cycle window, symmetrical with `_compute_api_rolling_avg`). `_compute_recent_bps()` now uses cycle_mean instead of cycle_p50, so both sides of the efficiency ratio derive from mean(latency) — Little's-Law-consistent (throughput ≈ 1/mean). Efficiency now reads as a real percentage in [0, 100%] on healthy traffic; `>100%` flag stays as a safety net for pathological drift. `cycle_p50` + `cycle_p99` remain in the display for tail-jitter visibility.
+
+### Defect B — Daemon `renice`/`ionice` wore off after every `wolfctl update`
+
+v2.30.2 auto-restarts the CLI daemon after every `wolfctl update`. Strict improvement, but per-PID `renice -n -5` / `ionice -c 2 -n 0` the operator applied earlier get erased because the PID changes on restart.
+
+Fix: `install.sh` now writes `Nice=-5` + `IOSchedulingClass=best-effort` + `IOSchedulingPriority=0` into the `[Service]` block of `wolfbet.service`. `wolfctl update`'s existing systemd-migration loop (which already handled `Restart=always → on-failure` in v2.28.1) is extended to add these three directives when absent. Idempotent: subsequent runs find `Nice=` already present and skip. `daemon-reload` fires whenever any migration writes. Daemon now starts pre-reniced on every restart automatically — no more manual dance after `wolfctl update`.
+
+### Defect C — `wolfctl doctor`'s `[SKIP]` block stayed silent when governor path was entirely unreadable
+
+The old server showed `CPU governor: unknown` (VPS host doesn't expose `/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor`). v3.7's `[SKIP]` fallback only fired when `$gov` was set AND ≠ "performance"; when unreadable, the whole cpupower block was silent. Technically correct but hid the honest "your VPS can't do this" advice.
+
+Fix: new `elif` branch in `cmd_doctor` — when `$gov` is empty AND `systemd-detect-virt` shows virtualization, print `[SKIP]  CPU governor path not exposed on this virtualized host — VPS provider controls it, migrate to a dedicated-CPU plan if needed`. Zero behaviour change on hosts that do expose governor info.
+
+### Server-side apply
+
+Just run `wolfctl update` — v3.7's self-copy + drift warning handles the upgrade, and the daemon auto-restarts to pick up `Nice=-5`. On the first update after this ships, you'll see:
+
+```
+Added Nice=-5 + IO priority to wolfbet.service
+CLI daemon restarted (session auto-resumed).
+```
+
+Then `ps -o ni= -p $(pgrep -f wolfbet.py)` returns `-5`.
+
+**Tests**: `tests/test_phase5z_efficiency_alignment.py` — 8 tests covering cycle_mean helper, Recent-uses-mean swap, efficiency=100% on matched distributions, efficiency stays ≤100% on the right-skewed real-world distribution, state file emits `cycle_mean_ms`, `cycle_p50` still available. `test_phase5y_wolfctl_doctor.py` extended with `test_governor_skip_when_unreadable_on_virt`. Version assertions bumped in phase5v/5w/5x/5e. **586 total passing.**
+
+Zero changes to the bet loop, DB writer, credential paths, config schema, TG bot, or sibling bots.
+
+`VERSION` `2.30.4` → `2.30.5`. `wolfctl` `v3.7` → `v3.8`.
+
 ## wolfctl v3.7 — `wolfctl doctor` (health check + safe automated fixes) (2026-07-20)
 
 After v2.30.4 sharpened the "CLI overhead is high" advice, you correctly asked: **"Is there anything I need to grant on the server to reduce overhead? Any command to clear space or free up resources?"** The answer turned out to be yes — a manual runbook applied on the old server (VACUUM, journal vacuum, renice, ionice) dropped cycle from **143 → 79 ms** and stabilised overhead from a **0→120 ms** swing to a stable 39 ms. Most of the win came from `journalctl --user --vacuum-size=100M` freeing **3.9 GB** of accumulated journals.

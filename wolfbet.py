@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.4  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.5  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -583,15 +583,30 @@ def _compute_cycle_p99() -> float:
     return ordered[idx]
 
 
-def _compute_recent_bps() -> float:
-    """Windowed BPS from cycle_p50 — same window as theoretical_max_bps.
+def _compute_cycle_mean() -> float:
+    """Arithmetic mean per-iteration cycle time in ms (0 when empty).
 
-    v2.30.4 — used for the efficiency ratio. Session-wide bets_per_second
-    remains available for context but doesn't drive efficiency (it can
-    momentarily exceed the recent theoretical when api_avg drifts).
+    v2.30.5 — symmetrical with _compute_api_rolling_avg so Recent BPS and
+    Theoretical BPS both derive from mean(latency). Little's-Law-consistent:
+    throughput ≈ 1 / mean_latency. Median (cycle_p50) stays available in the
+    display for tail-jitter visibility but no longer drives the ratio.
     """
-    cycle_p50 = _compute_cycle_p50()
-    return 1000.0 / cycle_p50 if cycle_p50 > 0 else 0.0
+    if not state._cycle_samples:
+        return 0.0
+    return sum(state._cycle_samples) / len(state._cycle_samples)
+
+
+def _compute_recent_bps() -> float:
+    """Windowed BPS from cycle_mean — same statistic as theoretical_max_bps.
+
+    v2.30.5 — was cycle_p50 (median). On right-skewed cycle distributions
+    (a few slow iterations from GC / retention / /auto/start handshakes)
+    median < mean, so Recent > Theoretical fired ">100% efficiency" as the
+    default reading rather than a rare drift signal. Both sides now use
+    the mean; efficiency is a real ratio.
+    """
+    cycle_mean = _compute_cycle_mean()
+    return 1000.0 / cycle_mean if cycle_mean > 0 else 0.0
 
 
 def _compute_theoretical_max_bps() -> float:
@@ -658,7 +673,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.4"
+VERSION      = "2.30.5"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -2832,6 +2847,9 @@ def _save_state_file():
             # for backwards-compat readers.
             "cycle_p50_ms":        _compute_cycle_p50(),
             "cycle_p99_ms":        _compute_cycle_p99(),
+            # v2.30.5 — mean cycle drives Recent BPS + efficiency (was p50).
+            # Same statistic on both sides of the ratio; no more >100% edge.
+            "cycle_mean_ms":       _compute_cycle_mean(),
             "cycle_sample_count":  len(state._cycle_samples),
             "bets_per_second_recent": _compute_recent_bps(),
             "efficiency_pct":      _compute_efficiency_pct(),

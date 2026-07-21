@@ -103,6 +103,13 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# v2.30.5 — daemon starts with elevated scheduling priority so shared-tenancy
+# CPU jitter has less effect on per-bet cycle time. Was applied manually via
+# `renice`/`ionice` after every restart; now persisted in the unit itself so
+# `wolfctl restart` and `wolfctl update` don't lose the priority.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/wolfbet.py --resume --daemon
 Restart=on-failure

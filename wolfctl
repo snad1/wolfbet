@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.7
+# WolfBet AutoBot — Unified Management Command v3.8
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -14,15 +14,15 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_NAME="wolfctl"
-# v3.7 — surface installed-vs-repo drift so operators stuck on an old
+# v3.8 — surface installed-vs-repo drift so operators stuck on an old
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.7
+WOLFCTL_VERSION=3.8
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.7"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.8"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -215,7 +215,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.7"
+    echo "  wolfctl v3.8"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -292,7 +292,7 @@ cmd_diagnose() {
     "$PYTHON" "$BOT" --diagnose
 }
 
-# v3.7 — health check + prescriptive advice for reducing per-bet overhead.
+# v3.8 — health check + prescriptive advice for reducing per-bet overhead.
 # Read-only by default. `--fix` applies the three safe cleanups
 # (cleanup + VACUUM + journal vacuum); privileged fixes (renice / ionice /
 # cpupower) are prescribed only, never auto-applied. On virtualized hosts
@@ -382,7 +382,7 @@ cmd_doctor() {
         echo "          sudo ionice -c 2 -n 0 -p $pid"
     fi
 
-    # v3.7 — governor prescription only if the host actually allows it.
+    # v3.8 — governor prescription only if the host actually allows it.
     # QEMU-KVM guests (most VPS) can't change the governor from inside;
     # cpupower returns "Error setting new values" and confuses the operator.
     local virt=""
@@ -400,6 +400,13 @@ cmd_doctor() {
             echo "  [PRIV]  Pin CPU governor to performance (needs sudo):"
             echo "          sudo cpupower frequency-set -g performance"
         fi
+    elif [ -z "$gov" ] && [ -n "$virt" ] && [ "$virt" != "none" ]; then
+        # v3.8 — governor path unreadable AND host is virtualized: still
+        # surface the honest "your VPS can't do this" advice instead of
+        # staying silent (which hid the reason from operators hitting the
+        # cpupower failure in the earlier runbook).
+        echo "  [SKIP]  CPU governor path not exposed on this virtualized host ($virt)."
+        echo "          VPS provider controls it — migrate to a dedicated-CPU plan if needed."
     fi
 
     if [ "$do_fix" = "1" ]; then
@@ -499,7 +506,7 @@ cmd_update() {
             chmod +x "$installed"
             echo "Updated $SCRIPT_NAME → $installed"
         fi
-        # v3.7 — surface drift when the currently-executing wolfctl is older
+        # v3.8 — surface drift when the currently-executing wolfctl is older
         # than the repo copy. Chicken-and-egg: the OLD installed wolfctl won't
         # run this block at all, so on the FIRST upgrade the operator must
         # rerun `wolfctl update` (or `exec wolfctl update`) once to pick up
@@ -520,10 +527,22 @@ cmd_update() {
     local _sd_reload=0
     for _unit in wolfbet.service wolfbet-tg.service wolfbet-web.service; do
         local _unit_path="$HOME/.config/systemd/user/$_unit"
-        if [ -f "$_unit_path" ] && grep -q '^Restart=always$' "$_unit_path"; then
+        [ -f "$_unit_path" ] || continue
+        if grep -q '^Restart=always$' "$_unit_path"; then
             sed -i.bak 's/^Restart=always$/Restart=on-failure/' "$_unit_path" \
                 && rm -f "$_unit_path.bak" \
                 && echo "Migrated $_unit: Restart=always → Restart=on-failure" \
+                && _sd_reload=1
+        fi
+        # v3.8 — persist Nice=-5 + best-effort IO priority in the unit so the
+        # daemon starts with elevated scheduling on every restart. Was a
+        # per-PID renice/ionice the operator had to reapply after every
+        # `wolfctl update` (which restarts the CLI as of v2.30.2). Idempotent:
+        # subsequent runs find Nice= already present and skip.
+        if [ "$_unit" = "wolfbet.service" ] && ! grep -q '^Nice=' "$_unit_path"; then
+            sed -i.bak '/^\[Service\]$/a Nice=-5\nIOSchedulingClass=best-effort\nIOSchedulingPriority=0' "$_unit_path" \
+                && rm -f "$_unit_path.bak" \
+                && echo "Added Nice=-5 + IO priority to $_unit" \
                 && _sd_reload=1
         fi
     done
@@ -559,7 +578,7 @@ cmd_update() {
         echo "Updated. TG bot not running (skipped restart)."
     fi
 
-    # v3.7 — auto-restart CLI daemon so the running process picks up the new
+    # v3.8 — auto-restart CLI daemon so the running process picks up the new
     # wolfbet.py. Before this, `wolfctl update` only refreshed the file on
     # disk and left the daemon on the pre-pull code until manual restart.
     # --resume preserves session state across the restart.

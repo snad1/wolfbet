@@ -26,9 +26,12 @@ def _wolfctl_src() -> str:
 
 
 # ── Version bump ─────────────────────────────────────────
-def test_wolfctl_version_constant_3_7():
+def test_wolfctl_version_constant_shape():
     src = _wolfctl_src()
-    assert re.search(r"^WOLFCTL_VERSION=3\.7\b", src, re.MULTILINE)
+    # Test the SHAPE of the constant, not a specific version (avoids
+    # test churn on every wolfctl bump — the v3.8-specific header/usage
+    # tests in phase5v cover the exact version numeric).
+    assert re.search(r"^WOLFCTL_VERSION=\d+\.\d+\b", src, re.MULTILINE)
 
 
 # ── doctor advertised + dispatched ───────────────────────
@@ -94,6 +97,16 @@ def test_governor_prescription_skips_on_virtualized_host():
     assert 'systemd-detect-virt' in body
     assert '[SKIP]' in body
     assert 'guests cannot set the governor' in body
+
+
+def test_governor_skip_when_unreadable_on_virt():
+    """v3.8 — when governor path is entirely unreadable (VPS host hides it)
+    AND systemd-detect-virt reports virtualization, still print [SKIP] with
+    the honest 'VPS provider controls it' message instead of staying silent."""
+    src = _wolfctl_src()
+    doctor_body = re.search(r"cmd_doctor\(\)\s*\{.*?^\}", src, re.DOTALL | re.MULTILINE)
+    body = doctor_body.group(0)
+    assert 'governor path not exposed on this virtualized host' in body
 
 
 # ── --fix runs only the three safe fixes ─────────────────

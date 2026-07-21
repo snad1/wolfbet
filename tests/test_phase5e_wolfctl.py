@@ -146,10 +146,10 @@ def test_wolfctl_help_alias():
     assert "wolfctl —" in proc.stdout or "wolfctl" in proc.stdout
 
 
-def test_wolfctl_version_v3_7():
+def test_wolfctl_version_v3_8():
     src = _read(_WOLFCTL)
-    assert "v3.7" in src
-    assert "v3.6" not in src
+    assert "v3.8" in src
+    assert "v3.7" not in src
 
 
 def test_wolfctl_has_benchmark_diagnose_subcommands():
