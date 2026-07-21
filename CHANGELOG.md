@@ -1,5 +1,23 @@
 # Changelog
 
+## CLI v2.30.3 — Fix metric correctness: overhead jitter, fake diagnose "=" line, wrong BPS ceiling for auto-games (2026-07-21)
+
+Real-world observation from 18h/1M-bet sessions: `wolfctl diagnose` output showed `api_p50=50ms + overhead=0ms + delay=0ms = 151ms/bet` (sum obviously doesn't match) and overhead swinging `0 → 43 → 0` between consecutive diagnose calls seconds apart. `wolfctl status` on same server: `Cycle 143ms/bet → 6.99 BPS ceiling` while actual was 14.9 BPS and diagnose's Theoretical max was 15.1. Two "ceilings" for the same session, both wrong in different ways. Four defects fixed.
+
+**Defect A — overhead mixed smoothed cycle EMA with UNSMOOTHED last-single API ms.** `_record_cycle_ms` computed `overhead = max(0, cycle_ma - _last_api_ms - delay*1000)`, where `cycle_ma` is smoothed (α=0.1 EMA) but `_last_api_ms` is the single most recent request. When the most recent bet's API dt happened to exceed the smoothed cycle EMA, overhead clamped to 0 for a moment. Fix: use `_compute_api_p50()` (already smoothed via median over the rolling deque). Falls back to `_last_api_ms` on empty deque so cold-start still renders sensibly.
+
+**Defect B — cmd_diagnose printed `= cycle_ms` but it's not a real sum.** The three components (`api_p50`, `overhead`, `cycle_ms`) come from three independently-smoothed windows. Fix: display uses `≈` and splits into two lines — `Cycle breakdown: … ≈ N ms/bet (decomposition)` and `Measured cycle: N ms/bet (outer-iteration EMA)`. Divergence between them is now a real diagnostic signal (queue backpressure / GC).
+
+**Defect C — cmd_status "BPS ceiling" was `1000/cycle_ms`, wrong for auto-games.** For `limbo-auto`/`dice-auto`, WolfBet plays many bets per outer-loop iteration (server-side batching); `cycle_ms` measures ONE outer iteration; `bets_per_second` counts EVERY batched bet. So `1000/cycle_ms` gives an outer-iteration ceiling, not a per-bet ceiling — hence "6.99 BPS ceiling" alongside actual 14.9 BPS. Fix: both `cmd_status` and `build_dashboard_screen` now read the same `theoretical_max_bps` `cmd_diagnose` uses (unified formula). Auto-games get a `(batched — cycle is per outer iteration)` footnote so the meaning is clear.
+
+**Defect D — `_compute_theoretical_max_bps` used all-time api_avg.** After 18h and 1M samples, early-session outliers still biased the mean. Fix: new `_compute_api_rolling_avg()` helper computes mean over the same `_api_samples` window that feeds p50/p99. Consistent with existing metric semantics.
+
+Zero changes to the bet loop, DB writer, rate-limit paths, credential paths, or state-file schema. Display + smoothing correctness only. TG untouched (its `/diagnose` reads the same underlying metrics via `engine.get_status()`, so the fix flows through automatically). Sibling bots untouched.
+
+**Tests**: `tests/test_phase5w_metric_correctness.py` — 12 tests covering overhead stability under single-sample perturbation, fallback path on empty deque, diagnose `≈` + "Measured cycle" line, unified `theoretical_max_bps` in both status + dashboard, rolling window vs all-time mean, backward-compat state-file field. Existing phase3 metric test updated for the new rolling-window semantics. **551 total passing.**
+
+`VERSION` `2.30.2` → `2.30.3`. `wolfctl` unchanged.
+
 ## CLI v2.30.2 / wolfctl v3.6 — wolfctl update can now self-heal + CLI daemon auto-restarts + wizard banner (2026-07-20)
 
 Real-world ops report: user ran `wolfctl update` on their server, `git pull` said `a25f600..bdefbe4` (our latest), and yet `wolfctl config-show` returned the v3.1 help menu and the wizard banner still read "WolfBet AutoBot v2.6". Three independent defects diagnosed and fixed.

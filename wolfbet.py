@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.2  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.3  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -551,9 +551,23 @@ def _compute_on_target_pct() -> Optional[float]:
     return (state._on_target_count / state._api_ms_count) * 100
 
 
+def _compute_api_rolling_avg() -> float:
+    """Mean API ms from the last-N-sample deque (0 when empty).
+
+    v2.30.3 — same window as p50/p99. Prevents cold-start samples from
+    biasing the mean over long sessions.
+    """
+    if not state._api_samples:
+        return 0.0
+    return sum(state._api_samples) / len(state._api_samples)
+
+
 def _compute_theoretical_max_bps() -> float:
-    """Ceiling bps = 1 / max(bet_delay, api_avg). 0 when both are 0 (fresh session)."""
-    api_avg_s = _compute_api_avg() / 1000.0
+    """Ceiling bps = 1 / max(bet_delay, api_rolling_avg). 0 when both are 0.
+
+    v2.30.3 — was all-time mean; now rolling to match p50/p99 window semantics.
+    """
+    api_avg_s = _compute_api_rolling_avg() / 1000.0
     floor = max(state.bet_delay, api_avg_s)
     return (1.0 / floor) if floor > 0 else 0.0
 
@@ -586,14 +600,19 @@ def _record_cycle_ms(cycle_observed_ms: float) -> None:
             state._cycle_ms = state._cycle_ms * 0.9 + cycle_observed_ms * 0.1
         else:
             state._cycle_ms = cycle_observed_ms
-        state._cycle_overhead_ms = max(0.0, state._cycle_ms - state._last_api_ms - state.bet_delay * 1000)
+        # v2.30.3 — was `state._last_api_ms` (unsmoothed single sample) which
+        # caused overhead to swing 0↔peak between successive display reads.
+        # Use the same p50 the diagnose + status lines display. Fall back to
+        # the single sample when the rolling window hasn't populated yet.
+        api_ref = _compute_api_p50() if state._api_samples else state._last_api_ms
+        state._cycle_overhead_ms = max(0.0, state._cycle_ms - api_ref - state.bet_delay * 1000)
 DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolfbet_autobot.db"))
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.2"
+VERSION      = "2.30.3"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -3004,10 +3023,14 @@ def build_dashboard_screen() -> str:
             f"  (raw throughput, no delay)")
 
     cycle_ms = state._cycle_ms
-    bps_from_cycle = (1000.0 / cycle_ms) if cycle_ms > 0 else 0.0
+    # v2.30.3 — use the unified theoretical ceiling instead of `1000/cycle_ms`
+    # (misleading for auto-games where cycle_ms is per outer iteration, not
+    # per bet). Matches cmd_status + cmd_diagnose.
+    bps_ceiling = _compute_theoretical_max_bps()
+    note = "  (batched)" if is_auto_game(state.game) else ""
     add(f" {_a('dim', 'Cycle')} {_a('magenta', f'{cycle_ms:.0f}ms')}/bet"
         f"  (overhead {_a('cyan', f'{state._cycle_overhead_ms:.0f}ms')})"
-        f"  {_a('dim', '→')} {_a('magenta', f'{bps_from_cycle:.2f}')} bps")
+        f"  {_a('dim', '→')} {_a('magenta', f'{bps_ceiling:.2f}')} bps{note}")
 
     # ── Pipeline row (only when pipelining is active) ──
     if state.pipeline_effective > 1:
@@ -4921,11 +4944,17 @@ def cmd_status():
     cycle_ms = d.get("cycle_ms")
     overhead_ms = d.get("overhead_ms")
     if cycle_ms:
-        bps_ceiling = (1000.0 / cycle_ms) if cycle_ms > 0 else 0.0
+        # v2.30.3 — was `1000/cycle_ms` (misleading for auto-games where the
+        # server batches multiple bets per outer-iteration cycle). Use the
+        # same theoretical_max_bps cmd_diagnose displays so status + diagnose
+        # agree. Auto-game users get a batching footnote.
+        tmax = float(d.get("theoretical_max_bps") or 0)
+        auto = is_auto_game(d.get("game", ""))
+        note = "  [dim](batched — cycle is per outer iteration)[/]" if auto else ""
         rows.append(("Cycle",
                      f"[magenta]{cycle_ms:.0f}ms[/]/bet "
                      f"(overhead [cyan]{overhead_ms or 0:.0f}ms[/])"
-                     f"  → [magenta]{bps_ceiling:.2f}[/] BPS ceiling"))
+                     f"  → [magenta]{tmax:.2f}[/] BPS ceiling{note}"))
     eff_pct = d.get("efficiency_pct")
     if eff_pct is not None:
         eff_c = "green" if eff_pct >= 90 else "yellow"
@@ -5337,10 +5366,16 @@ def cmd_diagnose():
         "",
         f"[bold]Actual:[/] [magenta]{bps:.1f}[/] BPS   "
         f"[bold]Theoretical max:[/] [magenta]{tmax:.1f}[/] BPS",
+        # v2.30.3 — the three components come from different windows/formulas,
+        # so their sum is a decomposition, not a real equality. Show the
+        # measured EMA cycle separately so a divergence is a real signal.
         f"[dim]Cycle breakdown:[/] api_p50=[cyan]{api_p50:.0f}ms[/] "
         f"+ overhead=[cyan]{overhead:.0f}ms[/] "
         f"+ delay=[cyan]{delay_ms:.0f}ms[/] "
-        f"= [magenta]{cycle_ms:.0f}ms[/]/bet",
+        f"[dim]≈[/] [magenta]{api_p50 + overhead + delay_ms:.0f}ms[/]/bet "
+        f"[dim](decomposition)[/]",
+        f"[dim]Measured cycle:[/]  [magenta]{cycle_ms:.0f}ms[/]/bet "
+        f"[dim](outer-iteration EMA)[/]",
     ]
     if rate_rem is not None and rate_lim:
         lines.append(f"[dim]Rate limit:[/] {rate_rem}/{rate_lim} remaining")

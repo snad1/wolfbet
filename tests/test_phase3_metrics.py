@@ -114,8 +114,9 @@ def test_theoretical_max_bounded_by_delay():
 def test_theoretical_max_bounded_by_api_when_no_delay():
     _reset_metrics()
     wb.state.bet_delay = 0.0
-    wb.state._api_ms_total = 100.0
-    wb.state._api_ms_count = 1   # api_avg 100ms → 0.1s → 10 bps
+    # v2.30.3 — theoretical max now uses the rolling `_api_samples` window
+    # (matches p50/p99 semantics) instead of the all-time _api_ms_total/count.
+    wb.state._api_samples.append(100.0)  # rolling avg 100ms → 0.1s → 10 bps
     assert wb._compute_theoretical_max_bps() == 10.0
 
 
