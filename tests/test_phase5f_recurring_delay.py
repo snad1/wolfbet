@@ -105,9 +105,10 @@ def test_apply_mutation_zero_is_off():
 
 
 def test_apply_mutation_clamps_high():
+    """v2.30.6 — cap raised from 3600 to 86400 (24 h); 99999 → 86400."""
     _reset_state()
     wb._apply_mutation({"recurring_delay": "99999"})
-    assert wb.state.recurring_delay == 3600.0
+    assert wb.state.recurring_delay == 86400.0
 
 
 def test_apply_mutation_clamps_low():

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.5  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.6  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -348,6 +348,18 @@ def _apply_mutation(changes: dict) -> list:
     def _is_off(v):
         return isinstance(v, str) and v.lower() in _TWEAK_OFF_VALUES or v is None
 
+    def _clamped(name: str, raw: float, lo: float, hi: float) -> float:
+        """v2.30.6 — clamp raw into [lo, hi]; append a warning to msgs when
+        clamped. Was three copy-paste sites that silently swallowed
+        out-of-range input; now the user sees exactly what happened."""
+        clamped = max(lo, min(hi, raw))
+        if clamped != raw:
+            msgs.append(
+                f"⚠ {name} clamped from {raw:g} to {clamped:g} "
+                f"(allowed: {lo:g}..{hi:g})"
+            )
+        return clamped
+
     # ── Instant (no restart) ──
     if "bet_delay" in changes:
         state.bet_delay = float(changes["bet_delay"])
@@ -428,9 +440,12 @@ def _apply_mutation(changes: dict) -> list:
             state.recurring_delay = 0.0
         else:
             try:
-                state.recurring_delay = max(0.0, min(3600.0, float(v)))
+                # v2.30.6 — cap raised from 3600 (arbitrary TG mirror) to 86400
+                # (24 h). Silent clamp swapped for visible warning via _clamped.
+                state.recurring_delay = _clamped(
+                    "recurring_delay", float(v), 0.0, 86400.0)
             except (TypeError, ValueError):
-                raise ValueError(f"recurring_delay must be a number 0-3600, got {v!r}")
+                raise ValueError(f"recurring_delay must be a number 0-86400, got {v!r}")
         msgs.append(f"Recurring delay: {state.recurring_delay:.0f}s"
                     if state.recurring_delay > 0 else "Recurring delay: off")
 
@@ -451,7 +466,7 @@ def _apply_mutation(changes: dict) -> list:
             state.purge_days = 3
         else:
             try:
-                state.purge_days = max(1, min(30, int(v)))
+                state.purge_days = int(_clamped("purge_days", float(v), 1.0, 30.0))
             except (TypeError, ValueError):
                 raise ValueError(f"purge_days must be an integer 1-30, got {v!r}")
         msgs.append(f"Purge days: {state.purge_days}")
@@ -472,7 +487,7 @@ def _apply_mutation(changes: dict) -> list:
             state.pipeline_depth = 1
         else:
             try:
-                state.pipeline_depth = max(1, min(8, int(v)))
+                state.pipeline_depth = int(_clamped("pipeline_depth", float(v), 1.0, 8.0))
             except (TypeError, ValueError):
                 raise ValueError(f"pipeline_depth must be an integer 1-8, got {v!r}")
         msgs.append(f"Pipeline depth: {state.pipeline_depth}")
@@ -673,7 +688,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.5"
+VERSION      = "2.30.6"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1166,7 +1181,8 @@ class BotState:
         # Recurring: restart session after non-loss, non-insufficient-balance stop with profit≥0
         self.recurring        : bool = False
         # Seconds to pause between one recurring cycle ending and the next starting.
-        # Mirrors TG bot's tg/handlers.py:801 (default 60, floor 0, cap 3600).
+        # v2.30.6 — default 60, floor 0, cap 86400 (24 h). Was 3600 (arbitrary
+        # TG-mirror cap that silently swallowed longer recurring pauses).
         self.recurring_delay  : float = 60.0
 
         # ── v2.26.0 — proxy + retention (TG↔CLI parity) ──
@@ -4191,7 +4207,8 @@ def setup_wizard():
         if v is _BACK:
             return False
         try:
-            state.recurring_delay = max(0.0, min(3600.0, float(v))) if v else 0.0
+            # v2.30.6 — cap raised 3600 → 86400 (24 h); no downstream break.
+            state.recurring_delay = max(0.0, min(86400.0, float(v))) if v else 0.0
         except ValueError:
             state.recurring_delay = 60.0
 
@@ -5254,7 +5271,10 @@ def cmd_config_set(pairs: list):
             old[canonical] = None
 
     try:
-        _apply_mutation(parsed)
+        # v2.30.6 — capture msgs to surface clamp warnings (⚠ …) beside
+        # the standard "old → new" panel. Was: return value discarded and
+        # silent clamps went unseen.
+        mutation_msgs = _apply_mutation(parsed) or []
     except ValueError as e:
         console.print(f"[red]Mutation failed:[/] {e}")
         sys.exit(2)
@@ -5268,6 +5288,11 @@ def cmd_config_set(pairs: list):
             f"[dim]{_fmt_config_value(canonical, old[canonical])}[/]"
             f"  →  [green]{_fmt_config_value(canonical, new)}[/]"
         )
+    # v2.30.6 — surface clamp warnings (and any other advisory notes) so
+    # silently swallowed input becomes visible to the operator.
+    for m in mutation_msgs:
+        if isinstance(m, str) and m.startswith("⚠"):
+            console.print(f"  [yellow]{m}[/]")
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
 
     # v2.28.3 — hot-reload the running daemon via SIGHUP so mid-session

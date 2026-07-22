@@ -1,5 +1,41 @@
 # Changelog
 
+## CLI v2.30.6 — raise arbitrary `recurring_delay` cap 3600 → 86400 + surface silent numeric clamps (2026-07-20)
+
+You ran `wolfctl config-set recurring_delay=10800` (3-hour recurring pause between cycles) and got a confusing panel:
+
+```
+Config updated
+  recurring_delay: 3600  →  3600
+Saved to /root/.wolfbet_autobot.json
+Daemon reloaded live config.
+```
+
+Your typed 10800 never made it in. Three defects — all fixed here.
+
+**Defect A — arbitrary 3600 s cap** on `recurring_delay` in `_apply_mutation` was a mirror of the TG bot's default cap, not a technical limit. Grep confirmed `time.sleep(state.recurring_delay)` is legal at any positive value; state-file writes cast to `int`; nothing breaks at 10800, 21600, or 86400 (24 h).
+
+Fix: cap raised to **86400 s (24 h)** in `_apply_mutation`, the wizard clamp, and the doc comment at `BotState.recurring_delay`. TG side already allowed larger values (floor 5 s, no upper cap).
+
+**Defect B — silent clamps** at three sites (`recurring_delay`, `purge_days`, `pipeline_depth`) swallowed out-of-range input with no user signal. `purge_days` (1–30) and `pipeline_depth` (1–8) still have legitimate technical caps; they just weren't visible.
+
+Fix: new tiny `_clamped(name, raw, lo, hi)` helper inside `_apply_mutation` — clamps and appends `⚠ <name> clamped from <raw> to <clamped> (allowed: <lo>..<hi>)` to the returned `msgs` list. All three sites now use it.
+
+**Defect C — `cmd_config_set` discarded `_apply_mutation`'s return value**, so warnings never reached the operator.
+
+Fix: `cmd_config_set` now captures `mutation_msgs` and prints `⚠` lines beside the standard "old → new" diff. Silent clamps become impossible.
+
+After this ships:
+- `wolfctl config-set recurring_delay=10800` → panel shows `recurring_delay: 3600 → 10800` and stores 10800.
+- `wolfctl config-set recurring_delay=100000` → `⚠ recurring_delay clamped from 100000 to 86400 (allowed: 0..86400)`.
+- `wolfctl config-set pipeline=20` → `⚠ pipeline_depth clamped from 20 to 8 (allowed: 1..8)`.
+
+**Tests**: `tests/test_phase6a_clamp_visibility.py` — 12 tests covering 10800 + 86400 accepted, over-cap clamps with warning, purge_days / pipeline_depth warnings, in-range no-warning, `_clamped` helper source markers, `cmd_config_set` captures msgs, doc comment updated. `test_phase5f_recurring_delay.py`'s old cap assertion updated (99999 → 86400 instead of 3600). Version assertions bumped in phase5v/5w/5x/5z. **598 total passing.**
+
+Zero changes to the bet loop, DB writer, credential paths, install.sh, TG bot (already allowed larger values), or sibling bots.
+
+`VERSION` `2.30.5` → `2.30.6`. `wolfctl` unchanged.
+
 ## CLI v2.30.5 + wolfctl v3.8 + install.sh — three follow-up defects from real-world doctor run (2026-07-20)
 
 You pulled v2.30.4 + wolfctl v3.7, ran `wolfctl doctor --fix` on the old server, and surfaced three real defects. All three fixed in this patch.
