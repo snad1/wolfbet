@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.6  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.7  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -688,7 +688,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.6"
+VERSION      = "2.30.7"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -4505,10 +4505,18 @@ def _build_config_progress_row(d: dict) -> str:
         next_ms = float(d.get("next_profit_milestone")
                         or profit_threshold or 0.0)
         profit  = float(d.get("profit", 0.0) or 0.0)
-        pct = max(0.0, min(100.0, (profit / next_ms * 100) if next_ms > 0 else 0.0))
+        # v2.30.7 — display window-relative progress ("how close to the NEXT
+        # bump?") not cumulative profit-vs-next-ms. Denominator is one
+        # threshold unit; numerator resets after every bump. Matches operator
+        # expectation: "Ms 39%" means the current window is 39% done,
+        # regardless of how many bumps have already fired this session.
+        window_start = max(0.0, next_ms - float(profit_threshold))
+        window_progress = max(0.0, profit - window_start)
+        pct = min(100.0, (window_progress / float(profit_threshold) * 100)
+                  if profit_threshold else 0.0)
         segments.append(
             f"{_a('dim','Ms')} "
-            f"{_a(_pct_color(pct), f'+{max(0.0, profit):.8f}/{next_ms:.8f} ({pct:.0f}%)')}"
+            f"{_a(_pct_color(pct), f'+{window_progress:.8f}/{float(profit_threshold):.8f} ({pct:.0f}%)')}"
         )
 
     max_profit = d.get("max_profit")

@@ -46,15 +46,20 @@ def test_save_state_file_persists_next_profit_milestone(monkeypatch, tmp_path):
 
 
 def test_cfg_row_reads_next_profit_milestone_when_present():
+    """v2.30.7 — denominator is one profit_threshold unit (the current
+    bump window), not next_profit_milestone (cumulative)."""
     d = {
         "profit_threshold": 0.007,
         "profit_increment": 0.00000001,
-        "next_profit_milestone": 0.021,
-        "profit": 0.014,  # 66.67% of 0.021
+        "next_profit_milestone": 0.021,     # 3rd milestone
+        "profit": 0.017,                    # partway through the 3rd window
     }
     row = _strip_ansi(wb._build_config_progress_row(d))
-    assert "/0.02100000" in row
-    assert "(67%)" in row
+    # Denominator now shows one threshold unit.
+    assert "/0.00700000" in row
+    # window_start = 0.021 - 0.007 = 0.014; window_progress = 0.003;
+    # pct = 0.003 / 0.007 = 42.857% → "(43%)".
+    assert "(42%)" in row or "(43%)" in row
 
 
 def test_cfg_row_falls_back_to_profit_threshold_when_key_missing():
@@ -70,18 +75,23 @@ def test_cfg_row_falls_back_to_profit_threshold_when_key_missing():
 
 
 def test_cfg_row_no_longer_uses_last_profit_milestone_for_target():
-    """The 100%-forever bug: last_profit_milestone=0 should not force target=threshold
-    when next_profit_milestone has advanced."""
+    """v2.30.1's "100%-forever" bug regression: last_profit_milestone=0 must
+    not force target = threshold when next_profit_milestone has advanced.
+    v2.30.7 update: display uses window semantics — denominator = one
+    threshold unit, numerator resets after each bump."""
     d = {
         "profit_threshold": 0.007,
         "profit_increment": 0.00000001,
         "last_profit_milestone": 0.0,       # notification tracker stays at 0
-        "next_profit_milestone": 0.049,     # 7th milestone; genuine actionable target
-        "profit": 0.045,                    # 91.8% of 0.049 — should NOT clamp to 100%
+        "next_profit_milestone": 0.049,     # 7th milestone target
+        "profit": 0.045,                    # inside the 7th window
     }
     row = _strip_ansi(wb._build_config_progress_row(d))
-    assert "/0.04900000" in row
-    assert "(91%)" in row or "(92%)" in row
+    # Denominator = one threshold unit (was 0.049 pre-v2.30.7).
+    assert "/0.00700000" in row
+    # window_start = 0.049 - 0.007 = 0.042; window_progress = 0.003;
+    # pct = 0.003 / 0.007 = 42.857% → "(42%)" or "(43%)".
+    assert "(42%)" in row or "(43%)" in row
 
 
 # ── Bug B: recurring restart resets next_profit_milestone ─

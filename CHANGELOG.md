@@ -1,5 +1,35 @@
 # Changelog
 
+## CLI v2.30.7 — CFG-row Ms shows per-window progress (resets after each bump) (2026-07-20)
+
+You saw:
+
+```
+CFG  Ms +1.54943550/1.94295672 (80%)
+```
+
+with `profit_threshold=0.64765224`. The 80% is `profit / next_ms` = cumulative session progress against the current milestone target. Since `next_ms = 3 × threshold` (2 bumps already fired), the display was actually saying "80% of the way to the 3rd milestone from zero" — technically true, but not what an operator asking "how close am I to the **next** bump?" would expect. The percentage never reset after each bump.
+
+Fix: `_build_config_progress_row`'s `Ms` segment now shows window-relative progress:
+
+- `window_start = max(0, next_ms - profit_threshold)` — the last-fired milestone.
+- `window_progress = max(0, profit - window_start)` — progress inside the current window.
+- `pct = window_progress / profit_threshold * 100` — always 0-100% within one threshold unit.
+
+Your live scenario now reads:
+
+```
+CFG  Ms +0.25413102/0.64765224 (39%)
+```
+
+39% = the current threshold window is 39% done. After the next bump fires (profit crosses 1.94295672), the display resets to `+0.00000000/0.64765224 (0%)` and climbs to 100% again. Denominator is always one `profit_threshold` unit; numerator is the current window's progress.
+
+**Tests**: `tests/test_phase6b_ms_window_display.py` — 8 tests including the exact user scenario (80% → 39%), fresh session, just-after-bump (~0%), just-before-bump (~99%), denominator always = threshold, backwards-compat with pre-v2.30.1 state files, segment elided when threshold unset. Two existing phase5u tests updated for the new window semantics. **606 total passing.**
+
+Zero behaviour change to the bump-firing code (`_apply_mutation`, `_reset_session_for_recurring`, and the two profit-increment call sites are untouched). Purely a display arithmetic swap in one segment. `state.next_profit_milestone` remains the actionable target for the bump code; the display now derives the window from it instead of using it as the denominator.
+
+`VERSION` `2.30.6` → `2.30.7`. `wolfctl` unchanged. TG untouched.
+
 ## CLI v2.30.6 — raise arbitrary `recurring_delay` cap 3600 → 86400 + surface silent numeric clamps (2026-07-20)
 
 You ran `wolfctl config-set recurring_delay=10800` (3-hour recurring pause between cycles) and got a confusing panel:
