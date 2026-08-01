@@ -1,5 +1,46 @@
 # Changelog
 
+## CLI v2.30.8 — Fix stale `bet_value` on load / config-set + surface `/auto/start` 4xx bodies (2026-08-01)
+
+Live outage: `wolfctl start` on the freshly-updated daemon reported `Last Error: Auto-bet start failed: HTTP 422` and placed **zero bets**. Investigation confirmed a long-latent config-derivation bug.
+
+### Root cause — stale `bet_value` never re-derives from `multiplier + rule`
+
+Your config-show showed `multiplier=10` but `bet_value=50.49`. For `multiplier=10` the correct value is **90.09** (formula: `round(100 - 99/mult - 0.01, 2)`). Your `50.49` was the *default from old `multiplier=2` configs* persisted on disk. WolfBet server computed `win_chance = 100 - 50.49 = 49.51%`, compared to the required `99/10 = 9.9%`, mismatched, returned **HTTP 422 "Incorrect win chance given"**.
+
+Three places that *should* have re-derived `bet_value`:
+- `load_config()` copied every `_CONFIG_KEYS` field verbatim from disk — no derivation.
+- `wolfctl config-set multiplier=10` treated `bet_value` as an independent field — didn't recompute.
+- The wizard *did* derive it correctly, but you'd only hit that path via a full re-setup.
+
+CHANGELOG v1262 claimed "engine derives `bet_value` from `multiplier + rule` on init" — but that fix only landed in `wolfbet.py`'s `/bet` self-correction path. Auto games never hit `/bet` (they use `/auto/start` → `/auto/play`), so no self-correction ever ran. Silent staleness forever.
+
+### Second defect — `state.last_error` hid the actual server message
+
+`api_auto_start` set `state.last_error = f"Auto-bet start failed: HTTP {r.status_code}"` — the WolfBet response body (`{"message": "Incorrect win chance given"}`) was logged but never surfaced to `wolfctl status`. You saw bare `HTTP 422` and had to trawl logs to find the actual reason.
+
+### Fixes
+
+- **New helper `_derive_bet_value(multiplier, rule)`** — single source of truth. Formula: `round(100 - 99/mult - 0.01, 2)` for `over`, `round(99/mult, 2)` for `under`. Safe default (`50.74`) when `multiplier ≤ 0`.
+- **`load_config()` re-derives on load** when the disk value mismatches the canonical formula. Logs a one-line `logger.warning` only when the correction actually fires.
+- **`_apply_mutation({"multiplier": …})` re-derives** when no explicit `bet_value` is in the same call. `msgs` shows `bet_value re-derived: 90.09 (was 50.49; from multiplier=10 rule=over)`. Explicit `bet_value` override in the same call wins.
+- **Wizard step_multiplier** factored through the new helper (DRY — was inline).
+- **`api_auto_start` 4xx handler** now includes a truncated response-body snippet in `state.last_error` so operators self-diagnose from `wolfctl status` instead of log-trawling. Format: `Auto-bet start failed: HTTP 422 — {"message":"Incorrect win chance given"}`.
+
+### Immediate operator recovery (works today, before v2.30.8 ships)
+
+```bash
+python3 -c "import json,os; p=os.path.expanduser('~/.wolfbet_autobot.json'); c=json.load(open(p)); m=float(c.get('multiplier',2.01)); c['bet_value']=round(100-99/m-0.01,2) if c.get('rule')=='over' else round(99/m,2); json.dump(c,open(p,'w'),indent=2); print('bet_value ->',c['bet_value'])"
+wolfctl restart
+wolfctl status   # expect bets placing, no HTTP 422
+```
+
+**Tests**: `tests/test_phase6c_bet_value_derivation.py` — 16 tests covering `_derive_bet_value` for over/under/zero-multiplier, `load_config` auto-correct of stale values, `load_config` preserving matching values, `_apply_mutation` re-derive on multiplier change with `msgs` entry, explicit `bet_value` override wins, no spurious message when bet_value unchanged, `api_auto_start` includes body snippet in `state.last_error` (grep-based source check), helper defined at module scope, called from load_config + _apply_mutation + wizard. 6 version-assertion tests bumped (`2.30.7` → `2.30.8`). **622 total passing.**
+
+Zero changes to the bet loop, DB writer, credential paths, config schema (existing `bet_value` field stays; now derived, not authoritative), install.sh, wolfctl, TG bot, or sibling bots.
+
+`VERSION` `2.30.7` → `2.30.8`. `wolfctl` unchanged.
+
 ## CLI v2.30.7 — CFG-row Ms shows per-window progress (resets after each bump) (2026-07-20)
 
 You saw:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.7  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.8  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -338,6 +338,23 @@ _TWEAK_PARAMS = {
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
 
+def _derive_bet_value(multiplier: float, rule: str) -> float:
+    """Canonical WolfBet win-chance derivation. 99% RTP (1% house edge).
+
+    v2.30.8 — single source of truth used by the wizard, `load_config`,
+    and `_apply_mutation`. Was inline in three places and silently stale
+    in any config where `wolfctl config-set multiplier=…` ran without the
+    wizard — server returned HTTP 422 "Incorrect win chance given" on
+    /auto/start (top cause of the 2026-08-01 outage on vmi3142201).
+    """
+    if multiplier <= 0:
+        return 50.74  # safe default (matches the wizard's fallback at mult=2.01)
+    wc = 99.0 / multiplier
+    if rule == "over":
+        return round(100.0 - wc - 0.01, 2)
+    return round(wc, 2)
+
+
 def _apply_mutation(changes: dict) -> list:
     """Apply {param → value} mutations to state.* — returns human status list.
 
@@ -502,6 +519,24 @@ def _apply_mutation(changes: dict) -> list:
     if "multiplier" in changes:
         state.multiplier = float(changes["multiplier"])
         msgs.append(f"Multiplier: {state.multiplier:.2f}")
+        # v2.30.8 — re-derive bet_value to match new multiplier (was silently
+        # stale, top cause of HTTP 422 "Incorrect win chance given" on
+        # /auto/start). Explicit bet_value override in the same call wins.
+        if "bet_value" not in changes and state.rule in ("over", "under"):
+            old_bv = state.bet_value
+            state.bet_value = _derive_bet_value(state.multiplier, state.rule)
+            if abs(old_bv - state.bet_value) > 0.01:
+                msgs.append(
+                    f"bet_value re-derived: {state.bet_value:.2f} "
+                    f"(was {old_bv:.2f}; from multiplier={state.multiplier} rule={state.rule})"
+                )
+        strategy_touched = True
+    # v2.30.8 — explicit bet_value override (advanced; normally derived from
+    # multiplier+rule). Apply last so the operator's value wins over the
+    # auto-derive above.
+    if "bet_value" in changes:
+        state.bet_value = float(changes["bet_value"])
+        msgs.append(f"Bet value: {state.bet_value:.2f}")
         strategy_touched = True
     if "loss_mult" in changes:
         state.loss_mult = float(changes["loss_mult"])
@@ -688,7 +723,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.7"
+VERSION      = "2.30.8"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -789,6 +824,21 @@ def load_config() -> bool:
         except ValueError:
             state.proxy = None
         _apply_proxy_to_session()
+        # v2.30.8 — silently correct stale bet_value from disk. Was the top
+        # cause of HTTP 422 on /auto/start when a previously-saved config
+        # had `bet_value` from an older `multiplier` and `wolfctl config-set
+        # multiplier=…` never recomputed. CHANGELOG v1262 promised this fix
+        # but only the wizard + /bet-self-correct path actually derived it;
+        # auto games never hit /bet so no self-correction ever ran. The
+        # warning is silent-by-default but logged so we can spot recurrences.
+        if state.multiplier > 0 and state.rule in ("over", "under"):
+            derived_bv = _derive_bet_value(state.multiplier, state.rule)
+            if abs(state.bet_value - derived_bv) > 0.01:
+                logger.warning(
+                    "bet_value from disk (%.2f) mismatched derived value "
+                    "for multiplier=%.2f rule=%s (%.2f) — corrected.",
+                    state.bet_value, state.multiplier, state.rule, derived_bv)
+                state.bet_value = derived_bv
         return True
     except Exception:
         return False
@@ -1420,10 +1470,17 @@ def api_auto_start() -> bool:
                 continue
             body = (r.text or "")[:400]
             classified = _classify_auto_stop_reason(body)
+            # v2.30.8 — include a short body snippet in state.last_error so
+            # operators self-diagnose from `wolfctl status` instead of
+            # trawling logs. Was: bare "HTTP 422" — actual reason was hidden.
+            body_snip = body.strip().replace("\n", " ")[:120]
             with state.lock:
                 if classified:
                     state.last_stop_reason = classified
-                state.last_error = f"Auto-bet start failed: HTTP {r.status_code}"
+                state.last_error = (
+                    f"Auto-bet start failed: HTTP {r.status_code}"
+                    + (f" — {body_snip}" if body_snip else "")
+                )
             logger.error("auto/start HTTP %d (classified=%s): %s",
                          r.status_code, classified or "none", body)
             return False
@@ -3970,10 +4027,9 @@ def setup_wizard():
             break
         win_chance = 99.0 / state.multiplier
         if state.game in ("dice", "dice-manual"):
-            if state.rule == "over":
-                state.bet_value = round(100.0 - win_chance - 0.01, 2)
-            else:
-                state.bet_value = round(win_chance, 2)
+            # v2.30.8 — derivation now lives in _derive_bet_value (single
+            # source of truth shared with load_config + _apply_mutation).
+            state.bet_value = _derive_bet_value(state.multiplier, state.rule)
             console.print(f"    [dim]→ Bet value:[/] [yellow]{state.bet_value}[/]  [dim]Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
         else:
             console.print(f"    [dim]→ Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
