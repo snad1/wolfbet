@@ -1,5 +1,48 @@
 # Changelog
 
+## CLI v2.30.9 + wolfctl v3.9 — `wolfctl reset` (archive + fresh statistics) + date-range `stats` (2026-08-15)
+
+You asked for a hard statistics reset: clear all sessions/bets and start a fresh stats flow — config untouched, old data archived — plus date-range evaluation of existing history.
+
+### `wolfctl reset [--yes]`
+
+Archive-first hard reset. **Nothing is ever deleted** — the DB is moved (not removed) to a timestamped archive:
+
+- Confirmation prompt showing session count, total bets, and DB size (unless `--yes`/`-y`).
+- Stops the daemon if running (does not auto-restart — you decide when the new flow starts).
+- `mv ~/.wolfbet_autobot.db → ~/.wolfbet_autobot-YYYYMMDD-HHMMSS.db`.
+- Clears the stale live-state file (`~/.wolfbet_autobot_live.json`) so `--resume` doesn't resurrect the old session number into the fresh DB.
+- Config (`~/.wolfbet_autobot.json`) completely untouched.
+- Next `wolfctl start` begins fresh statistics (`init_db` auto-recreates an empty DB).
+
+### `wolfctl archives`
+
+Lists every `~/.wolfbet_autobot-*.db` archive with session count, date span (`MIN(started_at) → MAX(started_at)`), and size — plus the total. Any archive remains a plain SQLite file queryable via `sqlite3 <archive> 'SELECT …'`.
+
+### `--stats --since DATE [--until DATE]`
+
+Date-window evaluation without resetting:
+
+- `wolfctl stats --since 2026-08-14` → only sessions started Aug 14 onward; both the listing and the totals block honor the window (totals header reads "Range Totals [window]").
+- Bare `--until` dates extend to end-of-day (`T23:59:59`) so the day is inclusive.
+- Full ISO timestamps also accepted. ISO strings compare correctly lexically in SQLite; all values parameterized (no interpolation).
+- Listing limit bumps 20 → 50 while a filter is active.
+
+**Operator flow**:
+
+```bash
+wolfctl reset                    # archive + fresh start (config untouched)
+wolfctl start                    # Session #1, clean statistics
+wolfctl stats --since 2026-08-14 # date-range views of current DB
+wolfctl archives                 # revisit any archived era anytime
+```
+
+**Tests**: `tests/test_phase6d_reset_and_datestats.py` — 21 tests: archive-never-deletes source lock (rm allowed only for stale live-state), timestamped archive name, confirmation + `--yes` bypass, daemon stop-if-running, `archives` glob + span reporting, `_stats_date_window` unit tests (empty / since-only / bare-until end-of-day / full-ts), functional filtered queries against a seeded temp DB (since-filter, inclusive bare-until, combined window, no-filter regression), limit-bump, argparse surface. Version assertions bumped across phase5e/5v/5w/5x/5z/6a/6b/6c. **643 total passing.**
+
+Zero changes to the bet loop, DB writer, config schema, TG bot, install.sh, or sibling bots.
+
+`VERSION` `2.30.8` → `2.30.9`. `wolfctl` `v3.8` → `v3.9`.
+
 ## CLI v2.30.8 — Fix stale `bet_value` on load / config-set + surface `/auto/start` 4xx bodies (2026-08-01)
 
 Live outage: `wolfctl start` on the freshly-updated daemon reported `Last Error: Auto-bet start failed: HTTP 422` and placed **zero bets**. Investigation confirmed a long-latent config-derivation bug.

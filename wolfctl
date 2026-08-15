@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.8
+# WolfBet AutoBot — Unified Management Command v3.9
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -14,15 +14,15 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_NAME="wolfctl"
-# v3.8 — surface installed-vs-repo drift so operators stuck on an old
+# v3.9 — surface installed-vs-repo drift so operators stuck on an old
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.8
+WOLFCTL_VERSION=3.9
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.8"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.9"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -57,7 +57,9 @@ usage() {
     echo "    wolfctl pipeline N                     Set pipeline depth (1..8; Flat-only)"
     echo ""
     echo "  DATA:"
-    echo "    wolfctl stats               Recent 20 sessions in detail"
+    echo "    wolfctl stats               Recent 20 sessions in detail (--since/--until DATE)"
+    echo "    wolfctl reset [--yes]       Archive statistics + start fresh (config untouched)"
+    echo "    wolfctl archives            List archived statistics DBs"
     echo "    wolfctl analytics           Lifetime aggregates + top 5 best/worst"
     echo "    wolfctl session ID          Full stats + streaks for one session"
     echo "    wolfctl last-bets N         Last N bets across all sessions (default 20)"
@@ -183,7 +185,7 @@ cmd_tmux() {
 }
 
 cmd_stats() {
-    "$PYTHON" "$BOT" --stats
+    "$PYTHON" "$BOT" --stats "$@"
 }
 
 cmd_session() {
@@ -215,7 +217,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.8"
+    echo "  wolfctl v3.9"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -278,6 +280,81 @@ cmd_cleanup() {
     fi
 }
 
+# v3.9 — hard statistics reset. ARCHIVES the DB (mv, never deletes) so a
+# fresh statistics flow can begin while config stays untouched. The daemon
+# is stopped if running; stale live-state is cleared so --resume doesn't
+# resurrect the old session number into the fresh DB.
+cmd_reset() {
+    local yes=0
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) yes=1 ;;
+        esac
+    done
+    local db="$HOME/.wolfbet_autobot.db"
+    if [ ! -f "$db" ]; then
+        echo "No DB found at $db — nothing to reset."
+        return
+    fi
+    local sess bets size
+    sess=$(sqlite3 "$db" "SELECT COUNT(*) FROM sessions" 2>/dev/null || echo "?")
+    bets=$(sqlite3 "$db" "SELECT COALESCE(SUM(total_bets),0) FROM sessions" 2>/dev/null || echo "?")
+    size=$(du -h "$db" | awk '{print $1}')
+    local was_running=0
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        was_running=1
+    fi
+    if [ "$yes" = "0" ]; then
+        echo "This will ARCHIVE (not delete) your statistics and start fresh:"
+        echo "  sessions: $sess   bets: $bets   db size: $size"
+        echo "  archive  → ~/.wolfbet_autobot-<timestamp>.db"
+        echo "  config   → untouched (~/.wolfbet_autobot.json)"
+        [ "$was_running" = "1" ] && echo "  daemon   → will be stopped (not restarted)"
+        read -r -p "Proceed? [y/N] " reply
+        case "$reply" in
+            y|Y|yes|YES) ;;
+            *) echo "Aborted."; return ;;
+        esac
+    fi
+    if [ "$was_running" = "1" ]; then
+        systemctl --user stop "$SERVICE"
+        echo "Daemon stopped."
+    fi
+    local ts archive
+    ts=$(date +%Y%m%d-%H%M%S)
+    archive="$HOME/.wolfbet_autobot-$ts.db"
+    mv "$db" "$archive"
+    # Stale live-state would make --resume point at the old session number.
+    rm -f "$HOME/.wolfbet_autobot_live.json"
+    echo "Archived → $archive  ($sess sessions, $bets bets, $size)"
+    echo "Config untouched. Next 'wolfctl start' begins fresh statistics."
+    echo "Revisit anytime: wolfctl archives"
+}
+
+# v3.9 — list archived statistics DBs with session counts + date spans.
+cmd_archives() {
+    local found=0 total_bytes=0
+    for f in "$HOME"/.wolfbet_autobot-*.db; do
+        [ -f "$f" ] || continue
+        found=1
+        local sess span size bytes
+        sess=$(sqlite3 "$f" "SELECT COUNT(*) FROM sessions" 2>/dev/null || echo "?")
+        span=$(sqlite3 "$f" "SELECT COALESCE(MIN(started_at),'?') || ' → ' || COALESCE(MAX(started_at),'?')" 2>/dev/null || echo "?")
+        size=$(du -h "$f" | awk '{print $1}')
+        bytes=$(du -b "$f" | awk '{print $1}')
+        total_bytes=$(( total_bytes + bytes ))
+        printf "  %s  %s sessions  %s  %s\n" "$(basename "$f")" "$sess" "$span" "$size"
+    done
+    if [ "$found" = "0" ]; then
+        echo "No archives found (~/.wolfbet_autobot-*.db)."
+        echo "Create one with: wolfctl reset"
+        return
+    fi
+    echo ""
+    echo "  Total: $(echo "$total_bytes" | awk '{printf "%.1f MB", $1/1024/1024}')"
+    echo "  Query any archive directly: sqlite3 <archive> 'SELECT … FROM sessions'"
+}
+
 # v2.26.1 — BPS diagnostics.
 cmd_benchmark() {
     local n="${1:-}"
@@ -292,7 +369,7 @@ cmd_diagnose() {
     "$PYTHON" "$BOT" --diagnose
 }
 
-# v3.8 — health check + prescriptive advice for reducing per-bet overhead.
+# v3.9 — health check + prescriptive advice for reducing per-bet overhead.
 # Read-only by default. `--fix` applies the three safe cleanups
 # (cleanup + VACUUM + journal vacuum); privileged fixes (renice / ionice /
 # cpupower) are prescribed only, never auto-applied. On virtualized hosts
@@ -382,7 +459,7 @@ cmd_doctor() {
         echo "          sudo ionice -c 2 -n 0 -p $pid"
     fi
 
-    # v3.8 — governor prescription only if the host actually allows it.
+    # v3.9 — governor prescription only if the host actually allows it.
     # QEMU-KVM guests (most VPS) can't change the governor from inside;
     # cpupower returns "Error setting new values" and confuses the operator.
     local virt=""
@@ -401,7 +478,7 @@ cmd_doctor() {
             echo "          sudo cpupower frequency-set -g performance"
         fi
     elif [ -z "$gov" ] && [ -n "$virt" ] && [ "$virt" != "none" ]; then
-        # v3.8 — governor path unreadable AND host is virtualized: still
+        # v3.9 — governor path unreadable AND host is virtualized: still
         # surface the honest "your VPS can't do this" advice instead of
         # staying silent (which hid the reason from operators hitting the
         # cpupower failure in the earlier runbook).
@@ -506,7 +583,7 @@ cmd_update() {
             chmod +x "$installed"
             echo "Updated $SCRIPT_NAME → $installed"
         fi
-        # v3.8 — surface drift when the currently-executing wolfctl is older
+        # v3.9 — surface drift when the currently-executing wolfctl is older
         # than the repo copy. Chicken-and-egg: the OLD installed wolfctl won't
         # run this block at all, so on the FIRST upgrade the operator must
         # rerun `wolfctl update` (or `exec wolfctl update`) once to pick up
@@ -534,7 +611,7 @@ cmd_update() {
                 && echo "Migrated $_unit: Restart=always → Restart=on-failure" \
                 && _sd_reload=1
         fi
-        # v3.8 — persist Nice=-5 + best-effort IO priority in the unit so the
+        # v3.9 — persist Nice=-5 + best-effort IO priority in the unit so the
         # daemon starts with elevated scheduling on every restart. Was a
         # per-PID renice/ionice the operator had to reapply after every
         # `wolfctl update` (which restarts the CLI as of v2.30.2). Idempotent:
@@ -578,7 +655,7 @@ cmd_update() {
         echo "Updated. TG bot not running (skipped restart)."
     fi
 
-    # v3.8 — auto-restart CLI daemon so the running process picks up the new
+    # v3.9 — auto-restart CLI daemon so the running process picks up the new
     # wolfbet.py. Before this, `wolfctl update` only refreshed the file on
     # disk and left the daemon on the pre-pull code until manual restart.
     # --resume preserves session state across the restart.
@@ -802,7 +879,9 @@ case "${1:-}" in
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;
     tmux)         cmd_tmux ;;
-    stats)        cmd_stats ;;
+    stats)        shift; cmd_stats "$@" ;;
+    reset)        shift; cmd_reset "$@" ;;
+    archives)     cmd_archives ;;
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;
     analytics)    cmd_analytics ;;

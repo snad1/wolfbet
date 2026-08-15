@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.8  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.30.9  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -341,7 +341,7 @@ _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n"
 def _derive_bet_value(multiplier: float, rule: str) -> float:
     """Canonical WolfBet win-chance derivation. 99% RTP (1% house edge).
 
-    v2.30.8 — single source of truth used by the wizard, `load_config`,
+    v2.30.9 — single source of truth used by the wizard, `load_config`,
     and `_apply_mutation`. Was inline in three places and silently stale
     in any config where `wolfctl config-set multiplier=…` ran without the
     wizard — server returned HTTP 422 "Incorrect win chance given" on
@@ -519,7 +519,7 @@ def _apply_mutation(changes: dict) -> list:
     if "multiplier" in changes:
         state.multiplier = float(changes["multiplier"])
         msgs.append(f"Multiplier: {state.multiplier:.2f}")
-        # v2.30.8 — re-derive bet_value to match new multiplier (was silently
+        # v2.30.9 — re-derive bet_value to match new multiplier (was silently
         # stale, top cause of HTTP 422 "Incorrect win chance given" on
         # /auto/start). Explicit bet_value override in the same call wins.
         if "bet_value" not in changes and state.rule in ("over", "under"):
@@ -531,7 +531,7 @@ def _apply_mutation(changes: dict) -> list:
                     f"(was {old_bv:.2f}; from multiplier={state.multiplier} rule={state.rule})"
                 )
         strategy_touched = True
-    # v2.30.8 — explicit bet_value override (advanced; normally derived from
+    # v2.30.9 — explicit bet_value override (advanced; normally derived from
     # multiplier+rule). Apply last so the operator's value wins over the
     # auto-derive above.
     if "bet_value" in changes:
@@ -723,7 +723,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.8"
+VERSION      = "2.30.9"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -824,7 +824,7 @@ def load_config() -> bool:
         except ValueError:
             state.proxy = None
         _apply_proxy_to_session()
-        # v2.30.8 — silently correct stale bet_value from disk. Was the top
+        # v2.30.9 — silently correct stale bet_value from disk. Was the top
         # cause of HTTP 422 on /auto/start when a previously-saved config
         # had `bet_value` from an older `multiplier` and `wolfctl config-set
         # multiplier=…` never recomputed. CHANGELOG v1262 promised this fix
@@ -1470,7 +1470,7 @@ def api_auto_start() -> bool:
                 continue
             body = (r.text or "")[:400]
             classified = _classify_auto_stop_reason(body)
-            # v2.30.8 — include a short body snippet in state.last_error so
+            # v2.30.9 — include a short body snippet in state.last_error so
             # operators self-diagnose from `wolfctl status` instead of
             # trawling logs. Was: bare "HTTP 422" — actual reason was hidden.
             body_snip = body.strip().replace("\n", " ")[:120]
@@ -4027,7 +4027,7 @@ def setup_wizard():
             break
         win_chance = 99.0 / state.multiplier
         if state.game in ("dice", "dice-manual"):
-            # v2.30.8 — derivation now lives in _derive_bet_value (single
+            # v2.30.9 — derivation now lives in _derive_bet_value (single
             # source of truth shared with load_config + _apply_mutation).
             state.bet_value = _derive_bet_value(state.multiplier, state.rule)
             console.print(f"    [dim]→ Bet value:[/] [yellow]{state.bet_value}[/]  [dim]Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
@@ -5846,15 +5846,42 @@ def cmd_analytics():
                   "or --session-bets ID to drill into one.[/]\n")
 
 
-def cmd_stats():
-    """Show all-time session statistics."""
+def _stats_date_window(since: str = None, until: str = None):
+    """v2.30.9 — build an optional date-window clause for the sessions table.
+
+    `since`/`until` accept bare dates (YYYY-MM-DD) or full ISO timestamps.
+    A bare `until` date is extended to end-of-day so the day is inclusive.
+    ISO strings compare correctly lexically in SQLite. Returns
+    (clause, params, label) where clause is "" or " WHERE …" and label
+    describes the window for headers.
+    """
+    conds, params = [], []
+    if since:
+        conds.append("started_at >= ?")
+        params.append(since)
+    if until:
+        u = until if len(until) > 10 else until + "T23:59:59"
+        conds.append("started_at <= ?")
+        params.append(u)
+    if not conds:
+        return "", [], ""
+    clause = " WHERE " + " AND ".join(conds)
+    label = f"  [{since or '…'} → {until or '…'}]"
+    return clause, params, label
+
+
+def cmd_stats(since: str = None, until: str = None):
+    """Show session statistics, optionally filtered to a date window."""
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
     conn = _db_conn()
+    where, params, window_label = _stats_date_window(since, until)
+    # v2.30.9 — range reviews want more rows than the default 20.
+    limit = 50 if (since or until) else 20
 
     # session list — fetch all columns
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT id, started_at AS started, ended_at AS ended,
                UPPER(currency) AS cur, strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
@@ -5865,10 +5892,10 @@ def cmd_stats():
                COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
                COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
                COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
-        FROM sessions ORDER BY id DESC LIMIT 20
-    """).fetchall()
+        FROM sessions{where} ORDER BY id DESC LIMIT ?
+    """, (*params, limit)).fetchall()
 
-    console.print(Rule("[bold cyan]Session History (last 20)[/]"))
+    console.print(Rule(f"[bold cyan]Session History (last {limit})[/]{window_label}"))
 
     # Print each session as a detailed block
     for r in rows:
@@ -5926,8 +5953,8 @@ def cmd_stats():
         console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}  [dim]Best Win:[/] [green]+{hi_win:.8f}[/]  [dim]Worst Loss:[/] [red]-{big_loss:.8f}[/]")
         console.print()
 
-    # totals
-    totals = conn.execute("""
+    # totals — v2.30.9: honor the same date window as the listing.
+    totals = conn.execute(f"""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
                COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
                COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
@@ -5937,8 +5964,8 @@ def cmd_stats():
                COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
                COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
                COALESCE(AVG(bets_per_second),0)
-        FROM sessions
-    """).fetchone()
+        FROM sessions{where}
+    """, tuple(params)).fetchone()
     conn.close()
 
     sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered, \
@@ -5954,7 +5981,7 @@ def cmd_stats():
     avg_pc = "green" if avg_pnl >= 0 else "red"
     avg_ps = "+" if avg_pnl >= 0 else ""
 
-    console.print(Rule("[bold cyan]All-Time Totals[/]"))
+    console.print(Rule(f"[bold cyan]{'Range' if (since or until) else 'All-Time'} Totals[/]{window_label}"))
     console.print(f"  [dim]Sessions:[/]      {sessions}")
     console.print(f"  [dim]Total Bets:[/]    {tot_bets}  (W {tot_wins} / L {tot_losses}  WR {wr})")
     console.print(f"  [dim]Wagered:[/]       {tot_wagered:.8f}")
@@ -6299,6 +6326,8 @@ def main():
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
     group.add_argument("--stats",   action="store_true", help="Show recent 20 sessions in detail")
+    group.add_argument("--since",   metavar="DATE", help="With --stats: window start (YYYY-MM-DD or ISO ts)")
+    group.add_argument("--until",   metavar="DATE", help="With --stats: window end (bare date = inclusive end of day)")
     group.add_argument("--analytics", action="store_true",
                        help="Show lifetime analytics: aggregates over ALL sessions with "
                             "breakdowns by game and strategy. Complement to --stats.")
@@ -6387,7 +6416,7 @@ def main():
         cmd_list_presets()
         return
     if args.stats:
-        cmd_stats()
+        cmd_stats(since=args.since, until=args.until)
         return
     if args.analytics:
         cmd_analytics()
