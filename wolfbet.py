@@ -6326,8 +6326,10 @@ def main():
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
     group.add_argument("--stats",   action="store_true", help="Show recent 20 sessions in detail")
-    group.add_argument("--since",   metavar="DATE", help="With --stats: window start (YYYY-MM-DD or ISO ts)")
-    group.add_argument("--until",   metavar="DATE", help="With --stats: window end (bare date = inclusive end of day)")
+    # v2.30.9 fix — modifiers, not commands: must combine WITH --stats, so they
+    # live on the standalone parser, NOT the mutually-exclusive command group.
+    parser.add_argument("--since", metavar="DATE", help="With --stats: window start (YYYY-MM-DD or ISO ts)")
+    parser.add_argument("--until", metavar="DATE", help="With --stats: window end (bare date = inclusive end of day)")
     group.add_argument("--analytics", action="store_true",
                        help="Show lifetime analytics: aggregates over ALL sessions with "
                             "breakdowns by game and strategy. Complement to --stats.")

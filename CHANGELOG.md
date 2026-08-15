@@ -39,6 +39,8 @@ wolfctl archives                 # revisit any archived era anytime
 
 **Tests**: `tests/test_phase6d_reset_and_datestats.py` — 21 tests: archive-never-deletes source lock (rm allowed only for stale live-state), timestamped archive name, confirmation + `--yes` bypass, daemon stop-if-running, `archives` glob + span reporting, `_stats_date_window` unit tests (empty / since-only / bare-until end-of-day / full-ts), functional filtered queries against a seeded temp DB (since-filter, inclusive bare-until, combined window, no-filter regression), limit-bump, argparse surface. Version assertions bumped across phase5e/5v/5w/5x/5z/6a/6b/6c. **643 total passing.**
 
+**Errata (same-day hotfix)**: `--since`/`--until` initially landed inside the mutually-exclusive command group, so argparse rejected `--stats --since DATE` ("not allowed with argument --stats"). Fixed by moving both to the standalone parser (`parser.add_argument`) — they are modifiers, not commands. Regression tests added: source-shape check + functional subprocess smoke (`--stats --since` parses cleanly). **645 total passing.**
+
 Zero changes to the bet loop, DB writer, config schema, TG bot, install.sh, or sibling bots.
 
 `VERSION` `2.30.8` → `2.30.9`. `wolfctl` `v3.8` → `v3.9`.

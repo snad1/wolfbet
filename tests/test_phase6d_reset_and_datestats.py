@@ -209,3 +209,32 @@ def test_argparse_has_since_until():
     src = inspect.getsource(wb)
     assert '"--since"' in src and '"--until"' in src
     assert "cmd_stats(since=args.since, until=args.until)" in src
+
+
+def test_since_until_are_modifiers_not_commands():
+    """v2.30.9 hotfix — `--stats --since DATE` was rejected because --since
+    sat inside the mutually-exclusive command group. Modifiers must be added
+    via parser.add_argument, not group.add_argument."""
+    import re as _re
+    src = inspect.getsource(wb)
+    assert _re.search(r'parser\.add_argument\("--since"', src), \
+        "--since must be on the standalone parser (was in the exclusive group)"
+    assert _re.search(r'parser\.add_argument\("--until"', src)
+    assert not _re.search(r'group\.add_argument\("--since"', src)
+    assert not _re.search(r'group\.add_argument\("--until"', src)
+
+
+def test_stats_with_since_parses_functional():
+    """Subprocess smoke: the real CLI accepts --stats + --since together.
+    (Parser is inline in main(); run the module with a stub HOME so it can
+    never touch a real DB — we only care that argparse doesn't reject.)"""
+    import subprocess
+    env = dict(os.environ, APP_ENV="testing")
+    env["HOME"] = tempfile.mkdtemp(prefix="wb_argparse_")
+    p = subprocess.run(
+        [sys.executable, os.path.join(_WOLFBET_DIR, "wolfbet.py"),
+         "--stats", "--since", "2026-08-14"],
+        capture_output=True, text=True, timeout=30, env=env)
+    combined = p.stdout + p.stderr
+    assert "not allowed with argument" not in combined, \
+        f"argparse still rejects --stats + --since: {combined[:400]}"
