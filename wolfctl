@@ -203,7 +203,7 @@ cmd_presets() {
 
 # ── v2.25.0 parity — read-only inspection ─────────────
 cmd_analytics() {
-    "$PYTHON" "$BOT" --analytics
+    "$PYTHON" "$BOT" --analytics "$@"
 }
 
 cmd_last_bets() {
@@ -884,7 +884,7 @@ case "${1:-}" in
     archives)     cmd_archives ;;
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;
-    analytics)    cmd_analytics ;;
+    analytics)    shift; cmd_analytics "$@" ;;
     last-bets)    cmd_last_bets "${2:-}" ;;
     export)       cmd_export "${2:-}" "${3:-}" ;;
     config-show)  cmd_config_show ;;

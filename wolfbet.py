@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.30.9  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.31.0  — Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -723,7 +723,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.30.9"
+VERSION      = "2.31.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -5664,11 +5664,12 @@ def _retention_worker():
 # ══════════════════════════════════════════════════════════
 #  ANALYTICS — lifetime aggregates (v2.23.0)
 # ══════════════════════════════════════════════════════════
-def _analytics_lifetime() -> dict:
-    """Top-line lifetime aggregates. Returns a dict with all-zero defaults on empty DB."""
+def _analytics_lifetime(where: str = "", params=()) -> dict:
+    """Top-line aggregates (optionally date-windowed via `where` from
+    `_stats_date_window`). Returns a dict with all-zero defaults on empty DB."""
     conn = _db_conn()
     try:
-        row = conn.execute("""
+        row = conn.execute(f"""
             SELECT COUNT(*)                     AS sessions_total,
                    COALESCE(SUM(total_bets), 0) AS bets_total,
                    COALESCE(SUM(wins), 0)       AS wins_total,
@@ -5679,8 +5680,8 @@ def _analytics_lifetime() -> dict:
                    COALESCE(MIN(profit), 0)     AS worst_profit,
                    SUM(CASE WHEN profit >= 0 THEN 1 ELSE 0 END) AS sessions_in_profit,
                    SUM(CASE WHEN profit <  0 THEN 1 ELSE 0 END) AS sessions_in_loss
-            FROM sessions
-        """).fetchone()
+            FROM sessions{where}
+        """, tuple(params)).fetchone()
     finally:
         conn.close()
     keys = ("sessions_total", "bets_total", "wins_total", "losses_total",
@@ -5693,11 +5694,11 @@ def _analytics_lifetime() -> dict:
     return d
 
 
-def _analytics_by_game() -> list:
-    """Aggregate sessions grouped by game. Ordered by profit DESC."""
+def _analytics_by_game(where: str = "", params=()) -> list:
+    """Aggregate sessions grouped by game (optionally date-windowed)."""
     conn = _db_conn()
     try:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT COALESCE(game, '?')          AS game,
                    COUNT(*)                     AS sessions,
                    COALESCE(SUM(total_bets), 0) AS bets,
@@ -5705,21 +5706,21 @@ def _analytics_by_game() -> list:
                    COALESCE(SUM(losses), 0)     AS losses,
                    COALESCE(SUM(profit), 0)     AS profit,
                    COALESCE(SUM(wagered), 0)    AS wagered
-            FROM sessions
+            FROM sessions{where}
             GROUP BY game
             ORDER BY profit DESC
-        """).fetchall()
+        """, tuple(params)).fetchall()
     finally:
         conn.close()
     return [dict(zip(("game", "sessions", "bets", "wins", "losses", "profit", "wagered"), r))
             for r in rows]
 
 
-def _analytics_by_strategy() -> list:
-    """Aggregate sessions grouped by strategy. Ordered by profit DESC."""
+def _analytics_by_strategy(where: str = "", params=()) -> list:
+    """Aggregate sessions grouped by strategy (optionally date-windowed)."""
     conn = _db_conn()
     try:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT COALESCE(strategy, '?')      AS strategy,
                    COUNT(*)                     AS sessions,
                    COALESCE(SUM(total_bets), 0) AS bets,
@@ -5727,18 +5728,19 @@ def _analytics_by_strategy() -> list:
                    COALESCE(SUM(losses), 0)     AS losses,
                    COALESCE(SUM(profit), 0)     AS profit,
                    COALESCE(SUM(wagered), 0)    AS wagered
-            FROM sessions
+            FROM sessions{where}
             GROUP BY strategy
             ORDER BY profit DESC
-        """).fetchall()
+        """, tuple(params)).fetchall()
     finally:
         conn.close()
     return [dict(zip(("strategy", "sessions", "bets", "wins", "losses", "profit", "wagered"), r))
             for r in rows]
 
 
-def _analytics_top_sessions(order: str = "profit_desc", limit: int = 5) -> list:
-    """Top-N sessions by a whitelisted order key. profit_desc / profit_asc / bets_desc."""
+def _analytics_top_sessions(order: str = "profit_desc", limit: int = 5,
+                            where: str = "", params=()) -> list:
+    """Top-N sessions by a whitelisted order key (optionally date-windowed)."""
     order_sql = {
         "profit_desc": "profit DESC",
         "profit_asc":  "profit ASC",
@@ -5750,10 +5752,10 @@ def _analytics_top_sessions(order: str = "profit_desc", limit: int = 5) -> list:
             SELECT id, COALESCE(game, '?'), COALESCE(strategy, '?'),
                    COALESCE(total_bets, 0), COALESCE(wins, 0), COALESCE(losses, 0),
                    COALESCE(profit, 0), COALESCE(wagered, 0), started_at
-            FROM sessions
+            FROM sessions{where}
             ORDER BY {order_sql}
             LIMIT ?
-        """, (limit,)).fetchall()
+        """, (*params, limit)).fetchall()
     finally:
         conn.close()
     return [dict(zip(
@@ -5804,19 +5806,23 @@ def _print_top_sessions_table(title: str, rows: list):
     console.print(t)
 
 
-def cmd_analytics():
-    """Lifetime analytics report — aggregates over all saved sessions."""
+def cmd_analytics(since: str = None, until: str = None):
+    """Analytics report — aggregates over all saved sessions, optionally
+    restricted to a started_at date window (v2.31.0)."""
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found — run a session first.[/]")
         return
-    lifetime = _analytics_lifetime()
+    where, wparams, wlabel = _stats_date_window(since, until)
+    lifetime = _analytics_lifetime(where, wparams)
     if lifetime["sessions_total"] == 0:
         console.print("[yellow]No sessions in the DB yet — run a session first.[/]")
         return
 
     console.print(Rule(
-        f"[bold cyan]Lifetime analytics[/] — {lifetime['sessions_total']:,} sessions, "
-        f"{lifetime['bets_total']:,} bets, {lifetime['wagered_total']:.8f} wagered"))
+        f"[bold cyan]{'Range' if (since or until) else 'Lifetime'} analytics[/] — "
+        f"{lifetime['sessions_total']:,} sessions, "
+        f"{lifetime['bets_total']:,} bets, {lifetime['wagered_total']:.8f} wagered"
+        f"{wlabel}"))
 
     # Top-line panel
     p = lifetime['profit_total']
@@ -5834,13 +5840,13 @@ def cmd_analytics():
     grid.add_row("Worst session:",      f"{lifetime['worst_profit']:.8f}")
     console.print(Panel(grid, title="[bold]💰 Overall[/]", border_style=pc))
 
-    _print_analytics_table("[bold]🎲 By game[/]",     _analytics_by_game(),     "game",     "Game")
-    _print_analytics_table("[bold]🎯 By strategy[/]", _analytics_by_strategy(), "strategy", "Strategy")
+    _print_analytics_table("[bold]🎲 By game[/]",     _analytics_by_game(where, wparams),     "game",     "Game")
+    _print_analytics_table("[bold]🎯 By strategy[/]", _analytics_by_strategy(where, wparams), "strategy", "Strategy")
 
     _print_top_sessions_table("[bold]🏆 Top 5 best sessions[/]",
-                              _analytics_top_sessions("profit_desc", 5))
+                              _analytics_top_sessions("profit_desc", 5, where, wparams))
     _print_top_sessions_table("[bold]🔻 Top 5 worst sessions[/]",
-                              _analytics_top_sessions("profit_asc", 5))
+                              _analytics_top_sessions("profit_asc", 5, where, wparams))
 
     console.print("\n[dim]  Use --stats for recent 20 sessions in detail, "
                   "or --session-bets ID to drill into one.[/]\n")
@@ -6421,7 +6427,7 @@ def main():
         cmd_stats(since=args.since, until=args.until)
         return
     if args.analytics:
-        cmd_analytics()
+        cmd_analytics(since=args.since, until=args.until)
         return
     if args.last_bets:
         cmd_last_bets(args.last_bets)

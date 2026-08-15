@@ -1,5 +1,28 @@
 # Changelog
 
+## CLI v2.31.0 / TG v1.19.0 — date-range analytics (CLI + TG) (2026-08-15)
+
+v2.30.9 shipped date-range `--stats --since/--until`. This wave extends the same window to analytics everywhere: CLI `--analytics`, TG `/analytics`, and (in their own repos) the 5 sibling bots.
+
+### CLI — `--analytics --since DATE [--until DATE]`
+
+- All four analytics helpers (`_analytics_lifetime` / `_by_game` / `_by_strategy` / `_top_sessions`) gain optional `where`/`params` kwargs (backwards-compatible defaults).
+- `cmd_analytics(since, until)` builds the window via `_stats_date_window` and threads it into all helpers. Header reads `Range analytics — N sessions … (since → until)` when a window is active; unchanged `Lifetime analytics` otherwise.
+- main() dispatch threads `args.since/args.until`.
+- `wolfctl analytics` now passes args through (`wolfctl analytics --since 2026-08-14` works).
+
+### TG — `/analytics [SINCE] [UNTIL]`
+
+- `/analytics 2026-08-14` → windowed lifetime + by-game + by-strategy + top-5 blocks; header shows the window.
+- `/analytics 2026-08-01 2026-08-15` → explicit window; bare UNTIL date = inclusive end of day (`T23:59:59`).
+- `>2 args` → friendly usage hint (never a traceback).
+- `/help` documents the date form.
+- Same window semantics as the CLI (`started_at >= ? AND started_at <= ?`, parameterized).
+
+**Tests**: `tests/test_phase6e_analytics_dates.py` — 14 tests: helper-level filtered aggregates against a seeded temp DB (lifetime/by-game/by-strategy/top-5 honor the window), `cmd_analytics(since=…)` functional, no-filter Lifetime regression, dispatch threading, `--analytics --since` parses (exclusive-group regression), TG source-shape checks (args parsed, `{where}` threaded into all 5 queries, bare-until end-of-day, Range header, usage hint), `/help` mention, wolfctl passthrough. Version assertions bumped across phase5r + 8 prior files. **659 total passing.**
+
+`VERSION` `2.30.9` → `2.31.0`. `tg/__init__.py` `1.18.0` → `1.19.0`. `wolfctl` unchanged (v3.9; only the analytics function gained `"$@"`).
+
 ## CLI v2.30.9 + wolfctl v3.9 — `wolfctl reset` (archive + fresh statistics) + date-range `stats` (2026-08-15)
 
 You asked for a hard statistics reset: clear all sessions/bets and start a fresh stats flow — config untouched, old data archived — plus date-range evaluation of existing history.
