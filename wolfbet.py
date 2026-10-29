@@ -237,8 +237,20 @@ def _check_risky_config() -> list:
     return warnings
 
 
-def _reset_session_for_recurring() -> None:
+STREAK_RESET_REASON = "Loss streak reset"
+
+
+def _restart_delay_for(reason: str) -> float:
+    """Pause before the next cycle: streak reset has its own delay."""
+    if reason.startswith(STREAK_RESET_REASON):
+        return state.streak_reset_delay
+    return state.recurring_delay
+
+
+def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
     """Reset per-session counters while preserving config. Starts a new DB session row."""
+    if delay is None:
+        delay = state.recurring_delay
     # v2.28.4 — freeze the "bet end" timestamp BEFORE the sleep so uptime +
     # DB ended_at reflect the real betting window (not "5 min bet + 1 h pause"
     # lumped together). Cleared just before we set the new session_start.
@@ -246,13 +258,14 @@ def _reset_session_for_recurring() -> None:
     with state.lock:
         state.session_bet_ended_at = _bet_end
         state.session_pause_started_at = _bet_end
+        state.session_pause_total = delay
     # Recurring delay — pause BEFORE the next cycle so the user has time to
     # intervene, the server settles, and the dashboard shows why the bot is idle.
-    if state.recurring_delay > 0:
+    if delay > 0:
         with state.lock:
-            state.status = f"Recurring pause {state.recurring_delay:.0f}s before next cycle…"
-        logger.info("RECURRING pause %.0fs before next cycle", state.recurring_delay)
-        time.sleep(state.recurring_delay)
+            state.status = f"Recurring pause {delay:.0f}s before next cycle…"
+        logger.info("RECURRING pause %.0fs before next cycle", delay)
+        time.sleep(delay)
     with state.lock:
         # Clear frozen timestamps as we enter the new session.
         state.session_bet_ended_at = None
@@ -267,6 +280,7 @@ def _reset_session_for_recurring() -> None:
         state.current_streak = 0
         state.max_win_streak = 0
         state.max_loss_streak = 0
+        state.last_broken_loss_streak = 0
         state.highest_bet    = 0.0
         state.highest_win    = 0.0
         state.biggest_loss   = 0.0
@@ -320,6 +334,8 @@ _TWEAK_ALIAS = {
     "pipeline":    "pipeline_depth",
     "recdelay":    "recurring_delay",
     "recurringdelay": "recurring_delay",
+    "srloss":      "streak_reset_losses",
+    "srdelay":     "streak_reset_delay",
     "purgedays":   "purge_days",
     "dbmode":      "db_write_mode",
     "dbwritemode": "db_write_mode",
@@ -330,6 +346,7 @@ _TWEAK_PARAMS = {
     "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "profit_increment", "profit_threshold", "recurring", "recurring_delay",
+    "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
     "pipeline_depth",
     "proxy", "purge_days",
@@ -466,6 +483,36 @@ def _apply_mutation(changes: dict) -> list:
         msgs.append(f"Recurring delay: {state.recurring_delay:.0f}s"
                     if state.recurring_delay > 0 else "Recurring delay: off")
 
+    # Streak reset — end + restart the session on the first win after
+    # N+ consecutive losses (only when session profit >= 0).
+    if "streak_reset_losses" in changes:
+        v = changes["streak_reset_losses"]
+        if _is_off(v):
+            state.streak_reset_losses = None
+        else:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"streak_reset_losses must be an integer >= 1, got {v!r}")
+            if n < 1:
+                raise ValueError(f"streak_reset_losses must be an integer >= 1, got {v!r}")
+            state.streak_reset_losses = n
+        msgs.append(f"Streak reset: after {state.streak_reset_losses} losses"
+                    if state.streak_reset_losses else "Streak reset: off")
+
+    if "streak_reset_delay" in changes:
+        v = changes["streak_reset_delay"]
+        if _is_off(v):
+            state.streak_reset_delay = 0.0
+        else:
+            try:
+                state.streak_reset_delay = _clamped(
+                    "streak_reset_delay", float(v), 0.0, 86400.0)
+            except (TypeError, ValueError):
+                raise ValueError(f"streak_reset_delay must be a number 0-86400, got {v!r}")
+        msgs.append(f"Streak reset delay: {state.streak_reset_delay:.0f}s"
+                    if state.streak_reset_delay > 0 else "Streak reset delay: off")
+
     # Proxy — validated + applied to the shared HTTP session.
     if "proxy" in changes:
         try:
@@ -557,9 +604,12 @@ def _apply_mutation(changes: dict) -> list:
 
 def _should_recurring_restart(reason: str) -> bool:
     """Whitelist safe stop-reasons for recurring restart. Loss / insufficient-balance never restart."""
-    if not state.recurring:
-        return False
     if state.profit < 0:
+        return False
+    # Streak reset is its own restart rule — independent of the recurring flag.
+    if reason.startswith(STREAK_RESET_REASON):
+        return bool(state.streak_reset_losses)
+    if not state.recurring:
         return False
     # Positive whitelist — only these three reasons trigger recurring:
     #   Profit target reached | Max bets reached | Max wins reached
@@ -723,7 +773,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.31.0"
+VERSION      = "2.32.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -768,6 +818,7 @@ _CONFIG_KEYS = [
     # launch since Phase 2 (v2.16.0). Now honestly persisted.
     "recurring", "basebet_pct",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
+    "streak_reset_losses", "streak_reset_delay",
 ]
 
 def _mask_key(key: str) -> str:
@@ -863,6 +914,8 @@ _PRESET_KEYS = [
     "proxy", "purge_days",
     # v2.27.0 — async bet writer mode:
     "db_write_mode",
+    # v2.32.0 — loss-streak reset restart:
+    "streak_reset_losses", "streak_reset_delay",
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -878,6 +931,7 @@ _STREAK_TUPLE_KEYS = [
 _LIVE_RELOAD_KEYS = {
     # Recurring + delays
     "recurring", "recurring_delay",
+    "streak_reset_losses", "streak_reset_delay",
     # Stop conditions
     "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
     # Pacing + basebet scaling
@@ -1234,6 +1288,14 @@ class BotState:
         # v2.30.6 — default 60, floor 0, cap 86400 (24 h). Was 3600 (arbitrary
         # TG-mirror cap that silently swallowed longer recurring pauses).
         self.recurring_delay  : float = 60.0
+        # Streak reset: end + restart the session on the first win after this
+        # many consecutive losses (None = off). Own pause, default 10 min.
+        self.streak_reset_losses : Optional[int] = None
+        self.streak_reset_delay  : float = 600.0
+        # Length of the loss streak the latest win just broke (0 if none).
+        self.last_broken_loss_streak : int = 0
+        # Pause length of the current recurring gap (for monitor countdown).
+        self.session_pause_total : float = 0.0
 
         # ── v2.26.0 — proxy + retention (TG↔CLI parity) ──
         # HTTP/HTTPS/SOCKS5 proxy URL, or None for direct connection.
@@ -1705,6 +1767,12 @@ def should_stop() -> tuple:
         return True, f"Max wins reached: {state.wins}"
     if state.stop_on_balance is not None and b <= state.stop_on_balance:
         return True, f"Balance floor hit: {b:.8f}"
+    # Streak reset — fires only on the win that broke an N+ loss streak
+    # (current_streak == 1) and only while the session is not in the red.
+    n = state.streak_reset_losses
+    if (n and state.current_streak == 1
+            and state.last_broken_loss_streak >= n and p >= 0):
+        return True, f"{STREAK_RESET_REASON}: {state.last_broken_loss_streak} losses then win"
     return False, ""
 
 # ══════════════════════════════════════════════════════════
@@ -1742,7 +1810,7 @@ def betting_loop():
                 if is_auto_game(state.game):
                     api_auto_stop()
                 _db_save_session()
-                _reset_session_for_recurring()
+                _reset_session_for_recurring(_restart_delay_for(reason))
                 last_result = "none"
                 continue
             state.running = False
@@ -1839,6 +1907,7 @@ def betting_loop():
                 state.wins += 1
                 if raw_profit > state.highest_win:
                     state.highest_win = raw_profit
+                state.last_broken_loss_streak = max(-state.current_streak, 0)
                 state.current_streak = max(state.current_streak, 0) + 1
                 state.max_win_streak = max(state.max_win_streak, state.current_streak)
             else:
@@ -2081,6 +2150,7 @@ def _apply_outcome_locked(envelope: dict) -> None:
             state.wins += 1
             if raw_profit > state.highest_win:
                 state.highest_win = raw_profit
+            state.last_broken_loss_streak = max(-state.current_streak, 0)
             state.current_streak = max(state.current_streak, 0) + 1
             state.max_win_streak = max(state.max_win_streak, state.current_streak)
         else:
@@ -2235,7 +2305,7 @@ def pipelined_betting_loop(depth: int):
                 if _should_recurring_restart(reason):
                     logger.info("RECURRING RESTART after: %s", reason)
                     _db_save_session()
-                    _reset_session_for_recurring()
+                    _reset_session_for_recurring(_restart_delay_for(reason))
                     with state.lock:
                         state.pipeline_dispatched = 0
                     continue
@@ -2406,6 +2476,7 @@ def _apply_backtest_result(result: dict) -> str:
         state.current_balance = new_balance
         if bet_state == "win":
             state.wins += 1
+            state.last_broken_loss_streak = max(-state.current_streak, 0)
             state.current_streak = max(state.current_streak, 0) + 1
             state.max_win_streak = max(state.max_win_streak, state.current_streak)
             if raw_profit > state.highest_win:
@@ -2512,6 +2583,7 @@ def _run_backtest(args) -> None:
     state.current_streak   = 0
     state.max_win_streak   = 0
     state.max_loss_streak  = 0
+    state.last_broken_loss_streak = 0
     state.highest_bet      = 0.0
     state.highest_win      = 0.0
     state.biggest_loss     = 0.0
@@ -2957,10 +3029,14 @@ def _save_state_file():
                 (state.session_bet_ended_at or time.time()) - state.session_start
             ),
             "pause_remaining_sec": (
-                max(0, int(state.recurring_delay - (time.time() - state.session_pause_started_at)))
+                max(0, int(state.session_pause_total - (time.time() - state.session_pause_started_at)))
                 if state.session_pause_started_at else 0
             ),
             "recurring_delay_sec": int(state.recurring_delay),
+            # Length of the pause in progress (streak reset has its own delay).
+            "pause_total_sec": int(state.session_pause_total),
+            "streak_reset_losses": state.streak_reset_losses,
+            "streak_reset_delay_sec": int(state.streak_reset_delay),
             "status": state.status,
             "last_error": state.last_error,
             "updated_at": datetime.now().isoformat(),
@@ -3299,6 +3375,7 @@ def _print_tweak_help():
         ("mslosses / msprofit", "msprofit 0.001",    "milestone thresholds"),
         ("pi / pt",             "pt 0.001",          "profit increment"),
         ("recurring on/off",    "recurring on",      "restart on non-loss stop"),
+        ("srloss / srdelay",    "srloss 20",         "restart on win after N losses"),
         ("basebet <amount>",    "basebet 0.00000002","auto games: UUID clears"),
         ("multiplier",          "multiplier 3.0",    "auto games: UUID clears"),
         ("lossmult / winmult",  "lossmult 2.01",     "auto games: UUID clears"),
@@ -3359,6 +3436,9 @@ def format_session_summary(reason: str = "") -> Group:
         cfg.add_row("Rules:", f"{len(state.custom_rules)} custom")
     if state.recurring:
         cfg.add_row("Recurring:", "on")
+    if state.streak_reset_losses:
+        cfg.add_row("Streak reset:",
+                    f"after {state.streak_reset_losses}L, pause {state.streak_reset_delay:.0f}s")
 
     uptime_s = int(time.time() - state.session_start) if state.session_start else 0
     h, rem = divmod(uptime_s, 3600)
@@ -4242,7 +4322,7 @@ def setup_wizard():
         """Optional Phase 2 session tuning: recurring, streak delays, basebet_pct, milestones."""
         console.print(Rule("[bold cyan]Step 5b / 7 — Advanced session tuning (optional)[/]"))
         gate = _ask("Configure advanced tuning? (y/N)",
-                    default="y" if (state.recurring or state.basebet_pct or state.streak_delay_loss[0] or
+                    default="y" if (state.recurring or state.streak_reset_losses or state.basebet_pct or state.streak_delay_loss[0] or
                                     state.streak_delay_win[0] or state.streak_delay_bets[0] or
                                     state.streakbet_loss[0]) else "n",
                     choices=["y", "n"])
@@ -4267,6 +4347,25 @@ def setup_wizard():
             state.recurring_delay = max(0.0, min(86400.0, float(v))) if v else 0.0
         except ValueError:
             state.recurring_delay = 60.0
+
+        # Streak reset — restart on the first win after N+ losses in a row.
+        v = _ask_optional("Restart session on first win after N losses in a row (blank/none = off)",
+                          state.streak_reset_losses)
+        if v is _BACK:
+            return False
+        try:
+            state.streak_reset_losses = max(1, int(v)) if v else None
+        except ValueError:
+            state.streak_reset_losses = None
+        if state.streak_reset_losses:
+            v = _ask_optional("Pause before streak-reset restart in seconds",
+                              state.streak_reset_delay if state.streak_reset_delay > 0 else None)
+            if v is _BACK:
+                return False
+            try:
+                state.streak_reset_delay = max(0.0, min(86400.0, float(v))) if v else 0.0
+            except ValueError:
+                state.streak_reset_delay = 600.0
 
         # basebet_pct — dynamic base bet as % of balance.
         v = _ask_optional("Base bet as % of balance (0-1, blank/none to disable)",
@@ -4626,6 +4725,11 @@ def _build_config_progress_row(d: dict) -> str:
         delay = int(d.get("recurring_delay_sec", 0) or 0)
         segments.append(f"{_a('dim','Rec')} {_a('cyan', f'on({delay}s)')}")
 
+    if d.get("streak_reset_losses"):
+        n = int(d["streak_reset_losses"])
+        sr_delay = int(d.get("streak_reset_delay_sec", 0) or 0)
+        segments.append(f"{_a('dim','SR')} {_a('cyan', f'{n}L→{sr_delay}s')}")
+
     if not segments:
         return f" {_a('dim','CFG')}  {_a('dim','─')}  {_a('dim','no goals set')}"
     return " " + _a("dim", "CFG") + "  " + "  ".join(segments)
@@ -4685,7 +4789,7 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     # v2.28.4 — surface recurring-pause countdown right in the LIVE indicator
     # so the user can see "sleeping 45m/60m of the recurring_delay" at a glance.
     _pause_left = int(d.get("pause_remaining_sec", 0) or 0)
-    _pause_total = int(d.get("recurring_delay_sec", 0) or 0)
+    _pause_total = int(d.get("pause_total_sec") or d.get("recurring_delay_sec", 0) or 0)
     if pid_alive and _pause_left > 0:
         st_ind = _a("bold_cyan",
                     f"◐ PAUSED {timedelta(seconds=_pause_left)}/{timedelta(seconds=_pause_total)}")
@@ -4988,7 +5092,7 @@ def cmd_status():
     # line surfaces "Xm remaining / Ym total" so users know why the session
     # isn't placing bets.
     _pause_left = int(d.get("pause_remaining_sec", 0) or 0)
-    _pause_total = int(d.get("recurring_delay_sec", 0) or 0)
+    _pause_total = int(d.get("pause_total_sec") or d.get("recurring_delay_sec", 0) or 0)
     pause_str = (f"[cyan]{timedelta(seconds=_pause_left)}[/] remaining / "
                  f"{timedelta(seconds=_pause_total)} total") if _pause_left > 0 else None
 
@@ -5207,6 +5311,8 @@ _CONFIG_SHOW_FIELDS = [
     ("profit_threshold",      "Profit interval between increments"),
     ("recurring",             "Auto-restart cycle on non-loss stop"),
     ("recurring_delay",       "Seconds to pause between recurring cycles (0 = back-to-back)"),
+    ("streak_reset_losses",   "Restart session on first win after N losses in a row (profit ≥ 0)"),
+    ("streak_reset_delay",    "Seconds to pause before the streak-reset restart"),
     ("basebet_pct",           "Base bet as % of balance (0 = off)"),
     ("streak_delay_loss",     "Extra pause after N losses in a row  (N:sec)"),
     ("streak_delay_win",      "Extra pause after N wins in a row  (N:sec)"),

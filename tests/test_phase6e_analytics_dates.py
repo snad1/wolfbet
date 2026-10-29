@@ -27,11 +27,11 @@ import tg  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.31.0"
+    assert wb.VERSION == "2.32.0"
 
 
 def test_tg_version():
-    assert tg.VERSION == "1.19.0"
+    assert tg.VERSION == "1.20.0"
 
 
 # ── Seeded temp DB ───────────────────────────────────────

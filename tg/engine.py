@@ -31,6 +31,7 @@ from core.games import (
 BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
 SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
 REQUEST_TIMEOUT    = httpx.Timeout(15.0, connect=5.0)
+STREAK_RESET_REASON = "Loss streak reset"
 MAX_TIMEOUT_STREAK = 3       # recreate HTTP session after this many consecutive timeouts
 
 
@@ -90,6 +91,9 @@ class BettingEngine:
         self.max_bets        = config.get("max_bets")
         self.max_wins        = config.get("max_wins")
         self.stop_on_balance = config.get("stop_on_balance")
+        # Streak reset: stop on the first win after this many consecutive
+        # losses (profit >= 0 only); handlers restart after streak_reset_delay.
+        self.streak_reset_losses = config.get("streak_reset_losses")
 
         # ── session state ──
         self.running         = False
@@ -108,6 +112,8 @@ class BettingEngine:
         self.current_streak  = 0
         self.max_win_streak  = 0
         self.max_loss_streak = 0
+        # Length of the loss streak the latest win just broke (0 if none).
+        self.last_broken_loss_streak = 0
         self.highest_bet     = 0.0
         self.highest_win     = 0.0
         self.biggest_loss    = 0.0
@@ -824,6 +830,11 @@ class BettingEngine:
             return True, f"Max wins: {self.wins}"
         if self.stop_on_balance is not None and b <= self.stop_on_balance:
             return True, f"Balance floor: {b:.8f}"
+        # Streak reset — only on the win that broke an N+ loss streak, not in the red.
+        n = self.streak_reset_losses
+        if (n and self.current_streak == 1
+                and self.last_broken_loss_streak >= n and p >= 0):
+            return True, f"{STREAK_RESET_REASON}: {self.last_broken_loss_streak} losses then win"
         return False, ""
 
     def _process_bet_result(self, result: dict) -> str:
@@ -847,6 +858,7 @@ class BettingEngine:
             self.wins += 1
             if raw_profit > self.highest_win:
                 self.highest_win = raw_profit
+            self.last_broken_loss_streak = max(-self.current_streak, 0)
             self.current_streak = max(self.current_streak, 0) + 1
             self.max_win_streak = max(self.max_win_streak, self.current_streak)
         else:
@@ -1046,6 +1058,7 @@ class BettingEngine:
             "max_bets": self.max_bets,
             "max_wins": self.max_wins,
             "stop_on_balance": self.stop_on_balance,
+            "streak_reset_losses": self.streak_reset_losses,
             "profit_increment": self.profit_increment,
             "profit_threshold": self.profit_threshold,
             "milestone_bets": self.milestone_bets,
@@ -1211,6 +1224,10 @@ class BettingEngine:
             v = changes["stop_on_balance"]
             self.stop_on_balance = float(v) if v is not None else None
             msgs.append(f"Min balance: {float(v):.8f}" if v is not None else "Min balance: off")
+        if "streak_reset_losses" in changes:
+            v = changes["streak_reset_losses"]
+            self.streak_reset_losses = int(v) if v is not None else None
+            msgs.append(f"Streak reset: after {v} losses" if v is not None else "Streak reset: off")
 
         # Milestone settings — instant
         if "milestone_bets" in changes:

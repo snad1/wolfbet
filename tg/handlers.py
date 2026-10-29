@@ -32,7 +32,7 @@ from core.strategy import (
     STRATEGIES, STRATEGY_NAMES, STRATEGY_BY_NAME, StrategyRule,
     describe_rule, load_rules_from_text,
 )
-from .engine import BettingEngine
+from .engine import BettingEngine, STREAK_RESET_REASON
 from .formatter import (
     format_status, format_stop, format_milestone, format_session_row,
     format_session_detail, format_all_time, format_lastbets,
@@ -182,6 +182,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`profitincrement` — Amount to add to base bet (`0` = restart only, `off` to disable)\n"
         "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
         "`recurringdelay` — Seconds before restart (default 60)\n"
+        "`srloss` — Restart on first win after N losses in a row (profit ≥ 0; `off` to disable)\n"
+        "`srdelay` — Seconds before streak-reset restart (default 600)\n"
         "`streakdelay_loss` — Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
         "`streakdelay_win` — Delay after N wins (`10:0.5` = every 10 wins → 0.5s)\n"
         "`streakdelay_bets` — Delay after every N bets (`100:0.5` = every 100 bets → 0.5s)\n"
@@ -537,6 +539,9 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rec_on = config.get("recurring", False)
         rec_delay = int(config.get("recurring_delay") or 60)
         lines.append(f"Recurring: `{'on (' + str(rec_delay) + 's)' if rec_on else 'off'}`")
+        sr = config.get("streak_reset_losses")
+        if sr:
+            lines.append(f"Streak reset: `after {sr} losses, pause {_streak_reset_delay(config)}s`")
 
         # Rules (for rule-based strategy)
         if strategy_key == "8":
@@ -826,6 +831,21 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Recurring delay must be >= 5 seconds.")
                 return
             config["recurring_delay"] = val
+        elif param in ("streakreset", "srloss"):
+            if value.lower() in ("off", "none", "0"):
+                config["streak_reset_losses"] = None
+            else:
+                val = int(value)
+                if val < 1:
+                    await update.message.reply_text("Streak reset must be >= 1 losses (or 'off').")
+                    return
+                config["streak_reset_losses"] = val
+        elif param in ("streakresetdelay", "srdelay"):
+            val = int(value)
+            if val < 5 or val > 86400:
+                await update.message.reply_text("Streak reset delay must be 5-86400 seconds.")
+                return
+            config["streak_reset_delay"] = val
         else:
             await update.message.reply_text(
                 f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
@@ -1036,17 +1056,30 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     # Recurring bet: schedule restart if condition stop (not manual) AND live config says recurring is on.
     # Re-read the saved config at stop time so toggling /set recurring on/off applies to every session.
     rec = user_rec.get(slot)
+    # Streak reset (first win after N+ losses, profit >= 0) is its own restart
+    # rule with its own delay — independent of the recurring flag.
+    is_streak_reset = reason.startswith(STREAK_RESET_REASON)
     try:
         live_config = load_user_config(user_id)
         recurring_on = bool(live_config.get("recurring"))
         live_delay = int(live_config.get("recurring_delay") or rec["delay"]) if rec else 60
+        if is_streak_reset:
+            recurring_on = bool(live_config.get("streak_reset_losses"))
+            live_delay = _streak_reset_delay(live_config)
     except Exception as e:
         logger.warning("User %d: failed to reload config at stop, falling back to snapshot: %s", user_id, e)
+        live_config = None
         recurring_on = bool(rec)
         live_delay = rec["delay"] if rec else 60
+        if is_streak_reset and rec:
+            live_delay = _streak_reset_delay(rec["config"])
 
     if rec and recurring_on and reason != "Stopped by user" and "insufficient" not in reason.lower():
         config = rec["config"]
+        if live_config is not None:
+            # Carry live /set changes to the streak-reset settings into the next cycle.
+            for k in ("streak_reset_losses", "streak_reset_delay"):
+                config[k] = live_config.get(k)
         # Carry forward the current base_bet (profit increment may have raised it)
         config["base_bet"] = engine.base_bet
         task = asyncio.create_task(
@@ -1056,6 +1089,12 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     elif rec and not recurring_on:
         # User turned recurring off — clean up the snapshot so it doesn't linger
         recurring_state.get(user_id, {}).pop(slot, None)
+
+
+def _streak_reset_delay(config: dict) -> int:
+    """Pause before a streak-reset restart (default 600s, floor 5s like recurring_delay)."""
+    v = config.get("streak_reset_delay")
+    return max(5, int(v)) if v is not None else 600
 
 
 async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
@@ -1264,6 +1303,7 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/tweak maxprofit 0.001` — stop at profit\n"
             "`/tweak maxloss 0.001` — stop at loss\n"
             "`/tweak minbalance 1.0` — stop below balance\n"
+            "`/tweak srloss 20` — restart on win after 20 losses\n"
             "`/tweak milestonewins 1000` — milestone interval\n"
             "`/tweak sdloss 5:1.0` — delay every 5 losses\n"
             "`/tweak sdwin 10:0.5` — delay every 10 wins\n"
@@ -1326,6 +1366,11 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             changes["max_wins"] = None if off else int(value)
         elif param == "minbalance":
             changes["stop_on_balance"] = None if off else float(value)
+        elif param in ("streakreset", "srloss"):
+            val = None if off else int(value)
+            if val is not None and val < 1:
+                raise ValueError(value)
+            changes["streak_reset_losses"] = val
         elif param in ("milestonebets", "msbets"):
             changes["milestone_bets"] = int(value)
         elif param in ("milestonewins", "mswins"):

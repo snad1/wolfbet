@@ -92,6 +92,9 @@ def _write_state_and_read(monkeypatch, tmp_path,
         now - pause_started_offset if pause_started_offset is not None else None
     )
     wb.state.recurring_delay = recurring_delay
+    # v2.32.0 — the pause in progress records its own length (streak reset
+    # can use a different delay than recurring_delay).
+    wb.state.session_pause_total = recurring_delay
     wb._save_state_file()
     with open(state_path) as f:
         return json.load(f)

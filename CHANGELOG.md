@@ -1,5 +1,30 @@
 # Changelog
 
+## CLI v2.32.0 / TG v1.20.0 — streak reset: restart after a long loss streak breaks (2026-10-29)
+
+New recurring trigger. When a run of **N or more consecutive losses** is broken by a win, the session ends, pauses for its own delay, then a fresh session starts — same reset machinery as recurring restarts.
+
+- New settings: `streak_reset_losses` (int, off by default; alias `srloss`) and `streak_reset_delay` (seconds, default 600, 0–86400 on CLI, 5–86400 on TG; alias `srdelay`).
+- Fires only on the breaking win (`current_streak == 1` and the broken loss run ≥ N) and only while session profit ≥ 0. In the red, betting continues in the same session and the trigger disarms until the next N-loss run.
+- Independent of `recurring`: the reason `Loss streak reset: K losses then win` restarts even when `recurring` is off. Other recurring reasons keep `recurring_delay`.
+
+### CLI
+- `should_stop()` clause, `_should_recurring_restart()` accepts the new reason, `_reset_session_for_recurring(delay)` takes the pause per reason (`_restart_delay_for`).
+- Loss run captured at every outcome site (sequential, pipelined, backtest) via `last_broken_loss_streak`.
+- Persisted in config + presets, live-reloadable (SIGHUP), `wolfctl config set/show`, tweak grammar, wizard (Step 5b), session summary, monitor CFG row `SR 20L→600s`.
+- State file gains `pause_total_sec` so monitor/status countdown shows the active pause length (streak reset vs recurring).
+
+### TG
+- Engine stop clause + `/tweak srloss`; `/set srloss|srdelay`; `/config` line; `/help` entries; `CONFIG_KEYS` (presets keep both keys).
+- `_notify_stop` restarts on the new reason using `streak_reset_delay`, independent of the recurring flag; live `/set` values carry into the next cycle.
+
+### Web
+- Settings page lists `streak_reset_losses` / `streak_reset_delay` with the stop conditions (read-only, as before).
+
+**Tests**: `tests/test_phase9_streak_reset.py` — CLI + TG trigger, red/threshold/off cases, delay selection, mutation validation, persistence lists. Version assertions bumped. **679 total passing.**
+
+`VERSION` `2.31.0` → `2.32.0`. `tg/__init__.py` `1.19.0` → `1.20.0`.
+
 ## CLI v2.31.0 / TG v1.19.0 — date-range analytics (CLI + TG) (2026-08-15)
 
 v2.30.9 shipped date-range `--stats --since/--until`. This wave extends the same window to analytics everywhere: CLI `--analytics`, TG `/analytics`, and (in their own repos) the 5 sibling bots.

@@ -232,4 +232,4 @@ def test_help_mentions_new_commands():
 # ── version ───────────────────────────────────────────────
 def test_tg_version_bumped():
     import tg
-    assert tg.VERSION == "1.19.0"
+    assert tg.VERSION == "1.20.0"
