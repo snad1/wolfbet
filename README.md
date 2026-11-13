@@ -95,7 +95,8 @@ cd ~/wolfbet && chmod +x install.sh && ./install.sh
 wolfctl setup           # Run wizard to configure
 wolfctl start           # Start CLI bot as daemon
 wolfctl stop            # Stop CLI bot
-wolfctl monitor         # Attach live TUI to running daemon
+wolfctl monitor [K]     # Attach live TUI to running daemon (lane K, default 1)
+wolfctl lanes N         # Run N parallel lanes (see Parallel lanes)
 wolfctl status          # Check running session status
 wolfctl stats           # Show all-time session statistics
 
@@ -123,7 +124,7 @@ wolfctl export /tmp/out.csv [SID]       # CSV/JSON export (per session or all)
 wolfctl backtest --simulate 10000 --seed 42     # backtest (no API calls)
 wolfctl preset martingale-safe          # load preset + start daemon
 wolfctl cleanup [DAYS]                  # purge old bet rows (default: state.purge_days)
-wolfctl benchmark [N]                   # API-latency probe (no bets, default N=20)
+wolfctl benchmark [N] [--lanes M]       # API-latency probe (no bets, default N=20; --lanes: concurrent)
 wolfctl diagnose                        # analyse running session bottleneck
 wolfctl version                         # print CLI + wolfctl versions
 ```
@@ -263,6 +264,41 @@ python3 wolfbet.py --resume --pipeline 4  # override the saved config
 **Dashboard.** When active, the dashboard shows: `Pipeline depth=N · in-flight=K · dispatched=M`. When the guardrail refuses a requested depth, the row shows the coerce reason instead.
 
 **Runtime tweak.** `T pipeline 3` (or `off` / `1` to disable) — takes effect on the next loop iteration.
+
+---
+
+## Parallel lanes
+
+Pipeline is **one** session with several bets in flight. Lanes are **several independent sessions** running side by side, and they work with any strategy and with `dice-auto` / `limbo-auto`. Each lane has its own session, Martingale chain, counters, stop conditions, pauses and recurring / streak-reset cycle, so lanes drift apart naturally.
+
+```bash
+wolfctl benchmark 20 --lanes 4   # read-only probe: throughput at 1..4 concurrent clients + recommendation
+wolfctl lanes 3                  # run 3 lanes (1 = the classic single bot)
+wolfctl status                   # per-lane table + total bps
+wolfctl monitor 2                # live TUI for lane 2
+wolfctl stats --lane 2           # only lane 2's sessions (analytics has a "By lane" table)
+```
+
+**How it runs.** Lane 1 is the usual `wolfbet.service`. Lanes 2..N are `wolfbet-lane@K.service` processes (`wolfbet.py --daemon --resume --lane K`), each with its own state / pid file (`~/.wolfbet_autobot_live.laneK.json`, `~/.wolfbet_autobot.laneK.pid`). All lanes share the config file and the stats DB. Log lines are prefixed `[LK]`. Every session row records its lane.
+
+**Split budget.** At start each lane takes `balance ÷ lanes` as its share. Its equity is that share plus its own result across its sessions. When the next bet would exceed the equity, that lane stops with `Lane budget exceeded` (a loss stop: no restart) and the other lanes keep running. The risky-config warning reports the loss chain the share can cover.
+
+**Per-lane overrides.** Lanes use the base config plus optional overrides:
+
+```bash
+wolfctl config-set lanes=3
+wolfctl config-set lane2.base_bet=0.00001 lane3.max_wins=2
+wolfctl config-set lane2.base_bet=default      # drop the override (use base)
+```
+
+`api_key`, `currency`, `game`, `proxy`, `purge_days`, `db_write_mode` and `pipeline_depth` are shared and can't be overridden. `config-show` lists the overrides. Base changes reload every running lane (SIGHUP). Lane overrides reload just that lane.
+
+**Speed and throttling.**
+- The rate-limit headers are account-wide, so every lane sees the same remaining quota. Below 10% of the quota left, each lane adds a small per-bet delay (up to 250 ms) that grows as the quota runs out. Lanes ease off together instead of all hitting the hard pause at once. A single lane never reaches this zone in normal use, so it doesn't slow down. 429 / Retry-After handling stays as the backstop.
+- `/auto/start` calls (one per session per lane) are spaced across all lanes through a shared lock file (`~/.wolfbet_autostart.lock`), and lane K's first start is staggered by `(K−1)·2s`, so restarts don't collide into 429s.
+- Total speed rises only while the account quota has headroom. Use `wolfctl benchmark --lanes N` and then compare total bps in `wolfctl status` at 2, 3, … lanes. Keep the count where total bps still rises and `RATE LIMIT` lines stay rare in the log.
+
+**Changing the count** with `wolfctl lanes N` restarts the running lanes so each recomputes its share. A chain in progress is saved and ended.
 
 ---
 

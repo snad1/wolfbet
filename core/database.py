@@ -58,6 +58,7 @@ def migrate_db(db_path: str):
         ("low_bpm",         "REAL DEFAULT 0"),
         ("config_snapshot", "TEXT DEFAULT ''"),
         ("chart_snapshots", "TEXT DEFAULT '[]'"),
+        ("lane",            "INTEGER DEFAULT 1"),   # v2.35.0 — parallel lanes
     ]:
         try:
             c.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")

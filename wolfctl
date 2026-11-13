@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.9
+# WolfBet AutoBot — Unified Management Command v3.10
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -10,6 +10,10 @@ WEB_DIR="$HOME/wolfbet-web"
 SERVICE="wolfbet"
 TG_SERVICE="wolfbet-tg"
 WEB_SERVICE="wolfbet-web"
+# v3.10 — parallel lanes: lane 1 = $SERVICE, lanes 2..N = wolfbet-lane@K
+LANE_SERVICE="wolfbet-lane"
+LANES_MAX=10
+SYSTEMD_DIR="$HOME/.config/systemd/user"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
@@ -18,11 +22,11 @@ SCRIPT_NAME="wolfctl"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.9
+WOLFCTL_VERSION=3.10
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.9"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.10"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -30,7 +34,8 @@ usage() {
     echo "    wolfctl stop          Stop CLI bot"
     echo "    wolfctl restart       Restart CLI bot"
     echo "    wolfctl status        Show CLI bot status"
-    echo "    wolfctl monitor       Attach live TUI to running daemon"
+    echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
+    echo "    wolfctl lanes N       Run N parallel lanes (1 = classic single bot)"
     echo "    wolfctl logs          Stream CLI bot logs"
     echo "    wolfctl logs-full     Show last 200 log lines"
     echo ""
@@ -95,6 +100,108 @@ cmd_setup() {
     "$PYTHON" "$BOT" --setup-only
 }
 
+# ── v3.10 — parallel lanes ─────────────────────────────
+# Configured lane count from the config file (1 when unset / unreadable).
+lane_count() {
+    "$PYTHON" - "$HOME/.wolfbet_autobot.json" <<'PY' 2>/dev/null || echo 1
+import json, sys
+try:
+    n = int((json.load(open(sys.argv[1])).get("lanes") or {}).get("count") or 1)
+except Exception:
+    n = 1
+print(max(1, min(10, n)))
+PY
+}
+
+# Write the systemd template for lanes 2..N (same unit as lane 1 + --lane %i).
+ensure_lane_unit() {
+    local unit="$SYSTEMD_DIR/${LANE_SERVICE}@.service"
+    [ -f "$unit" ] && grep -q -- '--lane %i' "$unit" && grep -q '^WantedBy=' "$unit" && return 0
+    mkdir -p "$SYSTEMD_DIR"
+    cat > "$unit" << UNITEOF
+[Unit]
+Description=WolfBet AutoBot — parallel lane %i (CLI)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/wolfbet.py --resume --daemon --lane %i
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+Environment=HOME=${HOME}
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-${ENV_FILE}
+
+[Install]
+WantedBy=default.target
+UNITEOF
+    systemctl --user daemon-reload
+}
+
+# Start lanes 2..count; stop every lane above count.
+sync_lanes() {
+    local n="$1" k
+    if [ "$n" -gt 1 ]; then
+        ensure_lane_unit
+    fi
+    for k in $(seq 2 "$LANES_MAX"); do
+        if [ "$k" -le "$n" ]; then
+            # enable → lanes come back after a reboot together with lane 1
+            systemctl --user enable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+        elif systemctl --user is-enabled --quiet "${LANE_SERVICE}@${k}" 2>/dev/null \
+                || systemctl --user is-active --quiet "${LANE_SERVICE}@${k}" 2>/dev/null; then
+            systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+            echo "  lane $k stopped"
+        fi
+    done
+}
+
+stop_all_lanes() {
+    local k
+    for k in $(seq 2 "$LANES_MAX"); do
+        systemctl --user stop "${LANE_SERVICE}@${k}" 2>/dev/null || true
+    done
+}
+
+cmd_lanes() {
+    local n="${1:-}"
+    if [ -z "$n" ]; then
+        echo "Configured lanes: $(lane_count)"
+        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+        echo "  Change with: wolfctl lanes N   (1-$LANES_MAX)"
+        return
+    fi
+    case "$n" in ''|*[!0-9]*) echo "Usage: wolfctl lanes N  (1-$LANES_MAX)"; exit 1 ;; esac
+    if [ "$n" -lt 1 ] || [ "$n" -gt "$LANES_MAX" ]; then
+        echo "lanes must be 1-$LANES_MAX"; exit 1
+    fi
+    "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
+    echo "Lanes set to $n — each lane may use balance ÷ $n."
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        # Restart every lane so each recomputes its budget share.
+        echo "Restarting lanes (each running chain is saved and ended)…"
+        stop_all_lanes
+        systemctl --user restart "$SERVICE"
+        sync_lanes "$n"
+        sleep 2
+        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+    else
+        echo "Bot not running — start all $n lane(s) with: wolfctl start"
+    fi
+}
+
 cmd_start() {
     if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
         echo "No config found. Run 'wolfctl setup' first."
@@ -103,7 +210,14 @@ cmd_start() {
     systemctl --user start "$SERVICE"
     sleep 1
     if systemctl --user is-active --quiet "$SERVICE"; then
-        echo "CLI bot started."
+        local n
+        n=$(lane_count)
+        sync_lanes "$n"
+        if [ "$n" -gt 1 ]; then
+            echo "CLI bot started with $n lanes."
+        else
+            echo "CLI bot started."
+        fi
         echo "  Check: wolfctl status"
         echo "  Logs:  wolfctl logs"
     else
@@ -113,14 +227,17 @@ cmd_start() {
 }
 
 cmd_stop() {
+    stop_all_lanes
     systemctl --user stop "$SERVICE"
     echo "CLI bot stopped."
     "$PYTHON" "$BOT" --status 2>/dev/null || true
 }
 
 cmd_restart() {
+    stop_all_lanes
     systemctl --user restart "$SERVICE"
     sleep 1
+    sync_lanes "$(lane_count)"
     echo "CLI bot restarted."
     "$PYTHON" "$BOT" --status 2>/dev/null || true
 }
@@ -132,6 +249,10 @@ cmd_status() {
     echo ""
     echo "── Session Status ──"
     "$PYTHON" "$BOT" --status 2>/dev/null || echo "  No active session"
+    if [ "$(lane_count)" -gt 1 ]; then
+        echo ""
+        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+    fi
 }
 
 cmd_logs() {
@@ -143,7 +264,9 @@ cmd_logs_full() {
 }
 
 cmd_monitor() {
-    "$PYTHON" "$BOT" --monitor
+    local k="${1:-1}"
+    case "$k" in ''|*[!0-9]*) k=1 ;; esac
+    "$PYTHON" "$BOT" --monitor --lane "$k"
 }
 
 cmd_interactive() {
@@ -217,7 +340,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.9"
+    echo "  wolfctl v3.10"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -317,6 +440,7 @@ cmd_reset() {
         esac
     fi
     if [ "$was_running" = "1" ]; then
+        stop_all_lanes
         systemctl --user stop "$SERVICE"
         echo "Daemon stopped."
     fi
@@ -325,7 +449,7 @@ cmd_reset() {
     archive="$HOME/.wolfbet_autobot-$ts.db"
     mv "$db" "$archive"
     # Stale live-state would make --resume point at the old session number.
-    rm -f "$HOME/.wolfbet_autobot_live.json"
+    rm -f "$HOME/.wolfbet_autobot_live.json" "$HOME"/.wolfbet_autobot_live.lane*.json
     echo "Archived → $archive  ($sess sessions, $bets bets, $size)"
     echo "Config untouched. Next 'wolfctl start' begins fresh statistics."
     echo "Revisit anytime: wolfctl archives"
@@ -357,11 +481,19 @@ cmd_archives() {
 
 # v2.26.1 — BPS diagnostics.
 cmd_benchmark() {
-    local n="${1:-}"
+    # wolfctl benchmark [N] [--lanes M]
+    local n="" args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --lanes) args+=(--lanes "${2:-2}"); shift 2 || shift ;;
+            *[!0-9]*|'') shift ;;
+            *) n="$1"; shift ;;
+        esac
+    done
     if [ -z "$n" ]; then
-        "$PYTHON" "$BOT" --benchmark
+        "$PYTHON" "$BOT" --benchmark ${args[@]+"${args[@]}"}
     else
-        "$PYTHON" "$BOT" --benchmark "$n"
+        "$PYTHON" "$BOT" --benchmark "$n" ${args[@]+"${args[@]}"}
     fi
 }
 
@@ -660,8 +792,11 @@ cmd_update() {
     # disk and left the daemon on the pre-pull code until manual restart.
     # --resume preserves session state across the restart.
     if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+        stop_all_lanes
         systemctl --user restart "$SERVICE"
         sleep 1
+        # v3.10 — bring parallel lanes back on the new code too.
+        sync_lanes "$(lane_count)"
         if systemctl --user is-active --quiet "$SERVICE"; then
             echo "CLI daemon restarted (session auto-resumed)."
         else
@@ -874,7 +1009,8 @@ case "${1:-}" in
     stop)         cmd_stop ;;
     restart)      cmd_restart ;;
     status)       cmd_status ;;
-    monitor)      cmd_monitor ;;
+    monitor)      cmd_monitor "${2:-}" ;;
+    lanes)        cmd_lanes "${2:-}" ;;
     logs)         cmd_logs ;;
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;
@@ -893,7 +1029,7 @@ case "${1:-}" in
     backtest)     shift; cmd_backtest "$@" ;;
     preset)       cmd_preset "${2:-}" ;;
     cleanup)      cmd_cleanup "${2:-}" ;;
-    benchmark)    cmd_benchmark "${2:-}" ;;
+    benchmark)    shift; cmd_benchmark "$@" ;;
     diagnose)     cmd_diagnose ;;
     doctor)       shift; cmd_doctor "$@" ;;
     version|--version|-v) cmd_version ;;

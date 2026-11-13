@@ -116,4 +116,4 @@ def test_segment_elided_when_threshold_missing():
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.34.0"
+    assert wb.VERSION == "2.35.0"

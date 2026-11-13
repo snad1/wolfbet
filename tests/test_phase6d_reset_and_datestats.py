@@ -32,13 +32,13 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.34.0"
+    assert wb.VERSION == "2.35.0"
 
 
 def test_wolfctl_version_constant_3_9():
     src = _wolfctl_src()
-    assert re.search(r"^WOLFCTL_VERSION=3\.9\b", src, re.MULTILINE)
-    assert "Management Command v3.9" in src
+    assert re.search(r"^WOLFCTL_VERSION=3\.10\b", src, re.MULTILINE)
+    assert "Management Command v3.10" in src
 
 
 # ── wolfctl reset: archive-first design ─────────────────
@@ -208,7 +208,7 @@ def test_stats_filtered_limit_bumps_to_50():
 def test_argparse_has_since_until():
     src = inspect.getsource(wb)
     assert '"--since"' in src and '"--until"' in src
-    assert "cmd_stats(since=args.since, until=args.until)" in src
+    assert "cmd_stats(since=args.since, until=args.until, lane=args.lane)" in src
 
 
 def test_since_until_are_modifiers_not_commands():

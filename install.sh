@@ -128,6 +128,37 @@ EnvironmentFile=-${ENV_FILE}
 WantedBy=default.target
 SERVICEEOF
 
+# v2.35.0 — parallel lanes 2..N (`wolfctl lanes N`): same unit + --lane %i
+cat > "$SYSTEMD_DIR/${SERVICE_NAME}-lane@.service" << LANESERVICEEOF
+[Unit]
+Description=WolfBet AutoBot — parallel lane %i (CLI)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/wolfbet.py --resume --daemon --lane %i
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+Environment=HOME=${HOME}
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-${ENV_FILE}
+
+[Install]
+WantedBy=default.target
+LANESERVICEEOF
+
 # Telegram bot service
 cat > "$SYSTEMD_DIR/${TG_SERVICE_NAME}.service" << TGSERVICEEOF
 [Unit]

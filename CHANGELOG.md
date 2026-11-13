@@ -1,5 +1,40 @@
 # Changelog
 
+## CLI v2.35.0 / wolfctl v3.10 — parallel lanes: N independent sessions side by side (2026-11-13)
+
+Pipeline is one session with several bets in flight, and it is forced off for auto-bet games and non-Flat strategies. Lanes run several **independent sessions** at once. Each has its own Martingale chain, counters, stops, pauses and recurring / streak-reset cycle. Works with every strategy and with `dice-auto` / `limbo-auto`.
+
+### Architecture
+- One process per lane: `wolfbet.py --daemon --resume --lane K`. Lane 1 is unchanged (`wolfbet.service`, classic paths). Lanes 2..N run as `wolfbet-lane@K.service` with `~/.wolfbet_autobot_live.laneK.json` / `.laneK.pid`, and log lines are prefixed `[LK]`.
+- Lanes share the config file and the stats DB (WAL). Sessions get a `lane` column (migrated; older rows count as lane 1).
+- `_apply_lane` runs before any command, so `--status`, `--monitor` and `--stop` with `--lane K` act on that lane.
+
+### Split budget
+- Each lane's share = balance ÷ lanes at start. Equity = share + the lane's result across its sessions.
+- If the next bet would exceed the equity, the lane stops with `Lane budget exceeded (…)`. This is not on the restart whitelist, so it is a loss stop; the other lanes keep going.
+- The chain-depth warning uses the lane share.
+
+### Per-lane overrides
+- Config block `lanes: {count, overrides: {"K": {…}}}`. Set it with `config-set lanes=N`, `config-set laneK.key=value`, and `laneK.key=default` to remove an override. Values pass through the normal mutation validation.
+- Shared-only keys are refused per lane: api_key, currency, game, proxy, purge_days, db_write_mode, pipeline_depth.
+- `save_config` keeps the lanes block, and a lane ≥ 2 never writes the base config. Live reload (SIGHUP) merges the lane's overrides. A base `config-set` reloads all running lanes.
+- `config-show` lists the lane count and overrides.
+
+### Speed / throttling
+- **Soft pacing**: the rate-limit headers are account-wide. Below 10% of the quota left, each bet waits up to 250 ms, scaled by how close the quota is to empty. Lanes ease off together instead of all hitting the `remaining ≤ 2` pause. It is 0 above the mark, so a single lane is unaffected.
+- `/auto/start` is spaced across lanes by a shared `fcntl` lock file (`~/.wolfbet_autostart.lock`, `WOLFBET_AUTOSTART_LOCK`). Lane K's first start is staggered by `(K−1)·2s`. No-op with one lane.
+- `wolfctl benchmark [N] --lanes M`: read-only probe at 1..M concurrent clients (req/s, scaling, p50, 429s, quota headers) plus a recommended lane count.
+
+### wolfctl v3.10
+- `wolfctl lanes [N]` sets the count, restarts the running lanes so shares recompute, and enables + starts lanes 2..N (so they return after a reboot) / disables + stops the extra ones. With no N it shows the current lanes.
+- `start` / `stop` / `restart` / `update` / `reset` act on every lane. `status` adds a per-lane table (session, uptime, run time, profit, equity, bps, pace) with total bps. `monitor [K]` attaches to lane K.
+- `stats` / `analytics` accept `--lane K`. Session headers show `[LK]`, and analytics has a "By lane" table.
+- The lane systemd template is written by install.sh, and on demand by wolfctl.
+
+**Tests**: `tests/test_phase10_lanes.py` (33): paths and identity, override load / save / live-reload, config-set parsing and errors, budget stop and no restart, share init, chain warning, soft-pace curve, header → pace, cross-lane auto-start spacing (threads), single-lane no-op, lane recommendation, DB tag, stats / analytics lane filter, lanes status table, wolfctl / install wiring. Version pins bumped (CLI + wolfctl). **760 total passing.**
+
+`VERSION` `2.34.0` → `2.35.0`. `WOLFCTL_VERSION` `3.9` → `3.10`.
+
 ## CLI v2.34.0 — durations: range time span in stats/analytics + total run time in monitor (2026-11-13)
 
 Each session already showed its own uptime, but nothing showed how long a set of sessions covered. With recurring / streak-reset cycles, the monitor clock showed only the current short session and restarted every cycle.

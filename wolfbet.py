@@ -188,10 +188,15 @@ def _check_risky_config() -> list:
             "to establish a floor."
         )
     # Streak reset can't fire in the red — the balance caps the chain it can survive
-    depth = martingale_chain_depth(state.current_balance, state.base_bet, loss_mult)
+    # v2.35.0 — with lanes, each lane may only risk its share of the balance.
+    _bank = (state.current_balance / state.lanes_count
+             if getattr(state, "lanes_count", 1) > 1 else state.current_balance)
+    depth = martingale_chain_depth(_bank, state.base_bet, loss_mult)
     if sk in ("2", "7") and state.streak_reset_losses and state.max_loss is None and depth:
         warnings.append(
-            f"Streak reset with no `max_loss`: balance covers a {depth}-loss chain. "
+            f"Streak reset with no `max_loss`: "
+            f"{'lane share' if getattr(state, 'lanes_count', 1) > 1 else 'balance'} "
+            f"covers a {depth}-loss chain. "
             f"Loss {depth + 1} in a row ends the session with insufficient balance."
         )
     # Anti-Martingale without profit lock-in
@@ -294,6 +299,8 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.total_bets     = 0
         state.wins           = 0
         state.losses         = 0
+        # v2.35.0 — lane equity carries the lane's result across its sessions.
+        state.lane_run_profit += state.profit
         state.profit         = 0.0
         state.wagered        = 0.0
         state.current_streak = 0
@@ -790,9 +797,10 @@ DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolf
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
+_BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 — lane 1 paths
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.34.0"
+VERSION      = "2.35.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -809,6 +817,62 @@ _log_handler.setFormatter(logging.Formatter(
     "%(asctime)s  %(levelname)-7s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
 ))
 logger.addHandler(_log_handler)
+
+# ══════════════════════════════════════════════════════════
+#  PARALLEL LANES  (v2.35.0)
+# ══════════════════════════════════════════════════════════
+# A lane is one bot process with its own session, Martingale chain, counters,
+# stops and pauses. Lane 1 = the classic single bot (paths unchanged). Lanes
+# 2..N run side by side, share the DB + config file, and each may only use
+# balance ÷ lanes (split budget).
+LANES_MAX = 10
+AUTOSTART_LOCK_PATH = os.environ.get(
+    "WOLFBET_AUTOSTART_LOCK", os.path.expanduser("~/.wolfbet_autostart.lock"))
+# Never overridable per lane: identity, account, network and storage settings.
+_LANE_FORBIDDEN_KEYS = {
+    "api_key", "currency", "game", "proxy", "purge_days", "db_write_mode",
+    "pipeline_depth",
+}
+
+
+def _lane_path(path: str, lane: int) -> str:
+    """'~/.wolfbet_autobot_live.json' + lane 2 → '~/.wolfbet_autobot_live.lane2.json'."""
+    if lane <= 1:
+        return path
+    root, ext = os.path.splitext(path)
+    return f"{root}.lane{lane}{ext}"
+
+
+def _apply_lane(lane: int) -> None:
+    """Switch this process to lane `lane`: state/pid paths + log prefix."""
+    global STATE_PATH, PID_PATH
+    lane = 1 if lane is None else int(lane)
+    if not 1 <= lane <= LANES_MAX:
+        raise ValueError(f"--lane must be 1-{LANES_MAX}, got {lane}")
+    state.lane = lane
+    if lane > 1:
+        STATE_PATH = _lane_path(_BASE_STATE_PATH, lane)
+        PID_PATH = _lane_path(_BASE_PID_PATH, lane)
+        _log_handler.setFormatter(logging.Formatter(
+            f"%(asctime)s  %(levelname)-7s  [L{lane}] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"))
+
+
+def _lane_overrides(data: dict, lane: int) -> dict:
+    """Per-lane override dict from a raw config dict (lane 1 has none)."""
+    if lane <= 1:
+        return {}
+    ov = ((data.get("lanes") or {}).get("overrides") or {}).get(str(lane)) or {}
+    return {k: v for k, v in ov.items() if k not in _LANE_FORBIDDEN_KEYS}
+
+
+def _lanes_count(data: dict) -> int:
+    try:
+        n = int((data.get("lanes") or {}).get("count") or 1)
+    except (TypeError, ValueError):
+        n = 1
+    return max(1, min(LANES_MAX, n))
+
 
 CURRENCIES  = ["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
 
@@ -847,7 +911,20 @@ def _mask_key(key: str) -> str:
     return f"{key[:8]}…{key[-4:]}"
 
 def save_config():
+    if getattr(state, "lane", 1) > 1:
+        # v2.35.0 — a lane's state holds base + its overrides; writing it back
+        # would leak the overrides into the shared base config.
+        logger.info("save_config skipped on lane %d (base config is lane 1's)", state.lane)
+        return
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
+    # v2.35.0 — keep the lanes block (count + per-lane overrides) intact.
+    try:
+        with open(CONFIG_PATH) as f:
+            _old = json.load(f)
+        if "lanes" in _old:
+            data["lanes"] = _old["lanes"]
+    except (OSError, ValueError):
+        pass
     # v2.28.2 — streak-tuple fields round-trip as "N:X" strings (or null when
     # disabled). Same encoding presets already use — one grammar, no forks.
     for k in _STREAK_TUPLE_KEYS:
@@ -876,6 +953,13 @@ def load_config() -> bool:
         for k in _STREAK_TUPLE_KEYS:
             if k in data:
                 setattr(state, k, parse_streak_delay(data[k]))
+        # v2.35.0 — lane count + this lane's overrides on top of the base.
+        state.lanes_count = _lanes_count(data)
+        for k, v in _lane_overrides(data, state.lane).items():
+            if k in _STREAK_TUPLE_KEYS:
+                setattr(state, k, parse_streak_delay(v))
+            elif k in _CONFIG_KEYS:
+                setattr(state, k, v)
         # Environment variable override for API key (ISO 27001: no hardcoded secrets)
         env_key = os.environ.get("WOLFBET_API_KEY")
         if env_key:
@@ -983,6 +1067,7 @@ def _reload_live_config() -> dict:
     except Exception as e:
         logger.warning("live reload: failed to parse config: %s", e)
         return {}
+    data = {**data, **_lane_overrides(data, getattr(state, "lane", 1))}
 
     applied = {}
     skipped_unsafe = []
@@ -1194,6 +1279,12 @@ class BotState:
         self.session_start  = time.time()
         # v2.34.0 — bot start; never reset by recurring / streak-reset cycles
         self.run_started_at = time.time()
+        # v2.35.0 — parallel lanes (see _apply_lane). lane_share None = no split.
+        self.lane            = 1
+        self.lanes_count     = 1
+        self.lane_share      : Optional[float] = None
+        self.lane_run_profit = 0.0
+        self.soft_pace_delay = 0.0
         # v2.28.4 — when a session enters `_reset_session_for_recurring`, this
         # is set to time.time() BEFORE the sleep so uptime + ended_at freeze
         # at the real bet-end. Cleared right before the new session's
@@ -1404,11 +1495,72 @@ def _update_rate_limit(resp):
         with state.lock:
             state.rate_limit     = limit
             state.rate_remaining = remaining
+            state.soft_pace_delay = soft_pace_delay(remaining, limit)
             if remaining <= 2 and not state.rate_wait:
                 state.rate_wait      = True
                 state.rate_backoff   = 2.0   # start probing at 2s
     except Exception:
         pass
+
+SOFT_PACE_LOW_WATER = 0.10   # start easing off below 10% of the quota left
+SOFT_PACE_MAX_DELAY = 0.25   # seconds per bet when the quota is nearly gone
+
+
+def soft_pace_delay(remaining: int, limit: int) -> float:
+    """v2.35.0 — per-bet delay that rises smoothly as the shared quota runs out.
+
+    The rate-limit headers are account-wide, so every lane sees the same
+    `remaining`. Above the low-water mark this is 0, so a single lane never
+    slows down. Below it, lanes ease off together instead of all hitting
+    the hard 'remaining <= 2 → pause' cliff at the same instant.
+    """
+    try:
+        remaining, limit = int(remaining), int(limit)
+    except (TypeError, ValueError):
+        return 0.0
+    low = max(5, int(limit * SOFT_PACE_LOW_WATER))
+    if limit <= 0 or remaining >= low:
+        return 0.0
+    frac = max(0.0, min(1.0, 1.0 - remaining / low))
+    return round(SOFT_PACE_MAX_DELAY * frac, 4)
+
+
+def _autostart_global_pace() -> None:
+    """v2.35.0 — space /auto/start calls across ALL lane processes.
+
+    Each lane restarts its auto-cycle every session. A shared lock file holds
+    the last start time so lanes never fire /auto/start in the same instant
+    (which only buys 429s). No-op for a single lane or without fcntl.
+    """
+    if getattr(state, "lanes_count", 1) <= 1:
+        return
+    try:
+        import fcntl
+    except ImportError:          # pragma: no cover — non-POSIX
+        return
+    try:
+        fd = os.open(AUTOSTART_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        raw = os.pread(fd, 64, 0).decode(errors="ignore").strip()
+        try:
+            last = float(raw) if raw else 0.0
+        except ValueError:
+            last = 0.0
+        wait = last + AUTO_START_MIN_INTERVAL - time.time()
+        if wait > 0:
+            time.sleep(min(wait, AUTO_START_MIN_INTERVAL))
+        stamp = f"{time.time():.3f}".encode()
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, stamp, 0)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
 
 def api_get_balances():
     r = _http_session.get(f"{API_BASE}/v1/user/balances", headers=_headers("dice"), timeout=12)
@@ -1523,6 +1675,7 @@ def api_auto_start() -> bool:
     body_str = json.dumps(payload, separators=(",", ":"))
     backoffs = [1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 25.0, 60.0]
     for attempt in range(len(backoffs) + 1):
+        _autostart_global_pace()
         state._auto_start_last_time = time.monotonic()
         try:
             t0 = time.time()
@@ -1828,7 +1981,33 @@ def should_stop() -> tuple:
     if (n and state.current_streak == 1
             and state.last_broken_loss_streak >= n and p >= 0):
         return True, f"{STREAK_RESET_REASON}: {state.last_broken_loss_streak} losses then win"
+    # v2.35.0 — split budget: a lane may only risk its share of the balance.
+    eq = lane_equity()
+    if eq is not None and state.current_bet > eq:
+        return True, (f"{LANE_BUDGET_REASON} (next bet {state.current_bet:.8f}, "
+                      f"lane equity {eq:.8f})")
     return False, ""
+
+
+LANE_BUDGET_REASON = "Lane budget exceeded"
+
+
+def lane_equity():
+    """Money this lane may still risk: share + its result so far. None = no split."""
+    if state.lane_share is None:
+        return None
+    return state.lane_share + state.lane_run_profit + state.profit
+
+
+def _init_lane_budget() -> None:
+    """v2.35.0 — fix this lane's share of the balance at bot start."""
+    if state.lanes_count > 1 and state.current_balance > 0:
+        state.lane_share = state.current_balance / state.lanes_count
+        logger.warning("LANE %d/%d  share=%.8f of balance %.8f",
+                       state.lane, state.lanes_count, state.lane_share,
+                       state.current_balance)
+    else:
+        state.lane_share = None
 
 # ══════════════════════════════════════════════════════════
 #  BETTING LOOP  (runs in background thread)
@@ -1931,6 +2110,9 @@ def betting_loop():
         # ── bet pacing delay ───────────────────────────────
         if state.bet_delay > 0:
             time.sleep(state.bet_delay)
+        # v2.35.0 — ease off as the shared rate-limit quota runs out
+        if state.soft_pace_delay > 0:
+            time.sleep(state.soft_pace_delay)
 
         # ── place bet ────────────────────────────────────
         state.status = f"Placing bet #{state.total_bets + 1}…"
@@ -2402,6 +2584,8 @@ def pipelined_betting_loop(depth: int):
 
             if state.bet_delay > 0:
                 time.sleep(state.bet_delay)
+            if state.soft_pace_delay > 0:
+                time.sleep(state.soft_pace_delay)
 
             payload = _prepare_next_bet_flat()
 
@@ -2736,12 +2920,13 @@ def _db_start_session() -> int:
     c = conn.cursor()
     c.execute("""
         INSERT INTO sessions
-            (started_at, currency, game, strategy, base_bet, multiplier, start_balance)
-        VALUES (?,?,?,?,?,?,?)
+            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane)
+        VALUES (?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
         state.currency, state.game, state.strategy,
         state.base_bet, state.multiplier, state.start_balance,
+        getattr(state, "lane", 1),
     ))
     conn.commit()
     sid = c.lastrowid
@@ -3100,6 +3285,12 @@ def _save_state_file():
             ),
             # v2.34.0 — wall-clock time since bot start (pauses included)
             "run_uptime_sec": int(time.time() - state.run_started_at),
+            # v2.35.0 — parallel lanes + shared throttle state
+            "lane": state.lane,
+            "lanes_count": state.lanes_count,
+            "lane_share": state.lane_share,
+            "lane_equity": lane_equity(),
+            "soft_pace_delay": state.soft_pace_delay,
             "pause_remaining_sec": (
                 max(0, int(state.session_pause_total - (time.time() - state.session_pause_started_at)))
                 if state.session_pause_started_at else 0
@@ -5137,6 +5328,65 @@ def cmd_monitor():
 # ══════════════════════════════════════════════════════════
 #  --status COMMAND
 # ══════════════════════════════════════════════════════════
+def _read_lane_states() -> list:
+    """v2.35.0 — [(lane, state-dict | None, alive)] for lanes 1..LANES_MAX that have a state file."""
+    out = []
+    for k in range(1, LANES_MAX + 1):
+        path = _lane_path(_BASE_STATE_PATH, k)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            out.append((k, None, False))
+            continue
+        alive = False
+        try:
+            if d.get("pid"):
+                os.kill(int(d["pid"]), 0)
+                alive = True
+        except (OSError, ValueError, TypeError):
+            pass
+        out.append((k, d, alive))
+    return out
+
+
+def cmd_lanes_status():
+    """v2.35.0 — one row per lane + totals (wolfctl status when lanes > 1)."""
+    rows = _read_lane_states()
+    if not rows:
+        console.print("[yellow]No lane state files found.[/]")
+        return
+    t = Table(title="Parallel lanes", title_style="bold cyan", box=box.SIMPLE)
+    for col in ("Lane", "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps", "Pace"):
+        t.add_column(col, justify="right" if col not in ("State",) else "left")
+    tot_bps = tot_profit = 0.0
+    for k, d, alive in rows:
+        if d is None:
+            t.add_row(str(k), "[red]unreadable[/]", *["—"] * 7)
+            continue
+        p = float(d.get("profit", 0) or 0)
+        bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
+        eq = d.get("lane_equity")
+        tot_profit += p
+        tot_bps += bps
+        st = "[green]LIVE[/]" if alive else "[red]STOPPED[/]"
+        if alive and int(d.get("pause_remaining_sec", 0) or 0) > 0:
+            st = "[cyan]PAUSED[/]"
+        t.add_row(str(k), st, f"#{d.get('session_id', '?')}",
+                  str(timedelta(seconds=int(d.get("uptime_sec", 0) or 0))),
+                  _fmt_duration(d.get("run_uptime_sec")) if d.get("run_uptime_sec") is not None else "—",
+                  f"[{'green' if p >= 0 else 'red'}]{p:+.8f}[/]",
+                  f"{eq:.8f}" if isinstance(eq, (int, float)) else "—",
+                  f"{bps:.1f}",
+                  f"{float(d.get('soft_pace_delay', 0) or 0) * 1000:.0f}ms")
+    console.print(t)
+    console.print(f"  [dim]Total:[/] [bold]{tot_bps:.1f}[/] bps   "
+                  f"[dim]session P/L[/] [{'green' if tot_profit >= 0 else 'red'}]{tot_profit:+.8f}[/]   "
+                  f"[dim]lanes live[/] {sum(1 for _, _, a in rows if a)}/{len(rows)}")
+
+
 def cmd_status():
     if not os.path.exists(STATE_PATH):
         console.print("[yellow]No running session found.[/]")
@@ -5456,6 +5706,21 @@ def cmd_config_show():
             continue
         tbl.add_row(field, _fmt_config_value(field, val), desc)
     console.print(tbl)
+    # v2.35.0 — parallel lanes: count + per-lane overrides
+    try:
+        with open(CONFIG_PATH) as f:
+            _raw = json.load(f)
+    except (OSError, ValueError):
+        _raw = {}
+    n_lanes = _lanes_count(_raw)
+    console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]"
+                  + ("  [dim](each lane may use balance ÷ lanes)[/]" if n_lanes > 1 else ""))
+    for lane in range(2, LANES_MAX + 1):
+        ov = _lane_overrides(_raw, lane)
+        if ov:
+            parts = ", ".join(f"{k}={_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}"
+                              for k, v in sorted(ov.items()))
+            console.print(f"  [magenta]lane{lane}[/] overrides: {parts}")
     try:
         st = os.stat(CONFIG_PATH)
         mode = oct(st.st_mode & 0o777)
@@ -5488,6 +5753,138 @@ def _parse_config_set_pairs(pairs: list) -> dict:
     return out
 
 
+_LANE_UNSET_VALUES = ("default", "unset", "inherit")
+
+
+def _split_lane_pairs(pairs: list):
+    """v2.35.0 — split config-set pairs into (base, {lane: [pairs]}, lanes_count|None)."""
+    import re as _re
+    base, per_lane, count = [], {}, None
+    for pair in pairs:
+        if "=" not in pair:
+            base.append(pair)          # _parse_config_set_pairs reports it
+            continue
+        key, val = pair.split("=", 1)
+        key = key.strip().lower()
+        m = _re.match(r"^lane(\d+)\.(.+)$", key)
+        if key == "lanes":
+            try:
+                count = int(val.strip())
+            except ValueError:
+                raise ValueError(f"lanes must be an integer 1-{LANES_MAX}, got {val!r}")
+            if not 1 <= count <= LANES_MAX:
+                raise ValueError(f"lanes must be 1-{LANES_MAX}, got {count}")
+        elif m:
+            lane = int(m.group(1))
+            if not 2 <= lane <= LANES_MAX:
+                raise ValueError(f"lane overrides are for lanes 2-{LANES_MAX} "
+                                 f"(lane 1 uses the base config), got lane{lane}")
+            per_lane.setdefault(lane, []).append(f"{m.group(2)}={val}")
+        else:
+            base.append(pair)
+    return base, per_lane, count
+
+
+def _write_config_raw(data: dict) -> None:
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _encode_config_value(k, v):
+    if k in _STREAK_TUPLE_KEYS:
+        return f"{v[0]}:{v[1]}" if v and v[0] > 0 else None
+    return v
+
+
+def _lane_override_changes(lane: int, lane_pairs: list):
+    """Validate laneK.* pairs through the normal mutation path.
+
+    Returns (sets, removals): sets = {key: encoded value} including derived
+    fields the mutation changes (e.g. bet_value after multiplier); removals =
+    keys whose override goes away (value default / unset / inherit).
+    """
+    removals = set()
+    to_set = []
+    for pair in lane_pairs:
+        k, v = pair.split("=", 1)
+        canon = _TWEAK_ALIAS.get(k.strip().lower(), k.strip().lower())
+        if canon in _LANE_FORBIDDEN_KEYS:
+            raise ValueError(f"{canon} can't differ per lane (shared by all lanes)")
+        if v.strip().lower() in _LANE_UNSET_VALUES:
+            removals.add(_TWEAK_ALIAS.get(k.strip().lower(), k.strip().lower()))
+        else:
+            to_set.append(pair)
+    parsed = _parse_config_set_pairs(to_set) if to_set else {}
+    for k in list(parsed) + list(removals):
+        if k in _LANE_FORBIDDEN_KEYS:
+            raise ValueError(f"{k} can't differ per lane (shared by all lanes)")
+    if not load_config():
+        raise ValueError("No config saved yet — run the wizard first.")
+    keys = list(_CONFIG_KEYS) + list(_STREAK_TUPLE_KEYS)
+    before = {k: getattr(state, k, None) for k in keys}
+    _apply_mutation(parsed)
+    changes = {k: _encode_config_value(k, getattr(state, k, None))
+               for k in keys if getattr(state, k, None) != before[k]}
+    for k in parsed:   # same value as base still pins the override
+        changes.setdefault(k, _encode_config_value(k, getattr(state, k, None)))
+    return changes, removals
+
+
+def _signal_lane_daemons(lanes=None) -> int:
+    """SIGHUP every running lane daemon (or just `lanes`). Returns count signalled."""
+    n = 0
+    for k in (lanes or range(1, LANES_MAX + 1)):
+        try:
+            with open(_lane_path(_BASE_PID_PATH, k)) as f:
+                os.kill(int(f.read().strip()), signal.SIGHUP)
+            n += 1
+        except (OSError, ValueError):
+            continue
+    return n
+
+
+def _cmd_config_set_lanes(per_lane: dict, count) -> None:
+    try:
+        with open(CONFIG_PATH) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        console.print("[yellow]No config saved yet — run the wizard first.[/]")
+        sys.exit(1)
+    lanes = raw.setdefault("lanes", {})
+    overrides = lanes.setdefault("overrides", {})
+    if count is not None:
+        old = lanes.get("count", 1)
+        lanes["count"] = count
+        console.print(f"  [yellow]lanes[/]: [dim]{old}[/]  →  [green]{count}[/]")
+    for lane, lane_pairs in sorted(per_lane.items()):
+        try:
+            sets, removals = _lane_override_changes(lane, lane_pairs)
+        except ValueError as e:
+            console.print(f"[red]Invalid lane{lane} override:[/] {e}")
+            sys.exit(2)
+        ov = overrides.setdefault(str(lane), {})
+        for k in sorted(removals):
+            ov.pop(k, None)
+            console.print(f"  [yellow]lane{lane}.{k}[/]: [dim]override removed (uses base)[/]")
+        for k, v in sets.items():
+            ov[k] = v
+            console.print(f"  [yellow]lane{lane}.{k}[/]  →  "
+                          f"[green]{_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}[/]")
+        if not ov:
+            overrides.pop(str(lane), None)
+    _write_config_raw(raw)
+    console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
+    if per_lane:
+        n = _signal_lane_daemons(sorted(per_lane))
+        if n:
+            console.print(f"[dim]{n} running lane(s) reloaded live config "
+                          "(restart-only fields apply on the next start).[/]")
+    if count is not None:
+        console.print(f"[dim]Run [cyan]wolfctl lanes {count}[/] to start/stop lane processes "
+                      "(restart running lanes so each recomputes its budget share).[/]")
+
+
 def cmd_config_set(pairs: list):
     """Apply KEY=VALUE mutations to the saved config, then persist. No wizard."""
     # Security: reject api_key — credentials belong in env vars, not shell history.
@@ -5497,6 +5894,18 @@ def cmd_config_set(pairs: list):
             console.print("[dim]  Set the WOLFBET_API_KEY environment variable instead "
                           "(never in shell history / process args).[/]")
             sys.exit(2)
+
+    # v2.35.0 — lanes=N and laneK.key=value write the lanes block directly.
+    try:
+        pairs, per_lane, lanes_count = _split_lane_pairs(pairs)
+    except ValueError as e:
+        console.print(f"[red]Invalid --config-set argument:[/] {e}")
+        sys.exit(2)
+    if per_lane or lanes_count is not None:
+        console.print(Rule("[bold cyan]Lane config updated[/]"))
+        _cmd_config_set_lanes(per_lane, lanes_count)
+        if not pairs:
+            return
 
     try:
         parsed = _parse_config_set_pairs(pairs)
@@ -5570,6 +5979,10 @@ def cmd_config_set(pairs: list):
     except (OSError, ValueError):
         console.print("[dim]Daemon PID stale; changes apply on next "
                       "[cyan]wolfctl start[/].[/]")
+    # v2.35.0 — the base config is shared: reload lanes 2..N too.
+    n_lanes = _signal_lane_daemons(range(2, LANES_MAX + 1))
+    if n_lanes:
+        console.print(f"[dim]{n_lanes} more lane(s) reloaded live config.[/]")
 
 
 # ══════════════════════════════════════════════════════════
@@ -5609,7 +6022,96 @@ def cmd_cleanup(days=None):
 _percentile = percentile
 
 
-def cmd_benchmark(n=None):
+def _bench_lanes(n: int, lanes: int) -> dict:
+    """v2.35.0 — `lanes` concurrent clients each fire `n` read-only GETs.
+
+    Each client gets its own requests.Session (like separate lane processes).
+    Returns {"rps": aggregate req/s, "p50": ms, "ok": int, "total": int,
+    "limit": header|None, "remaining_min": header|None, "s429": int}.
+    """
+    import requests as _rq
+    url = f"{API_BASE}/v1/user/balances"
+    lock = threading.Lock()
+    out = {"samples": [], "ok": 0, "s429": 0, "limit": None, "remaining_min": None}
+
+    def _client():
+        sess = _rq.Session()
+        sess.proxies.update(getattr(_http_session, "proxies", {}) or {})
+        for _ in range(n):
+            t0 = time.time()
+            try:
+                r = sess.get(url, headers=_headers("dice"), timeout=15)
+            except Exception:
+                continue
+            ms = (time.time() - t0) * 1000
+            with lock:
+                out["samples"].append(ms)
+                out["ok"] += r.status_code == 200
+                out["s429"] += r.status_code == 429
+                lim = r.headers.get("x-ratelimit-limit")
+                rem = r.headers.get("x-ratelimit-remaining")
+                if lim is not None:
+                    out["limit"] = lim
+                if rem is not None:
+                    try:
+                        rv = int(rem)
+                        cur = out["remaining_min"]
+                        out["remaining_min"] = rv if cur is None else min(cur, rv)
+                    except ValueError:
+                        pass
+
+    t_start = time.time()
+    threads = [threading.Thread(target=_client) for _ in range(lanes)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    wall = max(1e-6, time.time() - t_start)
+    samples = sorted(out["samples"])
+    return {"rps": len(samples) / wall,
+            "p50": _percentile(samples, 0.50) if samples else 0.0,
+            "ok": out["ok"], "total": n * lanes, "s429": out["s429"],
+            "limit": out["limit"], "remaining_min": out["remaining_min"]}
+
+
+def recommend_lanes(base_rps: float, rows: dict) -> int:
+    """Highest lane count whose throughput still gains ≥ 30% per added lane
+    over the previous count, with no 429s. Pure helper (tested)."""
+    best, prev = 1, base_rps
+    for k in sorted(rows):
+        r = rows[k]
+        if r["s429"] or r["rps"] < prev * 1.3:
+            break
+        best, prev = k, r["rps"]
+    return best
+
+
+def cmd_benchmark_lanes(n: int, lanes: int):
+    """Probe 1..N concurrent clients and recommend a lane count (no bets)."""
+    from rich.table import Table
+    lanes = max(2, min(LANES_MAX, int(lanes)))
+    console.print(f"[dim]Lane benchmark: 1..{lanes} concurrent clients × {n} × "
+                  f"GET /v1/user/balances (read-only, no bets) …[/]")
+    rows = {}
+    for k in range(1, lanes + 1):
+        rows[k] = _bench_lanes(n, k)
+    tbl = Table(title="Concurrent clients", title_style="bold cyan")
+    for col in ("lanes", "req/s", "×1 lane", "p50 ms", "ok", "429", "limit", "min remaining"):
+        tbl.add_column(col, justify="right")
+    base = rows[1]["rps"] or 1e-6
+    for k, r in rows.items():
+        tbl.add_row(str(k), f"{r['rps']:.1f}", f"{r['rps'] / base:.2f}×", f"{r['p50']:.0f}",
+                    f"{r['ok']}/{r['total']}", str(r["s429"]),
+                    str(r["limit"] or "—"), str(r["remaining_min"] if r["remaining_min"] is not None else "—"))
+    console.print(tbl)
+    rec = recommend_lanes(rows[1]["rps"], {k: v for k, v in rows.items() if k > 1})
+    console.print(f"\n[bold]Recommended lanes:[/] [bold magenta]{rec}[/]  "
+                  "[dim](more lanes stop adding speed or start getting throttled)[/]")
+    console.print("[dim]Read-only endpoint; the bet endpoint has its own quota. "
+                  "Confirm live: `wolfctl lanes N` then compare total bps in `wolfctl status`.[/]")
+
+
+def cmd_benchmark(n=None, lanes=None):
     """Fire N read-only API requests and report latency distribution.
 
     Uses GET /v1/user/balances via the same _http_session as production —
@@ -5622,6 +6124,8 @@ def cmd_benchmark(n=None):
     if not load_config():
         console.print("[red]No config saved yet — run the wizard first.[/]")
         sys.exit(1)
+    if lanes and int(lanes) > 1:
+        return cmd_benchmark_lanes(n, lanes)
     url = f"{API_BASE}/v1/user/balances"
     console.print(
         f"[dim]Benchmarking {n} × GET /v1/user/balances "
@@ -5899,6 +6403,28 @@ def _analytics_by_game(where: str = "", params=()) -> list:
             for r in rows]
 
 
+def _analytics_by_lane(where: str = "", params=()) -> list:
+    """v2.35.0 — aggregate sessions grouped by parallel lane."""
+    conn = _db_conn()
+    try:
+        rows = conn.execute(f"""
+            SELECT 'Lane ' || COALESCE(lane, 1)  AS lane,
+                   COUNT(*)                     AS sessions,
+                   COALESCE(SUM(total_bets), 0) AS bets,
+                   COALESCE(SUM(wins), 0)       AS wins,
+                   COALESCE(SUM(losses), 0)     AS losses,
+                   COALESCE(SUM(profit), 0)     AS profit,
+                   COALESCE(SUM(wagered), 0)    AS wagered
+            FROM sessions{where}
+            GROUP BY COALESCE(lane, 1)
+            ORDER BY COALESCE(lane, 1)
+        """, tuple(params)).fetchall()
+    finally:
+        conn.close()
+    return [dict(zip(("lane", "sessions", "bets", "wins", "losses", "profit", "wagered"), r))
+            for r in rows]
+
+
 def _analytics_by_strategy(where: str = "", params=()) -> list:
     """Aggregate sessions grouped by strategy (optionally date-windowed)."""
     conn = _db_conn()
@@ -5989,14 +6515,15 @@ def _print_top_sessions_table(title: str, rows: list):
     console.print(t)
 
 
-def cmd_analytics(since: str = None, until: str = None):
+def cmd_analytics(since: str = None, until: str = None, lane: int = None):
     """Analytics report — aggregates over all saved sessions, optionally
     restricted to a started_at date window (v2.31.0)."""
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found — run a session first.[/]")
         return
+    migrate_db(DB_PATH)  # v2.35.0 — lane column on DBs the bot hasn't opened yet
     try:
-        where, wparams, wlabel = _stats_date_window(since, until)
+        where, wparams, wlabel = _stats_date_window(since, until, lane)
     except ValueError as e:
         console.print(f"[red]{e}[/]")
         return
@@ -6039,6 +6566,9 @@ def cmd_analytics(since: str = None, until: str = None):
 
     _print_analytics_table("[bold]🎲 By game[/]",     _analytics_by_game(where, wparams),     "game",     "Game")
     _print_analytics_table("[bold]🎯 By strategy[/]", _analytics_by_strategy(where, wparams), "strategy", "Strategy")
+    _by_lane = _analytics_by_lane(where, wparams)
+    if len(_by_lane) > 1:
+        _print_analytics_table("[bold]🛣 By lane[/]", _by_lane, "lane", "Lane")
 
     _print_top_sessions_table("[bold]🏆 Top 5 best sessions[/]",
                               _analytics_top_sessions("profit_desc", 5, where, wparams))
@@ -6093,7 +6623,7 @@ def _sessions_time_span(conn, where: str = "", params=()):
     return first, last, max(0.0, (last - first).total_seconds()), bet
 
 
-def _stats_date_window(since: str = None, until: str = None):
+def _stats_date_window(since: str = None, until: str = None, lane: int = None):
     """v2.30.9 — build an optional date-window clause for the sessions table.
 
     `since`/`until` accept bare dates (YYYY-MM-DD) or full ISO timestamps.
@@ -6112,11 +6642,19 @@ def _stats_date_window(since: str = None, until: str = None):
         u = until if len(until) > 10 else until + "T23:59:59.999999"
         conds.append("started_at <= ?")
         params.append(u)
+    if lane:
+        # v2.35.0 — rows from before lanes existed count as lane 1
+        conds.append("COALESCE(lane, 1) = ?")
+        params.append(int(lane))
     if not conds:
         return "", [], ""
     clause = " WHERE " + " AND ".join(conds)
-    label = (f"  [{(since or '…').replace('T', ' ')} → "
-             f"{(until or '…').replace('T', ' ')}]")
+    label = ""
+    if since or until:
+        label = (f"  [{(since or '…').replace('T', ' ')} → "
+                 f"{(until or '…').replace('T', ' ')}]")
+    if lane:
+        label += f"  \\[lane {int(lane)}]"   # escaped: Rich would eat [lane N] as a tag
     return clause, params, label
 
 
@@ -6139,13 +6677,14 @@ def _normalize_window_bound(value):
     return v
 
 
-def cmd_stats(since: str = None, until: str = None):
+def cmd_stats(since: str = None, until: str = None, lane: int = None):
     """Show session statistics, optionally filtered to a date window."""
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
+    migrate_db(DB_PATH)  # v2.35.0 — lane column on DBs the bot hasn't opened yet
     try:
-        where, params, window_label = _stats_date_window(since, until)
+        where, params, window_label = _stats_date_window(since, until, lane)
     except ValueError as e:
         console.print(f"[red]{e}[/]")
         return
@@ -6164,7 +6703,8 @@ def cmd_stats(since: str = None, until: str = None):
                COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
                COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
                COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
-               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
+               COALESCE(lane, 1)
         FROM sessions{where} ORDER BY id DESC LIMIT ?
     """, (*params, limit)).fetchall()
 
@@ -6175,7 +6715,8 @@ def cmd_stats(since: str = None, until: str = None):
         sid, started, ended, cur, strat, mult, base, bets, wins, losses, \
             profit, wagered, start_bal, end_bal, mws, mls, \
             hi_bal, lo_bal, hi_win, big_loss, \
-            bpm, bps, s_peak_bps, s_low_bps, s_peak_bpm, s_low_bpm = r
+            bpm, bps, s_peak_bps, s_low_bps, s_peak_bpm, s_low_bpm, s_lane = r
+        lane_tag = f" [magenta]\\[L{s_lane}][/]" if s_lane and s_lane > 1 else ""
         bets = bets or 0
         wins = wins or 0
         losses = losses or 0
@@ -6217,7 +6758,7 @@ def cmd_stats(since: str = None, until: str = None):
         except Exception:
             pass
 
-        console.print(f"  [bold cyan]Session #{sid}[/]  [dim]{(started or '?').replace('T', ' ')} → {(ended or 'running').replace('T', ' ')}[/]{uptime_str}")
+        console.print(f"  [bold cyan]Session #{sid}[/]{lane_tag}  [dim]{(started or '?').replace('T', ' ')} → {(ended or 'running').replace('T', ' ')}[/]{uptime_str}")
         console.print(f"    [dim]Currency:[/] {cur or '?'}  [dim]Strategy:[/] {strat or '?'}  [dim]Mult:[/] {mult}x  [dim]Base:[/] {base:.8f}")
         console.print(f"    [dim]Bets:[/] {bets}  [dim]W:[/] [green]{wins}[/]  [dim]L:[/] [red]{losses}[/]  [dim]WR:[/] {wr}")
         console.print(f"    [dim]Speed:[/] {bps:.1f} avg/s  {bpm:.0f} avg/m  [dim]BPS:[/] {s_low_bps}-{s_peak_bps}/s  [dim]BPM:[/] {s_low_bpm}-{s_peak_bpm}/m")
@@ -6258,7 +6799,7 @@ def cmd_stats(since: str = None, until: str = None):
     avg_pc = "green" if avg_pnl >= 0 else "red"
     avg_ps = "+" if avg_pnl >= 0 else ""
 
-    console.print(Rule(f"[bold cyan]{'Range' if (since or until) else 'All-Time'} Totals[/]{window_label}"))
+    console.print(Rule(f"[bold cyan]{'Range' if (since or until or lane) else 'All-Time'} Totals[/]{window_label}"))
     rng = (f"  [dim]({span_first.isoformat(' ', 'seconds')} → "
            f"{span_last.isoformat(' ', 'seconds')})[/]") if span_first else ""
     console.print(f"  [dim]Sessions:[/]      {sessions}{rng}")
@@ -6602,6 +7143,8 @@ def main():
     parser.add_argument("--monitor", action="store_true", help="Attach live TUI to a running daemon session")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--status",  action="store_true", help="Show status of running session")
+    group.add_argument("--lanes-status", action="store_true",
+                       help="Show one row per parallel lane + totals")
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
     group.add_argument("--stats",   action="store_true", help="Show recent 20 sessions in detail")
@@ -6650,6 +7193,11 @@ def main():
                         help="Backtest data source: simulate N synthetic bets (default 1000)")
     parser.add_argument("--seed", type=int, metavar="N",
                         help="RNG seed for --simulate (deterministic reproducibility)")
+    parser.add_argument("--lane", type=int, metavar="K", default=None,
+                        help=f"Parallel lane to run / inspect (1-{LANES_MAX}; default 1). "
+                             "With --stats/--analytics: only that lane's sessions")
+    parser.add_argument("--lanes", type=int, metavar="N", default=None,
+                        help="With --benchmark: probe with N concurrent clients")
     parser.add_argument("--pipeline", type=int, metavar="N", default=None,
                         help="Pipeline depth (Flat-only, 1-8). 1 = serial (default). "
                              "Non-Flat strategies and auto-bet games are auto-coerced to 1.")
@@ -6657,6 +7205,14 @@ def main():
                         help="Enable debug logging (dev mode)")
 
     args = parser.parse_args()
+
+    # v2.35.0 — lane identity first: every command below (status, monitor,
+    # stop, the daemon itself) then reads/writes this lane's state + pid files.
+    try:
+        _apply_lane(args.lane)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        sys.exit(2)
 
     # Pipeline depth CLI override — applies after config/preset load below.
     if args.pipeline is not None:
@@ -6693,6 +7249,9 @@ def main():
     if args.status:
         cmd_status()
         return
+    if args.lanes_status:
+        cmd_lanes_status()
+        return
     if args.stop:
         cmd_stop()
         return
@@ -6700,10 +7259,10 @@ def main():
         cmd_list_presets()
         return
     if args.stats:
-        cmd_stats(since=args.since, until=args.until)
+        cmd_stats(since=args.since, until=args.until, lane=args.lane)
         return
     if args.analytics:
-        cmd_analytics(since=args.since, until=args.until)
+        cmd_analytics(since=args.since, until=args.until, lane=args.lane)
         return
     if args.last_bets:
         cmd_last_bets(args.last_bets)
@@ -6723,7 +7282,7 @@ def main():
         cmd_cleanup(None if args.cleanup == -1 else args.cleanup)
         return
     if args.benchmark is not None:
-        cmd_benchmark(args.benchmark)
+        cmd_benchmark(args.benchmark, lanes=args.lanes)
         return
     if args.diagnose:
         cmd_diagnose()
@@ -6786,6 +7345,11 @@ def main():
     # Apply CLI --pipeline override AFTER config/preset load so it wins.
     if args.pipeline is not None:
         state.pipeline_depth = args.pipeline
+
+    # v2.35.0 — split budget. Lane K>1 also staggers its first /auto/start.
+    _init_lane_budget()
+    if state.lane > 1:
+        time.sleep((state.lane - 1) * 2.0)
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
