@@ -58,6 +58,9 @@ def migrate_db(db_path: str):
         ("low_bpm",         "REAL DEFAULT 0"),
         ("config_snapshot", "TEXT DEFAULT ''"),
         ("chart_snapshots", "TEXT DEFAULT '[]'"),
+        # v2.33.0 — Σ win profit / Σ lost amount → avg win / avg loss per bet
+        ("win_total",       "REAL DEFAULT 0"),
+        ("loss_total",      "REAL DEFAULT 0"),
     ]:
         try:
             c.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")

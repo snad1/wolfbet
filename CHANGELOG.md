@@ -1,5 +1,26 @@
 # Changelog
 
+## CLI v2.33.0 — stats: time-of-day windows work + avg win / avg loss per bet (2026-11-13)
+
+### Fix: `--since` / `--until` with a time
+`started_at` is stored as ISO with a `T` (`2026-11-13T11:35:20.75`). A bound typed with a space (`--since "2026-11-13 14:00"`) was compared as a plain string. A space sorts before `T`, so every session of that day matched and the time part was ignored.
+- `_stats_date_window` now normalises each bound with `_normalize_window_bound`: it swaps the first space for `T` and validates with `datetime.fromisoformat`. Accepted forms: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM`, `YYYY-MM-DD HH:MM:SS` (fractions OK), and the same with `T`.
+- A bare `--until` date extends to `T23:59:59.999999`.
+- Invalid input prints `Invalid --since/--until "…": use YYYY-MM-DD[ HH:MM[:SS]]` and shows no rows, instead of showing the wrong rows. This applies to `--stats` and `--analytics`.
+- Times are server-local (`--help` says so).
+
+### New: average win / average loss per bet
+- New session columns `win_total` (Σ profit of winning bets) and `loss_total` (Σ amount of losing bets), added by `migrate_db`. They are accumulated at every outcome site (serial, pipelined, backtest) and reset with the other per-session counters.
+- `wolfctl stats`: each session's Streaks line shows `Avg Win: +x/bet  Avg Loss: -y/bet` instead of Best Win / Worst Loss. The Range / All-Time totals show `Avg Win` / `Avg Loss` per bet (Σ totals ÷ Σ wins / losses) instead of Best Win / Worst Loss.
+- `wolfctl session ID`: same replacement in the Full Stats block.
+- Sessions saved before this version fall back to their bet rows. If those rows were already purged (`purge_days`), the value shows `—`.
+- `--stats` and `--session-bets` run `migrate_db` first, so they work on a DB the upgraded bot hasn't opened yet.
+- The live monitor, `status` and the end-of-session summary are unchanged.
+
+**Tests**: `tests/test_phase9c_stats_window_avgs.py` (17): bound normalisation and rejection, a same-day time window with seconds, bare until, error output for stats and analytics, per-session and total averages, bet-row fallback and `—`, session view, loop accumulation. The bare-until param assertion was updated in phase6d. Version pins bumped. **710 total passing.**
+
+`VERSION` `2.32.1` → `2.33.0`.
+
 ## CLI v2.32.1 — hotfix: insufficient balance on auto-bet no longer "recovers" (2026-11-13)
 
 **Incident.** A Martingale auto-bet session with streak reset on and no `max_loss`. The first 3+-loss run kept going until the balance could not cover the next doubled bet. WolfBet rejected that bet with HTTP 400 `You have insufficient balance…`. The CLI's 400 branch fell through to `classify_auto_stop_reason(body) or "expired"`, so the loop treated it as a dead session. It rotated the seed and started a fresh auto-cycle at base bet in the same session, still in the red. Streak reset only fires at profit ≥ 0, and no other stop was set, so nothing could end the session. Each time a later chain hit the balance limit, the same "recovery" ran again, until the balance was gone.

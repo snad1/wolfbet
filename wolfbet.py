@@ -303,6 +303,8 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.highest_bet    = 0.0
         state.highest_win    = 0.0
         state.biggest_loss   = 0.0
+        state.win_total      = 0.0
+        state.loss_total     = 0.0
         state.recent_bets.clear()
         state.profit_history.clear()
         state.start_balance  = state.current_balance
@@ -792,7 +794,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.32.1"
+VERSION      = "2.33.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1216,6 +1218,8 @@ class BotState:
         self.highest_bet     = 0.0
         self.highest_win     = 0.0
         self.biggest_loss    = 0.0
+        self.win_total       = 0.0   # v2.33.0 — Σ profit of winning bets
+        self.loss_total      = 0.0   # v2.33.0 — Σ amount of losing bets
         self.highest_balance = 0.0
         self.lowest_balance  = float("inf")
 
@@ -1975,6 +1979,7 @@ def betting_loop():
                 state.wins += 1
                 if raw_profit > state.highest_win:
                     state.highest_win = raw_profit
+                state.win_total += raw_profit
                 state.last_broken_loss_streak = max(-state.current_streak, 0)
                 state.current_streak = max(state.current_streak, 0) + 1
                 state.max_win_streak = max(state.max_win_streak, state.current_streak)
@@ -1982,6 +1987,7 @@ def betting_loop():
                 state.losses += 1
                 if amount_used > state.biggest_loss:
                     state.biggest_loss = amount_used
+                state.loss_total += amount_used
                 state.current_streak = min(state.current_streak, 0) - 1
                 state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
 
@@ -2218,6 +2224,7 @@ def _apply_outcome_locked(envelope: dict) -> None:
             state.wins += 1
             if raw_profit > state.highest_win:
                 state.highest_win = raw_profit
+            state.win_total += raw_profit
             state.last_broken_loss_streak = max(-state.current_streak, 0)
             state.current_streak = max(state.current_streak, 0) + 1
             state.max_win_streak = max(state.max_win_streak, state.current_streak)
@@ -2225,6 +2232,7 @@ def _apply_outcome_locked(envelope: dict) -> None:
             state.losses += 1
             if amount_used > state.biggest_loss:
                 state.biggest_loss = amount_used
+            state.loss_total += amount_used
             state.current_streak = min(state.current_streak, 0) - 1
             state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
 
@@ -2549,12 +2557,14 @@ def _apply_backtest_result(result: dict) -> str:
             state.max_win_streak = max(state.max_win_streak, state.current_streak)
             if raw_profit > state.highest_win:
                 state.highest_win = raw_profit
+            state.win_total += raw_profit
         else:
             state.losses += 1
             state.current_streak = min(state.current_streak, 0) - 1
             state.max_loss_streak = max(state.max_loss_streak, abs(state.current_streak))
             if amount_used > state.biggest_loss:
                 state.biggest_loss = amount_used
+            state.loss_total += amount_used
         if amount_used > state.highest_bet:
             state.highest_bet = amount_used
         if new_balance > state.highest_balance:
@@ -2655,6 +2665,8 @@ def _run_backtest(args) -> None:
     state.highest_bet      = 0.0
     state.highest_win      = 0.0
     state.biggest_loss     = 0.0
+    state.win_total        = 0.0
+    state.loss_total       = 0.0
     state.start_balance    = 1.0     # $1 sandbox default
     state.current_balance  = 1.0
     state.highest_balance  = 1.0
@@ -2954,6 +2966,7 @@ def _db_save_session():
                 max_win_streak=?, max_loss_streak=?,
                 highest_balance=?, lowest_balance=?,
                 highest_win=?, biggest_loss=?,
+                win_total=?, loss_total=?,
                 bets_per_minute=?, bets_per_second=?,
                 peak_bps=?, low_bps=?, peak_bpm=?, low_bpm=?
             WHERE id=?
@@ -2964,6 +2977,7 @@ def _db_save_session():
             state.max_win_streak, state.max_loss_streak,
             state.highest_balance, lo_bal,
             state.highest_win, state.biggest_loss,
+            state.win_total, state.loss_total,
             # Save session-average BPM for history
             min(state.bets_per_second * 60, state.rate_limit) if state.bets_per_second else state.bets_per_minute,
             state.bets_per_second,
@@ -5986,7 +6000,11 @@ def cmd_analytics(since: str = None, until: str = None):
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found — run a session first.[/]")
         return
-    where, wparams, wlabel = _stats_date_window(since, until)
+    try:
+        where, wparams, wlabel = _stats_date_window(since, until)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        return
     lifetime = _analytics_lifetime(where, wparams)
     if lifetime["sessions_total"] == 0:
         console.print("[yellow]No sessions in the DB yet — run a session first.[/]")
@@ -6035,19 +6053,84 @@ def _stats_date_window(since: str = None, until: str = None):
     (clause, params, label) where clause is "" or " WHERE …" and label
     describes the window for headers.
     """
+    since = _normalize_window_bound(since)
+    until = _normalize_window_bound(until)
     conds, params = [], []
     if since:
         conds.append("started_at >= ?")
         params.append(since)
     if until:
-        u = until if len(until) > 10 else until + "T23:59:59"
+        u = until if len(until) > 10 else until + "T23:59:59.999999"
         conds.append("started_at <= ?")
         params.append(u)
     if not conds:
         return "", [], ""
     clause = " WHERE " + " AND ".join(conds)
-    label = f"  [{since or '…'} → {until or '…'}]"
+    label = (f"  [{(since or '…').replace('T', ' ')} → "
+             f"{(until or '…').replace('T', ' ')}]")
     return clause, params, label
+
+
+def _win_loss_totals(conn, where: str = "", params=()) -> dict:
+    """v2.33.0 — {session_id: (win_total, loss_total, wins, losses) | None}.
+
+    win_total = Σ profit of winning bets, loss_total = Σ amount of losing bets.
+    Uses the stored session totals. Sessions saved before v2.33.0 (totals 0
+    while wins/losses > 0) fall back to their bet rows; None when those rows
+    are gone (purge_days) or incomplete.
+    """
+    rows = conn.execute(
+        f"SELECT id, COALESCE(wins,0), COALESCE(losses,0), "
+        f"COALESCE(win_total,0), COALESCE(loss_total,0) FROM sessions{where}",
+        tuple(params)).fetchall()
+    missing = [r[0] for r in rows if (r[1] and not r[3]) or (r[2] and not r[4])]
+    fallback = {}
+    for i in range(0, len(missing), 500):
+        chunk = missing[i:i + 500]
+        q = ",".join("?" * len(chunk))
+        for sid, wt, lt, w, l in conn.execute(f"""
+            SELECT session_id,
+                   COALESCE(SUM(CASE WHEN state='win' THEN profit ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN state<>'win' THEN amount ELSE 0 END), 0),
+                   SUM(CASE WHEN state='win' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN state<>'win' THEN 1 ELSE 0 END)
+            FROM bets WHERE session_id IN ({q}) GROUP BY session_id
+        """, chunk).fetchall():
+            fallback[sid] = (wt, lt, w, l)
+    out = {}
+    for sid, w, l, wt, lt in rows:
+        if (w and not wt) or (l and not lt):
+            fb = fallback.get(sid)
+            out[sid] = fb if fb and fb[2] == w and fb[3] == l else None
+        else:
+            out[sid] = (wt, lt, w, l)
+    return out
+
+
+def _fmt_avg_wl(total: float, n: int, win: bool) -> str:
+    """'+0.00001234' / '-0.00001234' average per bet, or '—' when unknown."""
+    if total is None or not n:
+        return "—"
+    return f"{'+' if win else '-'}{total / n:.8f}"
+
+
+def _normalize_window_bound(value):
+    """v2.33.0 — turn a --since/--until value into the stored ISO form.
+
+    started_at is stored as `datetime.isoformat()` (`2026-11-13T11:35:20.75`).
+    A bound typed with a space (`2026-11-13 14:00`) compared wrong as a string
+    (' ' sorts before 'T'), so every session that day matched. Swap the first
+    space for 'T' and validate. Raises ValueError on anything unparseable.
+    """
+    if not value:
+        return None
+    v = str(value).strip().replace(" ", "T", 1)
+    try:
+        datetime.fromisoformat(v)
+    except ValueError:
+        raise ValueError(
+            f'Invalid --since/--until "{value}": use YYYY-MM-DD[ HH:MM[:SS]]') from None
+    return v
 
 
 def cmd_stats(since: str = None, until: str = None):
@@ -6055,8 +6138,13 @@ def cmd_stats(since: str = None, until: str = None):
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
+    migrate_db(DB_PATH)  # v2.33.0 — win_total/loss_total on DBs not yet opened by the bot
+    try:
+        where, params, window_label = _stats_date_window(since, until)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
+        return
     conn = _db_conn()
-    where, params, window_label = _stats_date_window(since, until)
     # v2.30.9 — range reviews want more rows than the default 20.
     limit = 50 if (since or until) else 20
 
@@ -6076,6 +6164,7 @@ def cmd_stats(since: str = None, until: str = None):
     """, (*params, limit)).fetchall()
 
     console.print(Rule(f"[bold cyan]Session History (last {limit})[/]{window_label}"))
+    wl = _win_loss_totals(conn, where, params)
 
     # Print each session as a detailed block
     for r in rows:
@@ -6130,7 +6219,10 @@ def cmd_stats(since: str = None, until: str = None):
         console.print(f"    [dim]Speed:[/] {bps:.1f} avg/s  {bpm:.0f} avg/m  [dim]BPS:[/] {s_low_bps}-{s_peak_bps}/s  [dim]BPM:[/] {s_low_bpm}-{s_peak_bpm}/m")
         console.print(f"    [dim]Profit:[/] [{pc}]{ps}{profit:.8f}[/]  [dim]Wagered:[/] {wagered:.8f}  [dim]Avg P/L:[/] [{avg_c}]{avg_s}{avg_pnl:.8f}[/]")
         console.print(f"    [dim]Balance:[/] {start_bal:.8f} → {end_bal:.8f}  [dim]Peak:[/] [green]{hi_bal:.8f}[/]  [dim]Low:[/] [red]{lo_bal:.8f}[/]")
-        console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}  [dim]Best Win:[/] [green]+{hi_win:.8f}[/]  [dim]Worst Loss:[/] [red]-{big_loss:.8f}[/]")
+        t = wl.get(sid)
+        avg_w = _fmt_avg_wl(t[0] if t else None, wins, True)
+        avg_l = _fmt_avg_wl(t[1] if t else None, losses, False)
+        console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}  [dim]Avg Win:[/] [green]{avg_w}[/]/bet  [dim]Avg Loss:[/] [red]{avg_l}[/]/bet")
         console.print()
 
     # totals — v2.30.9: honor the same date window as the listing.
@@ -6170,8 +6262,11 @@ def cmd_stats(since: str = None, until: str = None):
     console.print(f"  [dim]Best Session:[/]  [{bp_c}]+{best_profit:.8f}[/]")
     console.print(f"  [dim]Worst Session:[/] [{wp_c}]{worst_profit:.8f}[/]")
     console.print(f"  [dim]Peak Balance:[/]  {all_hi_bal:.8f}")
-    console.print(f"  [dim]Best Win:[/]      [green]+{all_hi_win:.8f}[/]")
-    console.print(f"  [dim]Worst Loss:[/]    [red]-{all_big_loss:.8f}[/]")
+    known = [t for t in wl.values() if t]
+    sum_wt = sum(t[0] for t in known); sum_w = sum(t[2] for t in known)
+    sum_lt = sum(t[1] for t in known); sum_l = sum(t[3] for t in known)
+    console.print(f"  [dim]Avg Win:[/]       [green]{_fmt_avg_wl(sum_wt if known else None, sum_w, True)}[/] per bet")
+    console.print(f"  [dim]Avg Loss:[/]      [red]{_fmt_avg_wl(sum_lt if known else None, sum_l, False)}[/] per bet")
     console.print(f"  [dim]Best Streaks:[/]  W+{best_ws}  L-{best_ls}")
     console.print(f"  [dim]Speed:[/]         {avg_bps:.1f} avg/s  {avg_bpm:.0f} avg/m  [dim]Peak:[/] {int(all_peak_bps)}/s  {int(all_peak_bpm)}/m")
     console.print(f"  [dim]Bets/Session:[/]  Max {max_bets}  Avg {avg_bets:.0f}")
@@ -6253,6 +6348,7 @@ def cmd_session_bets(session_id: int):
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
+    migrate_db(DB_PATH)  # v2.33.0 — win_total/loss_total on DBs not yet opened by the bot
     conn = _db_conn()
 
     # session info — fetch all columns
@@ -6324,8 +6420,9 @@ def cmd_session_bets(session_id: int):
     console.print(f"  [dim]Balance:[/]       {start_bal:.8f} → {end_bal:.8f}")
     console.print(f"  [dim]Peak / Low:[/]    [green]{hi_bal:.8f}[/] / [red]{lo_bal:.8f}[/]")
     console.print(f"  [dim]Best Streaks:[/]  W+{mws}  L-{mls}")
-    console.print(f"  [dim]Best Win:[/]      [green]+{hi_win:.8f}[/]")
-    console.print(f"  [dim]Worst Loss:[/]    [red]-{big_loss:.8f}[/]")
+    wlt = _win_loss_totals(conn, " WHERE id = ?", (sid,)).get(sid)
+    console.print(f"  [dim]Avg Win:[/]       [green]{_fmt_avg_wl(wlt[0] if wlt else None, wins, True)}[/] per bet")
+    console.print(f"  [dim]Avg Loss:[/]      [red]{_fmt_avg_wl(wlt[1] if wlt else None, losses, False)}[/] per bet")
     console.print(f"  [dim]Speed:[/]         {bps:.1f} avg/s  {bpm:.0f} avg/m  Range: {s_lw_bps}-{s_pk_bps}/s  {s_lw_bpm}-{s_pk_bpm}/m")
 
     # ── Streak Distribution ──────────────────────────
@@ -6508,8 +6605,11 @@ def main():
     group.add_argument("--stats",   action="store_true", help="Show recent 20 sessions in detail")
     # v2.30.9 fix — modifiers, not commands: must combine WITH --stats, so they
     # live on the standalone parser, NOT the mutually-exclusive command group.
-    parser.add_argument("--since", metavar="DATE", help="With --stats: window start (YYYY-MM-DD or ISO ts)")
-    parser.add_argument("--until", metavar="DATE", help="With --stats: window end (bare date = inclusive end of day)")
+    parser.add_argument("--since", metavar="DATE", help="With --stats/--analytics: window start, server-local time "
+                             "(YYYY-MM-DD, 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD HH:MM:SS')")
+    parser.add_argument("--until", metavar="DATE",
+                        help="With --stats/--analytics: window end, same formats "
+                             "(bare date = inclusive end of day)")
     group.add_argument("--analytics", action="store_true",
                        help="Show lifetime analytics: aggregates over ALL sessions with "
                             "breakdowns by game and strategy. Complement to --stats.")

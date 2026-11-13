@@ -32,7 +32,7 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.32.1"
+    assert wb.VERSION == "2.33.0"
 
 
 def test_wolfctl_version_constant_3_9():
@@ -120,7 +120,7 @@ def test_date_window_since_only():
 
 def test_date_window_bare_until_extends_end_of_day():
     _, params, _ = wb._stats_date_window(until="2026-08-15")
-    assert params == ["2026-08-15T23:59:59"]
+    assert params == ["2026-08-15T23:59:59.999999"]
 
 
 def test_date_window_full_ts_until_untouched():
