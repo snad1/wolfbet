@@ -1,5 +1,28 @@
 # Changelog
 
+## CLI v2.36.0 / wolfctl v3.11 — configurable lane money split, default full amounts (2026-11-13)
+
+In v2.35.0 the lane budget guard (`balance ÷ lanes`) was always on, and the base bet was never divided. How lanes share money is now a setting.
+
+### `lane_split` (stored as `lanes.split`, shared by all lanes)
+- `none` (**default**): every lane uses the full `base_bet` and there is no lane budget guard. The user sizes the bets.
+- `budget`: each lane may risk `balance ÷ lanes`. This is the v2.35.0 behaviour.
+- `bet`: `base_bet ÷ lanes`, and `basebet_pct` is divided the same way.
+- `both`: the `bet` and `budget` modes together.
+- A lane with its own `laneK.base_bet` override keeps that exact amount. With one lane, every mode does nothing. A divided bet that would round to 0 stays full (logged).
+- An untouched divided bet is saved as the full one, so the base bet never halves twice across restarts. Live reload applies the same split, so it gives no false "base_bet changed" warning.
+- `config-set lane_split=MODE` validates the value (exit 2 on an unknown mode) and refuses `laneK.lane_split`. `config-show` prints `split: MODE` with its meaning.
+- The chain-depth warning uses the lane share only in `budget` / `both` modes.
+
+**Behaviour change:** existing lane setups no longer get the budget guard unless `lane_split=budget` or `both` is set.
+
+### wolfctl v3.11
+- `wolfctl lanes N --split none|budget|bet|both`. `wolfctl lanes` with no N shows the split mode.
+
+**Tests**: 16 new or updated cases in `tests/test_phase10_lanes.py` (modes, override kept, rounding, save keeps the full bet, basebet_pct, live reload, config-set / show, wolfctl). Version pins bumped. **776 total passing.**
+
+`VERSION` `2.35.0` → `2.36.0`. `WOLFCTL_VERSION` `3.10` → `3.11`.
+
 ## CLI v2.35.0 / wolfctl v3.10 — parallel lanes: N independent sessions side by side (2026-11-13)
 
 Pipeline is one session with several bets in flight, and it is forced off for auto-bet games and non-Flat strategies. Lanes run several **independent sessions** at once. Each has its own Martingale chain, counters, stops, pauses and recurring / streak-reset cycle. Works with every strategy and with `dice-auto` / `limbo-auto`.

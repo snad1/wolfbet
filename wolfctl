@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.10
+# WolfBet AutoBot — Unified Management Command v3.11
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -11,6 +11,7 @@ SERVICE="wolfbet"
 TG_SERVICE="wolfbet-tg"
 WEB_SERVICE="wolfbet-web"
 # v3.10 — parallel lanes: lane 1 = $SERVICE, lanes 2..N = wolfbet-lane@K
+# v3.11 — wolfctl lanes N --split none|budget|bet|both
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -22,11 +23,11 @@ SCRIPT_NAME="wolfctl"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.10
+WOLFCTL_VERSION=3.11
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.10"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.11"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -36,6 +37,7 @@ usage() {
     echo "    wolfctl status        Show CLI bot status"
     echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
     echo "    wolfctl lanes N       Run N parallel lanes (1 = classic single bot)"
+    echo "      --split MODE        none (default: full bet, no lane budget) | budget | bet | both"
     echo "    wolfctl logs          Stream CLI bot logs"
     echo "    wolfctl logs-full     Show last 200 log lines"
     echo ""
@@ -175,20 +177,45 @@ stop_all_lanes() {
     done
 }
 
+lane_split_mode() {
+    "$PYTHON" -c 'import json,os,sys
+try:
+    d=json.load(open(os.path.expanduser("~/.wolfbet_autobot.json")))
+    print((d.get("lanes") or {}).get("split") or "none")
+except Exception:
+    print("none")' 2>/dev/null || echo none
+}
+
 cmd_lanes() {
-    local n="${1:-}"
+    local n="${1:-}" split=""
+    shift || true
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --split) split="${2:-}"; shift 2 || { echo "Usage: wolfctl lanes N --split none|budget|bet|both"; exit 1; } ;;
+            --split=*) split="${1#--split=}"; shift ;;
+            *) echo "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+    if [ -n "$split" ]; then
+        case "$split" in none|budget|bet|both) ;; *) echo "--split must be none, budget, bet or both"; exit 1 ;; esac
+    fi
     if [ -z "$n" ]; then
         echo "Configured lanes: $(lane_count)"
         "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
-        echo "  Change with: wolfctl lanes N   (1-$LANES_MAX)"
+        echo "  Split: $(lane_split_mode)"
+        echo "  Change with: wolfctl lanes N [--split none|budget|bet|both]   (1-$LANES_MAX)"
         return
     fi
     case "$n" in ''|*[!0-9]*) echo "Usage: wolfctl lanes N  (1-$LANES_MAX)"; exit 1 ;; esac
     if [ "$n" -lt 1 ] || [ "$n" -gt "$LANES_MAX" ]; then
         echo "lanes must be 1-$LANES_MAX"; exit 1
     fi
-    "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
-    echo "Lanes set to $n — each lane may use balance ÷ $n."
+    if [ -n "$split" ]; then
+        "$PYTHON" "$BOT" --config-set "lanes=$n" "lane_split=$split" >/dev/null
+    else
+        "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
+    fi
+    echo "Lanes set to $n — split: $(lane_split_mode)."
     if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
         # Restart every lane so each recomputes its budget share.
         echo "Restarting lanes (each running chain is saved and ended)…"
@@ -340,7 +367,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.10"
+    echo "  wolfctl v3.11"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -1010,7 +1037,7 @@ case "${1:-}" in
     restart)      cmd_restart ;;
     status)       cmd_status ;;
     monitor)      cmd_monitor "${2:-}" ;;
-    lanes)        cmd_lanes "${2:-}" ;;
+    lanes)        shift; cmd_lanes "$@" ;;
     logs)         cmd_logs ;;
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;

@@ -96,7 +96,7 @@ wolfctl setup           # Run wizard to configure
 wolfctl start           # Start CLI bot as daemon
 wolfctl stop            # Stop CLI bot
 wolfctl monitor [K]     # Attach live TUI to running daemon (lane K, default 1)
-wolfctl lanes N         # Run N parallel lanes (see Parallel lanes)
+wolfctl lanes N [--split MODE]  # Run N parallel lanes (see Parallel lanes)
 wolfctl status          # Check running session status
 wolfctl stats           # Show all-time session statistics
 
@@ -281,7 +281,23 @@ wolfctl stats --lane 2           # only lane 2's sessions (analytics has a "By l
 
 **How it runs.** Lane 1 is the usual `wolfbet.service`. Lanes 2..N are `wolfbet-lane@K.service` processes (`wolfbet.py --daemon --resume --lane K`), each with its own state / pid file (`~/.wolfbet_autobot_live.laneK.json`, `~/.wolfbet_autobot.laneK.pid`). All lanes share the config file and the stats DB. Log lines are prefixed `[LK]`. Every session row records its lane.
 
-**Split budget.** At start each lane takes `balance ÷ lanes` as its share. Its equity is that share plus its own result across its sessions. When the next bet would exceed the equity, that lane stops with `Lane budget exceeded` (a loss stop: no restart) and the other lanes keep running. The risky-config warning reports the loss chain the share can cover.
+**Money split (`lane_split`, v2.36.0).** This setting chooses how lanes share the money. The default, `none`, uses full amounts: size `base_bet` yourself.
+
+| `lane_split` | Base bet per lane | Lane budget guard |
+|---|---|---|
+| `none` (default) | full `base_bet` | off |
+| `budget` | full `base_bet` | each lane may risk `balance ÷ lanes` |
+| `bet` | `base_bet ÷ lanes` (and `basebet_pct ÷ lanes`) | off |
+| `both` | `base_bet ÷ lanes` | each lane may risk `balance ÷ lanes` |
+
+```bash
+wolfctl lanes 2 --split bet          # or: wolfctl config-set lane_split=both
+```
+
+- **Lane budget guard.** A lane's equity is its share plus its own result across its sessions. When the next bet would exceed that equity, the lane stops with `Lane budget exceeded`. This is a loss stop with no restart, and the other lanes keep running.
+- **Overrides.** A lane with its own `laneK.base_bet` override always uses that exact amount. It is never divided.
+- **Saved value.** The divided bet only applies while the lanes run. The config file keeps the full `base_bet`.
+- **When changes apply.** `lane_split` is shared by all lanes and applies on the next start (`wolfctl restart`).
 
 **Per-lane overrides.** Lanes use the base config plus optional overrides:
 

@@ -86,7 +86,8 @@ def _apply_basebet_pct() -> bool:
     """Recompute base_bet from basebet_pct * current_balance. Returns True if changed."""
     if state.basebet_pct <= 0 or state.current_balance <= 0:
         return False
-    new_base = round(state.current_balance * state.basebet_pct, 8)
+    # v2.36.0 — bet split divides the derived base bet too.
+    new_base = round(state.current_balance * state.basebet_pct / _split_bet_divisor(), 8)
     if new_base <= 0:
         return False
     if abs(new_base - state.base_bet) < 1e-12:
@@ -188,14 +189,14 @@ def _check_risky_config() -> list:
             "to establish a floor."
         )
     # Streak reset can't fire in the red — the balance caps the chain it can survive
-    # v2.35.0 — with lanes, each lane may only risk its share of the balance.
-    _bank = (state.current_balance / state.lanes_count
-             if getattr(state, "lanes_count", 1) > 1 else state.current_balance)
+    # v2.35.0 — with a lane budget, each lane may only risk its share of the balance.
+    _split = _split_budget_on()
+    _bank = state.current_balance / state.lanes_count if _split else state.current_balance
     depth = martingale_chain_depth(_bank, state.base_bet, loss_mult)
     if sk in ("2", "7") and state.streak_reset_losses and state.max_loss is None and depth:
         warnings.append(
             f"Streak reset with no `max_loss`: "
-            f"{'lane share' if getattr(state, 'lanes_count', 1) > 1 else 'balance'} "
+            f"{'lane share' if _split else 'balance'} "
             f"covers a {depth}-loss chain. "
             f"Loss {depth + 1} in a row ends the session with insufficient balance."
         )
@@ -800,7 +801,7 @@ PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wol
 _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 — lane 1 paths
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.35.0"
+VERSION      = "2.36.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -874,7 +875,59 @@ def _lanes_count(data: dict) -> int:
     return max(1, min(LANES_MAX, n))
 
 
-CURRENCIES  = ["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
+# v2.36.0 — how lanes share the money. Default "none": every lane uses the
+# full base bet and no budget guard (the user sizes the bets themselves).
+#   budget → each lane may risk balance ÷ lanes (stop "Lane budget exceeded")
+#   bet    → base bet (and basebet_pct) ÷ lanes
+#   both   → budget + bet
+LANE_SPLIT_MODES = ("none", "budget", "bet", "both")
+_LANE_SPLIT_HELP = {
+    "none":   "every lane uses the full base bet, no lane budget",
+    "budget": "each lane may risk balance ÷ lanes",
+    "bet":    "base bet ÷ lanes",
+    "both":   "base bet ÷ lanes and each lane may risk balance ÷ lanes",
+}
+
+
+def _lane_split(data: dict) -> str:
+    mode = str((data.get("lanes") or {}).get("split") or "none").strip().lower()
+    return mode if mode in LANE_SPLIT_MODES else "none"
+
+
+def _split_budget_on() -> bool:
+    return (getattr(state, "lanes_count", 1) > 1
+            and getattr(state, "lane_split", "none") in ("budget", "both"))
+
+
+def _split_bet_divisor() -> int:
+    """Lanes count when the bet split applies, else 1."""
+    if (getattr(state, "lanes_count", 1) > 1
+            and getattr(state, "lane_split", "none") in ("bet", "both")):
+        return state.lanes_count
+    return 1
+
+
+def _lane_config(data: dict, lane: int) -> dict:
+    """Base config + this lane's overrides + the bet split (v2.36.0).
+
+    A lane with its own base_bet override keeps that exact value: the user
+    already sized it. A bet that would round to 0 stays full (logged).
+    """
+    ov = _lane_overrides(data, lane)
+    merged = {**data, **ov}
+    n = _lanes_count(data)
+    if (n > 1 and _lane_split(data) in ("bet", "both") and "base_bet" not in ov
+            and isinstance(merged.get("base_bet"), (int, float))):
+        split = round(merged["base_bet"] / n, 8)
+        if split > 0:
+            merged["base_bet"] = split
+        else:
+            logger.warning("lane split: base_bet %.8f ÷ %d rounds to 0 — using full bet",
+                           merged["base_bet"], n)
+    return merged
+
+
+CURRENCIES  =["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
 
 # ══════════════════════════════════════════════════════════
 #  DATABASE SETUP (delegates to core.database)
@@ -917,6 +970,10 @@ def save_config():
         logger.info("save_config skipped on lane %d (base config is lane 1's)", state.lane)
         return
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
+    # v2.36.0 — bet split: an untouched split base bet is saved as the full one.
+    _sb = getattr(state, "base_bet_split", None)
+    if _sb is not None and state.base_bet == _sb:
+        data["base_bet"] = state.base_bet_disk
     # v2.35.0 — keep the lanes block (count + per-lane overrides) intact.
     try:
         with open(CONFIG_PATH) as f:
@@ -955,7 +1012,15 @@ def load_config() -> bool:
                 setattr(state, k, parse_streak_delay(data[k]))
         # v2.35.0 — lane count + this lane's overrides on top of the base.
         state.lanes_count = _lanes_count(data)
-        for k, v in _lane_overrides(data, state.lane).items():
+        state.lane_split = _lane_split(data)
+        merged = _lane_config(data, state.lane)
+        # Remember the on-disk base bet vs the split one so save_config never
+        # writes the halved value back (it would halve again on each start).
+        state.base_bet_disk = data.get("base_bet")
+        state.base_bet_split = merged.get("base_bet") if merged.get("base_bet") != data.get("base_bet") else None
+        for k, v in merged.items():
+            if k in data and data[k] == v:
+                continue                 # base value, already applied above
             if k in _STREAK_TUPLE_KEYS:
                 setattr(state, k, parse_streak_delay(v))
             elif k in _CONFIG_KEYS:
@@ -1067,7 +1132,7 @@ def _reload_live_config() -> dict:
     except Exception as e:
         logger.warning("live reload: failed to parse config: %s", e)
         return {}
-    data = {**data, **_lane_overrides(data, getattr(state, "lane", 1))}
+    data = _lane_config(data, getattr(state, "lane", 1))
 
     applied = {}
     skipped_unsafe = []
@@ -1283,6 +1348,9 @@ class BotState:
         self.lane            = 1
         self.lanes_count     = 1
         self.lane_share      : Optional[float] = None
+        self.lane_split      = "none"     # v2.36.0 — see LANE_SPLIT_MODES
+        self.base_bet_disk   = None       # base_bet as saved (before the bet split)
+        self.base_bet_split  = None       # split base_bet applied at load, else None
         self.lane_run_profit = 0.0
         self.soft_pace_delay = 0.0
         # v2.28.4 — when a session enters `_reset_session_for_recurring`, this
@@ -2001,7 +2069,7 @@ def lane_equity():
 
 def _init_lane_budget() -> None:
     """v2.35.0 — fix this lane's share of the balance at bot start."""
-    if state.lanes_count > 1 and state.current_balance > 0:
+    if _split_budget_on() and state.current_balance > 0:
         state.lane_share = state.current_balance / state.lanes_count
         logger.warning("LANE %d/%d  share=%.8f of balance %.8f",
                        state.lane, state.lanes_count, state.lane_share,
@@ -3289,6 +3357,7 @@ def _save_state_file():
             "lane": state.lane,
             "lanes_count": state.lanes_count,
             "lane_share": state.lane_share,
+            "lane_split": state.lane_split,
             "lane_equity": lane_equity(),
             "soft_pace_delay": state.soft_pace_delay,
             "pause_remaining_sec": (
@@ -5713,8 +5782,9 @@ def cmd_config_show():
     except (OSError, ValueError):
         _raw = {}
     n_lanes = _lanes_count(_raw)
-    console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]"
-                  + ("  [dim](each lane may use balance ÷ lanes)[/]" if n_lanes > 1 else ""))
+    _mode = _lane_split(_raw)
+    console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]  [dim]split:[/] [bold]{_mode}[/]"
+                  + (f"  [dim]({_LANE_SPLIT_HELP[_mode]})[/]" if n_lanes > 1 else ""))
     for lane in range(2, LANES_MAX + 1):
         ov = _lane_overrides(_raw, lane)
         if ov:
@@ -5757,9 +5827,9 @@ _LANE_UNSET_VALUES = ("default", "unset", "inherit")
 
 
 def _split_lane_pairs(pairs: list):
-    """v2.35.0 — split config-set pairs into (base, {lane: [pairs]}, lanes_count|None)."""
+    """Split config-set pairs into (base, {lane: [pairs]}, lanes_count|None, split|None)."""
     import re as _re
-    base, per_lane, count = [], {}, None
+    base, per_lane, count, split = [], {}, None, None
     for pair in pairs:
         if "=" not in pair:
             base.append(pair)          # _parse_config_set_pairs reports it
@@ -5774,15 +5844,22 @@ def _split_lane_pairs(pairs: list):
                 raise ValueError(f"lanes must be an integer 1-{LANES_MAX}, got {val!r}")
             if not 1 <= count <= LANES_MAX:
                 raise ValueError(f"lanes must be 1-{LANES_MAX}, got {count}")
+        elif key == "lane_split":
+            split = val.strip().lower()
+            if split not in LANE_SPLIT_MODES:
+                raise ValueError(f"lane_split must be one of {', '.join(LANE_SPLIT_MODES)}, "
+                                 f"got {val!r}")
         elif m:
             lane = int(m.group(1))
             if not 2 <= lane <= LANES_MAX:
                 raise ValueError(f"lane overrides are for lanes 2-{LANES_MAX} "
                                  f"(lane 1 uses the base config), got lane{lane}")
+            if m.group(2) == "lane_split":
+                raise ValueError("lane_split can't differ per lane (shared by all lanes)")
             per_lane.setdefault(lane, []).append(f"{m.group(2)}={val}")
         else:
             base.append(pair)
-    return base, per_lane, count
+    return base, per_lane, count, split
 
 
 def _write_config_raw(data: dict) -> None:
@@ -5844,7 +5921,7 @@ def _signal_lane_daemons(lanes=None) -> int:
     return n
 
 
-def _cmd_config_set_lanes(per_lane: dict, count) -> None:
+def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> None:
     try:
         with open(CONFIG_PATH) as f:
             raw = json.load(f)
@@ -5857,6 +5934,11 @@ def _cmd_config_set_lanes(per_lane: dict, count) -> None:
         old = lanes.get("count", 1)
         lanes["count"] = count
         console.print(f"  [yellow]lanes[/]: [dim]{old}[/]  →  [green]{count}[/]")
+    if split is not None:
+        old = _lane_split(raw)
+        lanes["split"] = split
+        console.print(f"  [yellow]lane_split[/]: [dim]{old}[/]  →  [green]{split}[/]  "
+                      f"[dim]({_LANE_SPLIT_HELP[split]})[/]")
     for lane, lane_pairs in sorted(per_lane.items()):
         try:
             sets, removals = _lane_override_changes(lane, lane_pairs)
@@ -5883,6 +5965,9 @@ def _cmd_config_set_lanes(per_lane: dict, count) -> None:
     if count is not None:
         console.print(f"[dim]Run [cyan]wolfctl lanes {count}[/] to start/stop lane processes "
                       "(restart running lanes so each recomputes its budget share).[/]")
+    elif split is not None:
+        console.print("[dim]lane_split applies on the next lane start — run "
+                      "[cyan]wolfctl restart[/].[/]")
 
 
 def cmd_config_set(pairs: list):
@@ -5897,13 +5982,13 @@ def cmd_config_set(pairs: list):
 
     # v2.35.0 — lanes=N and laneK.key=value write the lanes block directly.
     try:
-        pairs, per_lane, lanes_count = _split_lane_pairs(pairs)
+        pairs, per_lane, lanes_count, lane_split = _split_lane_pairs(pairs)
     except ValueError as e:
         console.print(f"[red]Invalid --config-set argument:[/] {e}")
         sys.exit(2)
-    if per_lane or lanes_count is not None:
+    if per_lane or lanes_count is not None or lane_split is not None:
         console.print(Rule("[bold cyan]Lane config updated[/]"))
-        _cmd_config_set_lanes(per_lane, lanes_count)
+        _cmd_config_set_lanes(per_lane, lanes_count, lane_split)
         if not pairs:
             return
 

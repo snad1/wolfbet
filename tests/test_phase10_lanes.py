@@ -1,8 +1,10 @@
 """Phase 10 — v2.35.0: parallel lanes (N independent sessions side by side).
 
+v2.36.0: how lanes share money is configurable (lanes.split, default none).
+
 Each lane is its own bot process (`--lane K`) with its own state/pid files,
 session, Martingale chain, stops and pauses. Lanes share the DB and config,
-may override settings per lane, and each may only risk balance ÷ lanes.
+may override settings per lane, and (split budget/both) may only risk balance ÷ lanes.
 
 Run: APP_ENV=testing pytest wolfbet/tests/test_phase10_lanes.py -q
 """
@@ -29,7 +31,8 @@ _LANE_ATTRS = ("lane", "lanes_count", "lane_share", "lane_run_profit", "profit",
                "current_bet", "current_balance", "base_bet", "max_wins",
                "streak_reset_losses", "recurring", "currency", "loss_mult",
                "multiplier", "bet_value", "rule", "streak_delay_loss",
-               "soft_pace_delay")
+               "soft_pace_delay", "lane_split", "base_bet_disk", "base_bet_split",
+               "basebet_pct", "max_loss", "strategy_key")
 
 
 @pytest.fixture(autouse=True)
@@ -128,14 +131,15 @@ def test_live_reload_merges_lane_overrides(monkeypatch, tmp_path):
 
 
 def test_split_lane_pairs():
-    base, per_lane, count = wb._split_lane_pairs(
-        ["max_wins=4", "lanes=3", "lane2.base_bet=0.001", "LANE3.maxwins=1"])
-    assert base == ["max_wins=4"] and count == 3
+    base, per_lane, count, split = wb._split_lane_pairs(
+        ["max_wins=4", "lanes=3", "lane2.base_bet=0.001", "LANE3.maxwins=1", "lane_split=Both"])
+    assert base == ["max_wins=4"] and count == 3 and split == "both"
     assert per_lane == {2: ["base_bet=0.001"], 3: ["maxwins=1"]}
 
 
 @pytest.mark.parametrize("pairs", [["lanes=0"], ["lanes=11"], ["lanes=x"], ["lane1.base_bet=1"],
-                                   ["lane11.base_bet=1"]])
+                                   ["lane11.base_bet=1"], ["lane_split=half"],
+                                   ["lane2.lane_split=bet"]])
 def test_split_lane_pairs_rejects(pairs):
     with pytest.raises(ValueError):
         wb._split_lane_pairs(pairs)
@@ -198,8 +202,18 @@ def test_no_budget_without_lanes():
 
 def test_init_lane_budget():
     wb.state.lanes_count, wb.state.current_balance = 4, 1.0
+    wb.state.lane_split = "none"                 # v2.36.0 default: no lane budget
     wb._init_lane_budget()
-    assert wb.state.lane_share == pytest.approx(0.25)
+    assert wb.state.lane_share is None
+    for mode in ("budget", "both"):
+        wb.state.lane_split = mode
+        wb._init_lane_budget()
+        assert wb.state.lane_share == pytest.approx(0.25)
+    wb.state.lane_split = "bet"
+    wb._init_lane_budget()
+    assert wb.state.lane_share is None
+    wb.state.lane_split = "budget"
+    wb._init_lane_budget()
     wb.state.lanes_count = 1
     wb._init_lane_budget()
     assert wb.state.lane_share is None
@@ -209,8 +223,12 @@ def test_risky_config_uses_lane_share():
     wb.state.strategy_key, wb.state.streak_reset_losses, wb.state.max_loss = "2", 2, None
     wb.state.base_bet, wb.state.loss_mult = 0.001, 2.0
     wb.state.current_balance, wb.state.lanes_count = 4.0, 4   # share 1.0 → 9-loss chain
+    wb.state.lane_split = "budget"
     warns = wb._check_risky_config()
     assert any("lane share covers a 9-loss chain" in w for w in warns)
+    wb.state.lane_split = "none"                              # full balance 4.0 → 11
+    warns = wb._check_risky_config()
+    assert any("balance covers a 11-loss chain" in w for w in warns)
 
 
 # ── throttle protection ───────────────────────────────────
@@ -340,15 +358,121 @@ def _src(name):
 
 def test_wolfctl_lane_commands():
     s = _src("wolfctl")
-    assert "lanes)        cmd_lanes" in s
+    assert 'cmd_lanes "$@"' in s
     assert "--lane %i" in s
     assert '"$PYTHON" "$BOT" --monitor --lane "$k"' in s
     assert "--lanes-status" in s
     assert "stop_all_lanes" in s and "sync_lanes" in s
-    assert "WOLFCTL_VERSION=3.10" in s
+    assert "WOLFCTL_VERSION=3.11" in s
 
 
 def test_install_writes_lane_template():
     s = _src("install.sh")
     assert '${SERVICE_NAME}-lane@.service' in s
     assert "wolfbet.py --resume --daemon --lane %i" in s
+
+
+# ── v2.36.0: configurable lane split ──────────────────────
+def _load_lane(monkeypatch, tmp_path, lane, lanes_block, **extra):
+    path = _config(monkeypatch, tmp_path, {**BASE, **extra, "lanes": lanes_block})
+    monkeypatch.setattr(wb, "_apply_proxy_to_session", lambda: None)
+    wb.state.lane = lane
+    assert wb.load_config()
+    return path
+
+
+def test_split_default_none_uses_full_bet(monkeypatch, tmp_path):
+    _load_lane(monkeypatch, tmp_path, 2, {"count": 2})
+    assert wb.state.lane_split == "none"
+    assert wb.state.base_bet == 0.0001 and wb.state.current_bet == 0.0001
+
+
+def test_split_invalid_mode_falls_back_to_none(monkeypatch, tmp_path):
+    _load_lane(monkeypatch, tmp_path, 2, {"count": 2, "split": "half"})
+    assert wb.state.lane_split == "none" and wb.state.base_bet == 0.0001
+
+
+@pytest.mark.parametrize("mode,expected", [("budget", 0.0001), ("bet", 0.00005), ("both", 0.00005)])
+def test_split_modes_base_bet(monkeypatch, tmp_path, mode, expected):
+    for lane in (1, 2):
+        _load_lane(monkeypatch, tmp_path, lane, {"count": 2, "split": mode})
+        assert wb.state.base_bet == pytest.approx(expected)
+        assert wb.state.current_bet == pytest.approx(expected)
+
+
+def test_split_bet_ignored_with_one_lane(monkeypatch, tmp_path):
+    _load_lane(monkeypatch, tmp_path, 1, {"count": 1, "split": "both"})
+    assert wb.state.base_bet == 0.0001
+
+
+def test_split_bet_keeps_lane_base_bet_override(monkeypatch, tmp_path):
+    _load_lane(monkeypatch, tmp_path, 2, {"count": 2, "split": "bet",
+                                          "overrides": {"2": {"base_bet": 0.0003}}})
+    assert wb.state.base_bet == pytest.approx(0.0003)
+
+
+def test_split_bet_rounding_to_zero_keeps_full(monkeypatch, tmp_path):
+    _load_lane(monkeypatch, tmp_path, 2, {"count": 3, "split": "bet"}, base_bet=0.00000001)
+    assert wb.state.base_bet == 0.00000001
+
+
+def test_split_bet_save_config_writes_full_bet(monkeypatch, tmp_path):
+    path = _load_lane(monkeypatch, tmp_path, 1, {"count": 2, "split": "bet"})
+    assert wb.state.base_bet == pytest.approx(0.00005)
+    wb.state.max_wins = 9
+    wb.save_config()                                  # untouched split bet → full on disk
+    data = json.load(open(path))
+    assert data["base_bet"] == 0.0001 and data["max_wins"] == 9
+    assert data["lanes"]["split"] == "bet"
+    wb.load_config()
+    assert wb.state.base_bet == pytest.approx(0.00005)  # never halves twice
+    wb.state.base_bet = 0.0004                        # user changed it → saved as-is
+    wb.save_config()
+    assert json.load(open(path))["base_bet"] == 0.0004
+
+
+def test_split_basebet_pct_divided(monkeypatch):
+    wb.state.lanes_count, wb.state.lane_split = 2, "bet"
+    wb.state.current_balance, wb.state.basebet_pct, wb.state.base_bet = 10.0, 0.001, 0.0
+    assert wb._apply_basebet_pct()
+    assert wb.state.base_bet == pytest.approx(0.005)
+    wb.state.lane_split = "none"
+    assert wb._apply_basebet_pct()
+    assert wb.state.base_bet == pytest.approx(0.01)
+
+
+def test_split_live_reload_no_spurious_base_bet_warning(monkeypatch, tmp_path, caplog):
+    _load_lane(monkeypatch, tmp_path, 2, {"count": 2, "split": "bet"})
+    with caplog.at_level("WARNING", logger=wb.logger.name):
+        wb._reload_live_config()
+    assert "base_bet" not in caplog.text
+    assert wb.state.base_bet == pytest.approx(0.00005)
+
+
+def test_config_set_lane_split(monkeypatch, tmp_path, capsys):
+    path = _config(monkeypatch, tmp_path, dict(BASE))
+    monkeypatch.setattr(wb, "_apply_proxy_to_session", lambda: None)
+    monkeypatch.setattr(wb, "_signal_lane_daemons", lambda *a, **k: 0)
+    wb.state.lane = 1
+    wb.cmd_config_set(["lanes=2", "lane_split=both"])
+    data = json.load(open(path))
+    assert data["lanes"] == {"count": 2, "overrides": {}, "split": "both"}
+    assert data["base_bet"] == 0.0001
+    out = capsys.readouterr().out
+    assert "lane_split" in out and "both" in out
+    with pytest.raises(SystemExit) as e:
+        wb.cmd_config_set(["lane_split=half"])
+    assert e.value.code == 2
+
+
+def test_config_show_prints_split(monkeypatch, tmp_path, capsys):
+    _load_lane(monkeypatch, tmp_path, 1, {"count": 2, "split": "budget"})
+    wb.cmd_config_show()
+    out = capsys.readouterr().out
+    assert "split: budget" in out and "balance ÷ lanes" in out
+
+
+def test_wolfctl_lanes_split_option():
+    s = open(os.path.join(_WOLFBET_DIR, "wolfctl")).read()
+    assert "--split" in s and '"lane_split=$split"' in s
+    assert 'lanes)        shift; cmd_lanes "$@" ;;' in s
