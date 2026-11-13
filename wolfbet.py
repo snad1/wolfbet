@@ -6,7 +6,7 @@
 ╚══════════════════════════════════════════════════════════╝
 """
 
-import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib, csv, queue  # noqa: E401
+import os, sys, json, time, sqlite3, threading, signal, random, string, argparse, logging, hashlib, csv, queue, math  # noqa: E401
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from collections import deque
@@ -150,6 +150,18 @@ def _check_milestone(last_bet_state: str) -> Optional[str]:
     return None
 
 
+def martingale_chain_depth(balance: float, base: float, mult: float) -> int:
+    """Longest loss run a Martingale chain can pay for: max k with
+    base·(mult^k − 1)/(mult − 1) <= balance. 0 when inputs can't form a chain."""
+    if balance <= 0 or base <= 0 or mult <= 1:
+        return 0
+    k = int(math.log(1 + balance * (mult - 1) / base) / math.log(mult))
+    # guard float rounding at the boundary
+    while k > 0 and base * (mult ** k - 1) / (mult - 1) > balance:
+        k -= 1
+    return k
+
+
 def _check_risky_config() -> list:
     """Inspect state.* for combinations known to drain balance quickly.
 
@@ -174,6 +186,13 @@ def _check_risky_config() -> list:
             "No `max_loss` set — Martingale-style strategies can drain balance "
             "on a bad streak. Consider `t maxloss <amount>` (or set it in the wizard) "
             "to establish a floor."
+        )
+    # Streak reset can't fire in the red — the balance caps the chain it can survive
+    depth = martingale_chain_depth(state.current_balance, state.base_bet, loss_mult)
+    if sk in ("2", "7") and state.streak_reset_losses and state.max_loss is None and depth:
+        warnings.append(
+            f"Streak reset with no `max_loss`: balance covers a {depth}-loss chain. "
+            f"Loss {depth + 1} in a row ends the session with insufficient balance."
         )
     # Anti-Martingale without profit lock-in
     if sk == "3" and state.max_profit is None:
@@ -773,7 +792,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.32.0"
+VERSION      = "2.32.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1531,6 +1550,12 @@ def api_auto_start() -> bool:
                 time.sleep(delay)
                 continue
             body = (r.text or "")[:400]
+            if _is_insufficient_balance(body):
+                logger.warning("INSUFFICIENT BALANCE (auto/start %d): %s", r.status_code, body)
+                with state.lock:
+                    state.last_error = "Insufficient balance"
+                    state._insufficient_balance = True
+                return False
             classified = _classify_auto_stop_reason(body)
             # v2.30.9 — include a short body snippet in state.last_error so
             # operators self-diagnose from `wolfctl status` instead of
@@ -1594,6 +1619,24 @@ def _fmt_auto_stop_reason(sr) -> str:
 # _classify_auto_stop_reason — extracted to core.net_helpers in v2.28.0.
 # TG bot now imports the same helper, closing its max-nonce blind spot.
 _classify_auto_stop_reason = classify_auto_stop_reason
+
+
+def _is_insufficient_balance(text) -> bool:
+    """True when a WolfBet error body/message reports insufficient balance."""
+    return "insufficient" in str(text or "").lower()
+
+
+def _midchain_loss_reason() -> str:
+    """Non-empty stop reason when restarting the server auto-cycle would abandon a loss.
+
+    A fresh /auto/start resets the server-side progression to base_bet. Mid loss
+    streak or with the session in the red, that loss can never be recovered and
+    the streak-reset (profit >= 0) trigger can never fire — stop instead.
+    """
+    if state.current_streak < 0 or state.profit < 0:
+        return (f"Auto-cycle lost mid-chain (streak {state.current_streak}, "
+                f"profit {state.profit:+.8f})")
+    return ""
 
 
 def _recover_expired_session() -> bool:
@@ -1700,6 +1743,16 @@ def api_place_bet(amount: float) -> Optional[dict]:
         elif r.status_code == 400 and is_auto_game(state.game):
             # UUID expired / seed exhausted — classify body so loop recovers correctly.
             body = r.text[:200]
+            # v2.32.1 — insufficient balance is terminal. It used to fall through
+            # to the "expired" default, so the loop restarted a fresh auto-cycle
+            # at base bet with the session deep in the red.
+            if _is_insufficient_balance(body):
+                logger.warning("INSUFFICIENT BALANCE (auto-bet 400): %s", body)
+                with state.lock:
+                    state._auto_uuid = None
+                    state.last_error = "Insufficient balance"
+                    state._insufficient_balance = True
+                return None
             classified = _classify_auto_stop_reason(body) or "expired"
             logger.warning("AUTO-BET 400 (%s): %s", classified, body)
             with state.lock:
@@ -1832,6 +1885,16 @@ def betting_loop():
 
         # ── auto-bet: ensure we have a live UUID (with max-nonce recovery) ──
         if is_auto_game(state.game) and not state._auto_uuid:
+            # v2.32.1 — a new server cycle restarts the progression at base_bet.
+            # Mid loss chain / in the red that abandons the loss with no way out.
+            midchain = _midchain_loss_reason()
+            if state._insufficient_balance or midchain:
+                reason = "Insufficient balance" if state._insufficient_balance else midchain
+                logger.warning("AUTO-CYCLE not restarted — %s", reason)
+                state.running = False
+                state.status = f"STOPPED: {reason}"
+                _db_save_session()
+                break
             needs_recovery = state.last_stop_reason in ("max_nonce", "expired")
             state.status = (
                 f"Recovering from {state.last_stop_reason} — rotating seed…"
@@ -1839,6 +1902,11 @@ def betting_loop():
             )
             ok = _recover_expired_session() if needs_recovery else api_auto_start()
             if not ok:
+                if state._insufficient_balance:
+                    state.running = False
+                    state.status = "STOPPED: Insufficient balance"
+                    _db_save_session()
+                    break
                 # Circuit breaker: 3 consecutive recovery failures → hard stop.
                 if state.consecutive_recovery_fails >= 3:
                     reason = state.last_stop_reason or "unknown"

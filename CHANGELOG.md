@@ -1,5 +1,20 @@
 # Changelog
 
+## CLI v2.32.1 — hotfix: insufficient balance on auto-bet no longer "recovers" (2026-11-13)
+
+**Incident.** A Martingale auto-bet session with streak reset on and no `max_loss`. The first 3+-loss run kept going until the balance could not cover the next doubled bet. WolfBet rejected that bet with HTTP 400 `You have insufficient balance…`. The CLI's 400 branch fell through to `classify_auto_stop_reason(body) or "expired"`, so the loop treated it as a dead session. It rotated the seed and started a fresh auto-cycle at base bet in the same session, still in the red. Streak reset only fires at profit ≥ 0, and no other stop was set, so nothing could end the session. Each time a later chain hit the balance limit, the same "recovery" ran again, until the balance was gone.
+
+### Fixes
+- `api_place_bet` 400 branch: an `insufficient` body sets `_insufficient_balance`. The loop hard-stops with `STOPPED: Insufficient balance`. It is never labelled `expired`.
+- `api_auto_start`: an `insufficient` body sets the same flag. The loop stops on the first failure instead of retrying 3× through recovery.
+- New guard before any auto-cycle (re)start: if the session is mid loss streak (`current_streak < 0`) or in the red (`profit < 0`), stop with `Auto-cycle lost mid-chain (streak …, profit …)`. A new server cycle resets the progression to base bet and would abandon the loss. This covers genuine `expired` / `max_nonce` mid-chain. Fresh starts, profit-increment restarts and safe recoveries are unchanged.
+- `_check_risky_config`: when streak reset is on and `max_loss` is off (Martingale / Delay-M), the warning shows the longest loss chain the balance can pay for (`martingale_chain_depth`).
+- TG engine already treated 400 insufficient as terminal. No change there.
+
+**Tests**: `tests/test_phase9b_insufficient_400.py` (11): 400 insufficient vs real expiry, `/auto/start` single attempt, a loop replay of the incident, mid-chain and in-red stops, safe recovery and fresh start still work, chain depth, warning. Version assertions bumped. **693 total passing.**
+
+`VERSION` `2.32.0` → `2.32.1`.
+
 ## CLI v2.32.0 / TG v1.20.0 — streak reset: restart after a long loss streak breaks (2026-10-29)
 
 New recurring trigger. When a run of **N or more consecutive losses** is broken by a win, the session ends, pauses for its own delay, then a fresh session starts — same reset machinery as recurring restarts.
