@@ -1,5 +1,19 @@
 # Changelog
 
+## CLI v2.34.0 — durations: range time span in stats/analytics + total run time in monitor (2026-11-13)
+
+Each session already showed its own uptime, but nothing showed how long a set of sessions covered. With recurring / streak-reset cycles, the monitor clock showed only the current short session and restarted every cycle.
+
+- New `_fmt_duration`: `1mo 20d 2h 3m 2s` (30-day months, leading zero units dropped, seconds always shown).
+- New `_sessions_time_span(conn, where, params)`: first start, last end (a running session counts up to now), **span** (first start → last end) and **bet time** (Σ per-session durations, pauses between sessions excluded). It honours the `--since` / `--until` window, and tz-aware timestamps are converted to local time.
+- `wolfctl stats` totals: `Sessions:  N  (first start → last end)` and a new `Time Span: …   Bet Time: …` line.
+- `wolfctl analytics`: `Time range:`, `Time span:` and `Bet time:` rows after `Total sessions:`.
+- Monitor and in-process dashboard header: `#N  0:00:01  Run 2h 3m 5s`. Run is the wall-clock time since the bot started (`state.run_started_at`, never reset by restart cycles, pauses included). It is exported in the state file as `run_uptime_sec`. `wolfctl status` gets a `Running for` row. Older state files without the key show no Run segment.
+
+**Tests**: `tests/test_phase9d_durations.py` (17): formatter cases, span helper (plain, windowed, running, empty), stats and analytics output, monitor header with and without run time, run start not reset by recurring. Version pins bumped. **727 total passing.**
+
+`VERSION` `2.33.1` → `2.34.0`.
+
 ## CLI v2.33.1 — stats: average number of wins / losses per session (2026-11-13)
 
 v2.33.0 added Avg Win / Avg Loss as amounts per bet. The intended metric is a count: how many wins (and losses) a session has on average.

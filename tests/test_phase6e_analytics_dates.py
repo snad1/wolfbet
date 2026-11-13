@@ -27,7 +27,7 @@ import tg  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.33.1"
+    assert wb.VERSION == "2.34.0"
 
 
 def test_tg_version():

@@ -792,7 +792,7 @@ STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wol
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.33.1"
+VERSION      = "2.34.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1192,6 +1192,8 @@ class BotState:
         # ── session info ──
         self.session_id     = None
         self.session_start  = time.time()
+        # v2.34.0 — bot start; never reset by recurring / streak-reset cycles
+        self.run_started_at = time.time()
         # v2.28.4 — when a session enters `_reset_session_for_recurring`, this
         # is set to time.time() BEFORE the sleep so uptime + ended_at freeze
         # at the real bet-end. Cleared right before the new session's
@@ -3096,6 +3098,8 @@ def _save_state_file():
             "uptime_sec": int(
                 (state.session_bet_ended_at or time.time()) - state.session_start
             ),
+            # v2.34.0 — wall-clock time since bot start (pauses included)
+            "run_uptime_sec": int(time.time() - state.run_started_at),
             "pause_remaining_sec": (
                 max(0, int(state.session_pause_total - (time.time() - state.session_pause_started_at)))
                 if state.session_pause_started_at else 0
@@ -3204,12 +3208,13 @@ def build_dashboard_screen() -> str:
     else:
         st_ind = _a("bold_red", "● STOPPED")
 
-    hdr_text = f"WolfBet v{VERSION}  #{state.session_id}  {uptime}  "
+    run_seg = f"  Run {_fmt_duration(time.time() - state.run_started_at)}"
+    hdr_text = f"WolfBet v{VERSION}  #{state.session_id}  {uptime}{run_seg}  "
     # visible chars used: 4 + len(hdr_text) + len("● STATUS") + 1
     hdr_vis = 4 + len(hdr_text) + len("● STOPPED") + 1
     fill = max(0, term_w - hdr_vis)
     add(f"{_a('dim_blue', '─── ')}{_a('bold_cyan', f'WolfBet v{VERSION}')}"
-        f"{_a('white', f'  #{state.session_id}  {uptime}')}  {st_ind} "
+        f"{_a('white', f'  #{state.session_id}  {uptime}{run_seg}')}  {st_ind} "
         f"{_a('dim_blue', '─' * fill)}")
 
     # ── Row 2: Balance bar ────────────────────────────
@@ -4871,10 +4876,12 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     else:
         st_ind = _a("bold_red", "● STOPPED")
         st_ind_plain = "● STOPPED"
-    hdr_vis = 4 + len(f"WolfBet v{VERSION}  #{sid}  {uptime}  ") + len(st_ind_plain) + 1
+    _run = d.get("run_uptime_sec")
+    run_seg = f"  Run {_fmt_duration(_run)}" if _run is not None else ""
+    hdr_vis = 4 + len(f"WolfBet v{VERSION}  #{sid}  {uptime}{run_seg}  ") + len(st_ind_plain) + 1
     fill = max(0, term_w - hdr_vis)
     add(f"{_a('dim_blue', '─── ')}{_a('bold_cyan', f'WolfBet v{VERSION}')}"
-        f"{_a('white', f'  #{sid}  {uptime}')}  {st_ind} "
+        f"{_a('white', f'  #{sid}  {uptime}{run_seg}')}  {st_ind} "
         f"{_a('dim_blue', '─' * fill)}")
 
     # ── Row 2: Balance bar ────────────────────────────
@@ -5203,6 +5210,8 @@ def cmd_status():
 
     rows = [
         ("Uptime",         uptime + (f"  [dim]· Recurring pause:[/] {pause_str}" if pause_str else "")),
+        *([("Running for", _fmt_duration(d["run_uptime_sec"]))]
+          if d.get("run_uptime_sec") is not None else []),
         ("Currency",       d.get("currency", "?").upper()),
         ("Strategy",       strat_str),
         ("Base / Current", f"{d.get('base_bet', 0):.8f} / {d.get('current_bet', 0):.8f}"),
@@ -6008,6 +6017,16 @@ def cmd_analytics(since: str = None, until: str = None):
     ps = '+' if p >= 0 else ''
     grid = Table.grid(padding=(0, 2))
     grid.add_row("Total sessions:",     f"{lifetime['sessions_total']:,}")
+    _conn = _db_conn()
+    try:
+        a_first, a_last, a_span, a_bet = _sessions_time_span(_conn, where, wparams)
+    finally:
+        _conn.close()
+    if a_first:
+        grid.add_row("Time range:", f"{a_first.isoformat(' ', 'seconds')} → "
+                                    f"{a_last.isoformat(' ', 'seconds')}")
+    grid.add_row("Time span:",          _fmt_duration(a_span))
+    grid.add_row("Bet time:",           _fmt_duration(a_bet))
     grid.add_row("Sessions in profit:", f"{lifetime['sessions_in_profit']:,}")
     grid.add_row("Sessions in loss:",   f"{lifetime['sessions_in_loss']:,}")
     grid.add_row("Total bets:", f"{lifetime['bets_total']:,}   W: {lifetime['wins_total']:,}   L: {lifetime['losses_total']:,}")
@@ -6028,6 +6047,50 @@ def cmd_analytics(since: str = None, until: str = None):
 
     console.print("\n[dim]  Use --stats for recent 20 sessions in detail, "
                   "or --session-bets ID to drill into one.[/]\n")
+
+
+def _fmt_duration(sec) -> str:
+    """v2.34.0 — '1mo 20d 2h 3m 2s' (30-day months). Leading zero units are
+    dropped; seconds are always shown."""
+    sec = max(0, int(sec or 0))
+    parts = []
+    for name, size in (("mo", 30 * 86400), ("d", 86400), ("h", 3600), ("m", 60)):
+        q, sec = divmod(sec, size)
+        if q or parts:
+            parts.append(f"{q}{name}")
+    parts.append(f"{sec}s")
+    return " ".join(parts)
+
+
+def _sessions_time_span(conn, where: str = "", params=()):
+    """v2.34.0 — (first_start, last_end, span_sec, bet_sec) for sessions in the window.
+
+    span = first started_at → last ended_at (a running session ends "now").
+    bet  = Σ per-session (ended_at − started_at): pauses between sessions excluded.
+    Returns (None, None, 0, 0) when no row has a parseable started_at.
+    """
+    def _local(ts):
+        t = datetime.fromisoformat(ts)
+        # tz-aware rows (e.g. written with a UTC offset) → local naive, so they
+        # compare with the naive local timestamps the bot writes.
+        return t.astimezone().replace(tzinfo=None) if t.tzinfo else t
+
+    now = datetime.now()
+    first = last = None
+    bet = 0.0
+    for started, ended in conn.execute(
+            f"SELECT started_at, ended_at FROM sessions{where}", tuple(params)):
+        try:
+            t0 = _local(started)
+            t1 = _local(ended) if ended else now
+        except (TypeError, ValueError):
+            continue
+        bet += max(0.0, (t1 - t0).total_seconds())
+        first = t0 if first is None or t0 < first else first
+        last = t1 if last is None or t1 > last else last
+    if first is None:
+        return None, None, 0, 0
+    return first, last, max(0.0, (last - first).total_seconds()), bet
 
 
 def _stats_date_window(since: str = None, until: str = None):
@@ -6164,6 +6227,7 @@ def cmd_stats(since: str = None, until: str = None):
         console.print()
 
     # totals — v2.30.9: honor the same date window as the listing.
+    span_first, span_last, span_sec, bet_sec = _sessions_time_span(conn, where, params)
     totals = conn.execute(f"""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
                COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
@@ -6195,7 +6259,11 @@ def cmd_stats(since: str = None, until: str = None):
     avg_ps = "+" if avg_pnl >= 0 else ""
 
     console.print(Rule(f"[bold cyan]{'Range' if (since or until) else 'All-Time'} Totals[/]{window_label}"))
-    console.print(f"  [dim]Sessions:[/]      {sessions}")
+    rng = (f"  [dim]({span_first.isoformat(' ', 'seconds')} → "
+           f"{span_last.isoformat(' ', 'seconds')})[/]") if span_first else ""
+    console.print(f"  [dim]Sessions:[/]      {sessions}{rng}")
+    console.print(f"  [dim]Time Span:[/]     {_fmt_duration(span_sec)}   "
+                  f"[dim]Bet Time:[/] {_fmt_duration(bet_sec)}")
     console.print(f"  [dim]Total Bets:[/]    {tot_bets}  (W {tot_wins} / L {tot_losses}  WR {wr})")
     console.print(f"  [dim]Wagered:[/]       {tot_wagered:.8f}")
     console.print(f"  [dim]Profit:[/]        [{pc}]{ps}{tot_profit:.8f}[/]")
@@ -6721,6 +6789,7 @@ def main():
 
     state.session_id    = _db_start_session()
     state.session_start = time.time()
+    state.run_started_at = state.session_start
     state.initial_multiplier = state.multiplier
     state.running       = True
 
