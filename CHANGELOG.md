@@ -1,5 +1,18 @@
 # Changelog
 
+## CLI v2.33.1 — stats: average number of wins / losses per session (2026-11-13)
+
+v2.33.0 added Avg Win / Avg Loss as amounts per bet. The intended metric is a count: how many wins (and losses) a session has on average.
+
+- `wolfctl stats` Range / All-Time Totals: new `Wins/Session:  Max N  Avg N.N` and `Losses/Session: Max N  Avg N.N` lines next to `Bets/Session`. They respect `--since` / `--until`.
+- The Avg Win / Avg Loss amount lines are removed from the totals, the per-session Streaks line (back to `W+x  L-y`) and `wolfctl session ID`. Best Win / Worst Loss stay removed.
+- The amount tracking added in v2.33.0 is removed: `win_total` / `loss_total` state, the outcome-site accumulation, the session-save columns, the helpers, and the migrate entries. Databases that already got those columns keep them unused; this is harmless.
+- The v2.33.0 time-of-day `--since` / `--until` fix is unchanged.
+
+**Tests**: `tests/test_phase9c_stats_window_avgs.py`: the date-window tests are kept; the amount tests are replaced by count tests (1/1/1 → Avg 1.0; mixed sessions in a time window; no amount lines in the session view). Version pins bumped. **709 total passing.**
+
+`VERSION` `2.33.0` → `2.33.1`.
+
 ## CLI v2.33.0 — stats: time-of-day windows work + avg win / avg loss per bet (2026-11-13)
 
 ### Fix: `--since` / `--until` with a time

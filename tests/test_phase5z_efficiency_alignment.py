@@ -36,7 +36,7 @@ def _reset():
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.33.0"
+    assert wb.VERSION == "2.33.1"
 
 
 # ── cycle_mean helper ────────────────────────────────────
