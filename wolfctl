@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.11
+# WolfBet AutoBot — Unified Management Command v3.12
 # Wrapped in { } so bash reads entire script before executing —
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -12,6 +12,7 @@ TG_SERVICE="wolfbet-tg"
 WEB_SERVICE="wolfbet-web"
 # v3.10 — parallel lanes: lane 1 = $SERVICE, lanes 2..N = wolfbet-lane@K
 # v3.11 — wolfctl lanes N --split none|budget|bet|both
+# v3.12 — wolfctl run-reset (new run total for profit_increment_scope=run)
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -23,11 +24,11 @@ SCRIPT_NAME="wolfctl"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.11
+WOLFCTL_VERSION=3.12
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.11"
+    echo "  wolfctl — WolfBet AutoBot Manager v3.12"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -66,6 +67,7 @@ usage() {
     echo "  DATA:"
     echo "    wolfctl stats               Recent 20 sessions in detail (--since/--until DATE)"
     echo "    wolfctl reset [--yes]       Archive statistics + start fresh (config untouched)"
+    echo "    wolfctl run-reset [--yes]   New run total for profit_increment_scope=run"
     echo "    wolfctl archives            List archived statistics DBs"
     echo "    wolfctl analytics           Lifetime aggregates + top 5 best/worst"
     echo "    wolfctl session ID          Full stats + streaks for one session"
@@ -367,7 +369,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.11"
+    echo "  wolfctl v3.12"
 }
 
 # ── v2.25.0 parity — mutation ──────────────────────────
@@ -477,9 +479,42 @@ cmd_reset() {
     mv "$db" "$archive"
     # Stale live-state would make --resume point at the old session number.
     rm -f "$HOME/.wolfbet_autobot_live.json" "$HOME"/.wolfbet_autobot_live.lane*.json
+    # Session ids restart at 1, so the run-wide profit total starts over too.
+    rm -f "$HOME/.wolfbet_run.json" "$HOME"/.wolfbet_run.lane*.json
     echo "Archived → $archive  ($sess sessions, $bets bets, $size)"
     echo "Config untouched. Next 'wolfctl start' begins fresh statistics."
     echo "Revisit anytime: wolfctl archives"
+}
+
+# v3.12 — start a new run total for the run-wide profit increment.
+cmd_run_reset() {
+    local yes=0 was_running=0
+    for arg in "$@"; do
+        case "$arg" in --yes|-y) yes=1 ;; esac
+    done
+    systemctl --user is-active --quiet "$SERVICE" 2>/dev/null && was_running=1
+    if [ "$yes" = "0" ]; then
+        echo "This starts a new run total for profit_increment_scope=run:"
+        echo "  run profit → back to 0 from the next session"
+        echo "  base_bet   → back to the config value (run bumps dropped)"
+        echo "  statistics → untouched"
+        [ "$was_running" = "1" ] && echo "  lanes      → restarted (each running chain is saved and ended)"
+        read -r -p "Proceed? [y/N] " reply
+        case "$reply" in
+            y|Y|yes|YES) ;;
+            *) echo "Aborted."; return ;;
+        esac
+    fi
+    if [ "$was_running" = "1" ]; then
+        stop_all_lanes
+        systemctl --user stop "$SERVICE"
+    fi
+    "$PYTHON" "$BOT" --run-reset
+    if [ "$was_running" = "1" ]; then
+        systemctl --user start "$SERVICE"
+        sync_lanes "$(lane_count)"
+        echo "Lanes restarted on a new run."
+    fi
 }
 
 # v3.9 — list archived statistics DBs with session counts + date spans.
@@ -1044,6 +1079,7 @@ case "${1:-}" in
     tmux)         cmd_tmux ;;
     stats)        shift; cmd_stats "$@" ;;
     reset)        shift; cmd_reset "$@" ;;
+    run-reset)    shift; cmd_run_reset "$@" ;;
     archives)     cmd_archives ;;
     session)      cmd_session "${2:-}" ;;
     presets)      cmd_presets ;;

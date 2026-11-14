@@ -1,5 +1,27 @@
 # Changelog
 
+## CLI v2.37.0 / wolfctl v3.12 — run-wide profit increment (2026-11-14)
+
+`profit_threshold` / `profit_increment` only measured the current session's profit, and the milestone reset every recurring / streak-reset cycle. With many short sessions, a large threshold was never reached. The increment can now measure the total across the whole run.
+
+### `profit_increment_scope` (alias `piscope`)
+- `session` (**default**): unchanged.
+- `run`: profit = the sum of this lane's sessions since the run started + the current session. The milestone is kept across sessions, and each bump is persisted.
+- Run file per lane: `~/.wolfbet_run.json` / `.laneK.json` (env `WOLFBET_RUN_PATH`), holding `{first_session, started_at, bumps}`. The run total is read from the stats DB, so a restart, update or crash keeps it.
+- On start, `base_bet = config base_bet + bumps × profit_increment`, and the next milestone is `(bumps + 1) × threshold`. A run file that points past the DB's last session (stats were reset) starts a new run.
+- The two duplicated increment blocks are merged into `_check_profit_increment()` (auto-bet UUID restart kept).
+- `pi` / `pt` set to `none` / `off` / `0` / `0.0` (or ≤ 0) means off: no bumps and no background run. The run file is removed at the next start, or right away through live reload. Re-enabling starts a fresh run (on the current session when done live), so old bumps are never re-applied.
+- Wizard asks for the scope after the increment prompts. `config-set` validates `session|run` (exit 2 otherwise). It needs a restart to apply.
+- `wolfctl status`: `Run Profit` row (since #N, bumps, next milestone). Monitor: `RunMs` progress.
+
+### wolfctl v3.12
+- `wolfctl run-reset [--yes]` confirms, stops the running lanes, removes the run files and starts the lanes again. `--run-reset [--lane K]` on the CLI.
+- `wolfctl reset` also removes the run files, because session ids restart at 1.
+
+**Tests**: `tests/test_phase10b_run_increment.py` (23): session scope unchanged, run creation, DB sum with lane filter, bump persisted, resume restores bumps, stale file → new run, recurring keeps milestone, auto-UUID restart, config-set, run-reset, `RunMs` row, wolfctl wiring, none / 0 means off (mutation, start, live reload off / on). Source guards updated for the merged helper. Version pins bumped. **799 total passing.**
+
+`VERSION` `2.36.0` → `2.37.0`. `WOLFCTL_VERSION` `3.11` → `3.12`.
+
 ## CLI v2.36.0 / wolfctl v3.11 — configurable lane money split, default full amounts (2026-11-13)
 
 In v2.35.0 the lane budget guard (`balance ÷ lanes`) was always on, and the base bet was never divided. How lanes share money is now a setting.

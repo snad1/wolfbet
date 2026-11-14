@@ -302,6 +302,8 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.losses         = 0
         # v2.35.0 — lane equity carries the lane's result across its sessions.
         state.lane_run_profit += state.profit
+        # v2.37.0 — the run total keeps the finished session's result.
+        state.run_profit_done += state.profit
         state.profit         = 0.0
         state.wagered        = 0.0
         state.current_streak = 0
@@ -324,7 +326,8 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         # a fresh target. Base_bet is deliberately preserved above (bumps
         # stack across cycles). Without this, cycle 2+ would need to accumulate
         # past cycle 1's high-water mark before any bump could fire.
-        if state.profit_threshold:
+        # v2.37.0 — run scope keeps its milestone across sessions.
+        if state.profit_threshold and state.profit_increment_scope != "run":
             state.next_profit_milestone = state.profit_threshold
         state.consecutive_errors = 0
         state.backoff_delay  = 1.0
@@ -355,6 +358,8 @@ _TWEAK_ALIAS = {
     "msprofit":    "milestone_profit",
     "pi":          "profit_increment",
     "pt":          "profit_threshold",
+    "piscope":     "profit_increment_scope",
+    "pscope":      "profit_increment_scope",
     "basebet":     "base_bet",
     "lossmult":    "loss_mult",
     "winmult":     "win_mult",
@@ -372,7 +377,8 @@ _TWEAK_PARAMS = {
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
-    "profit_increment", "profit_threshold", "recurring", "recurring_delay",
+    "profit_increment", "profit_threshold", "profit_increment_scope",
+    "recurring", "recurring_delay",
     "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
     "pipeline_depth",
@@ -480,13 +486,25 @@ def _apply_mutation(changes: dict) -> list:
     if "profit_increment" in changes:
         v = changes["profit_increment"]
         state.profit_increment = None if _is_off(v) else float(v)
+        if state.profit_increment is not None and state.profit_increment <= 0:
+            state.profit_increment = None     # v2.37.0 — 0 / 0.0 means off
         msgs.append(f"Profit increment: {state.profit_increment:.8f}" if state.profit_increment else "Profit increment: off")
     if "profit_threshold" in changes:
         v = changes["profit_threshold"]
         state.profit_threshold = None if _is_off(v) else float(v)
+        if state.profit_threshold is not None and state.profit_threshold <= 0:
+            state.profit_threshold = None     # v2.37.0 — 0 / 0.0 means off
         if state.profit_threshold:
-            state.next_profit_milestone = state.profit_threshold
+            # v2.37.0 — run scope: next milestone after the bumps already made.
+            _done = state.run_bumps if state.profit_increment_scope == "run" else 0
+            state.next_profit_milestone = (_done + 1) * state.profit_threshold
         msgs.append(f"Profit threshold: {state.profit_threshold:.8f}" if state.profit_threshold else "Profit threshold: off")
+    if "profit_increment_scope" in changes:
+        v = str(changes["profit_increment_scope"] or "").strip().lower()
+        if v not in PROFIT_INCREMENT_SCOPES:
+            raise ValueError(f"profit_increment_scope must be session or run, got {v!r}")
+        state.profit_increment_scope = v
+        msgs.append(f"Profit increment scope: {v} (applies on next start)")
 
     # Recurring — instant boolean
     if "recurring" in changes:
@@ -799,9 +817,11 @@ CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wol
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
 _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 — lane 1 paths
+# v2.37.0 — run-wide profit increment tracking (one file per lane)
+RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.36.0"
+VERSION      = "2.37.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -944,7 +964,7 @@ _CONFIG_KEYS = [
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
-    "profit_increment", "profit_threshold",
+    "profit_increment", "profit_threshold", "profit_increment_scope",
     "pipeline_depth", "recurring_delay",
     "proxy", "purge_days",
     "db_write_mode",
@@ -1070,7 +1090,7 @@ _PRESET_KEYS = [
     "base_bet", "strategy", "strategy_key", "win_mult", "loss_mult",
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
-    "profit_increment", "profit_threshold",
+    "profit_increment", "profit_threshold", "profit_increment_scope",
     # Phase 4a additions — JSON-native Phase 2 fields:
     "recurring", "basebet_pct",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
@@ -1152,6 +1172,15 @@ def _reload_live_config() -> dict:
                     skipped_unsafe.append(k)
 
     # Side effects for keys that need them.
+    # v2.37.0 — increment turned off (none / 0) ends the run; turned on with
+    # no run starts one at the current session.
+    if state.profit_increment_scope == "run" and (
+            "profit_increment" in applied or "profit_threshold" in applied):
+        if not _increment_on():
+            _end_run("increment off")
+        elif state.run_first_session is None and state.session_id:
+            _attach_run(state.session_id)
+            state.next_profit_milestone = state.profit_threshold
     if "proxy" in applied:
         _apply_proxy_to_session()
     if "custom_rules_text" in applied and state.custom_rules_text:
@@ -1441,6 +1470,13 @@ class BotState:
         self.profit_increment    : Optional[float] = None   # amount to add to base_bet each milestone
         self.profit_threshold    : Optional[float] = None   # profit interval that triggers increment
         self.next_profit_milestone: float = 0.0              # next profit level to trigger bump
+        # v2.37.0 — run-wide increment: profit summed across sessions since
+        # the run started (persisted in RUN_PATH until `wolfctl run-reset`).
+        self.profit_increment_scope = "session"
+        self.run_first_session: Optional[int] = None
+        self.run_since: Optional[str] = None   # ISO time the run began
+        self.run_bumps        = 0
+        self.run_profit_done  = 0.0     # finished sessions of this run
 
         # ── strategy internal state ──
         self.dalembert_unit = 0
@@ -2058,6 +2094,181 @@ def should_stop() -> tuple:
 
 
 LANE_BUDGET_REASON = "Lane budget exceeded"
+PROFIT_INCREMENT_SCOPES = ("session", "run")
+
+
+def _increment_on() -> bool:
+    """v2.37.0 — increment active only with both values set and > 0."""
+    return bool(state.profit_increment) and bool(state.profit_threshold) \
+        and state.profit_increment > 0 and state.profit_threshold > 0
+
+
+def _check_profit_increment() -> None:
+    """Bump base_bet when profit reaches the next milestone.
+
+    v2.37.0 — scope "session" measures this session's profit (milestone resets
+    each recurring cycle); scope "run" measures the total since the run
+    started and persists each bump in the run file. Caller holds state.lock.
+    """
+    if not _increment_on():
+        return
+    run = state.profit_increment_scope == "run"
+    p = run_profit_total() if run else state.profit
+    if p < state.next_profit_milestone:
+        return
+    state.base_bet += state.profit_increment
+    state.next_profit_milestone += state.profit_threshold
+    if run:
+        state.run_bumps += 1
+        _save_run()
+    tag = "RUN PROFIT INCREMENT" if run else "PROFIT INCREMENT"
+    # v2.29.0 — for auto-games the Martingale progression runs server-side
+    # on WolfBet using the base_bet submitted at /auto/start. Clearing
+    # _auto_uuid makes the next loop tick call api_auto_start with the fresh
+    # base — same CLI session, new WolfBet UUID.
+    if is_auto_game(state.game) and state._auto_uuid:
+        state._auto_uuid = None
+        logger.info("%s: base_bet → %.8f + auto-bet UUID cleared for restart with "
+                    "new base (next milestone at %.8f profit)",
+                    tag, state.base_bet, state.next_profit_milestone)
+    else:
+        logger.info("%s: base_bet → %.8f (next milestone at %.8f profit)",
+                    tag, state.base_bet, state.next_profit_milestone)
+
+
+# ── v2.37.0 — run-wide profit increment ───────────────────
+def _run_path(lane: int = None) -> str:
+    return _lane_path(RUN_PATH, getattr(state, "lane", 1) if lane is None else lane)
+
+
+def _load_run(lane: int = None):
+    try:
+        with open(_run_path(lane)) as f:
+            d = json.load(f)
+        return {"first_session": int(d["first_session"]),
+                "started_at": d.get("started_at"),
+                "bumps": max(0, int(d.get("bumps") or 0))}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_run() -> None:
+    if state.run_first_session is None:
+        return
+    path = _run_path()
+    tmp = path + ".tmp"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"first_session": state.run_first_session,
+                       "started_at": state.run_since,
+                       "bumps": state.run_bumps}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning("run file save failed: %s", e)
+
+
+def _run_profit_done_from_db(first_sid: int, exclude_sid=None) -> float:
+    """Sum of this lane's session profits since `first_sid` (excluding one)."""
+    try:
+        conn = _db_conn()
+        row = conn.execute(
+            "SELECT COALESCE(SUM(profit),0) FROM sessions "
+            "WHERE id >= ? AND id != ? AND COALESCE(lane,1) = ?",
+            (first_sid, exclude_sid if exclude_sid is not None else -1,
+             getattr(state, "lane", 1))).fetchone()
+        conn.close()
+        return float(row[0] or 0.0)
+    except Exception as e:
+        logger.warning("run profit query failed: %s", e)
+        return 0.0
+
+
+def _db_max_session_id() -> int:
+    try:
+        conn = _db_conn()
+        row = conn.execute("SELECT COALESCE(MAX(id),0) FROM sessions").fetchone()
+        conn.close()
+        return int(row[0] or 0)
+    except Exception:
+        return 0
+
+
+def run_profit_total() -> float:
+    return state.run_profit_done + state.profit
+
+
+def _init_run() -> None:
+    """Restore (or prepare) the run before the first session starts.
+
+    Scope "run" only. An existing run file restores the bumps on top of the
+    loaded base_bet and the profit of the run's finished sessions. A file
+    pointing past the DB's last session (stats were reset) starts a new run.
+    """
+    state.run_first_session = None
+    state.run_bumps = 0
+    state.run_profit_done = 0.0
+    if state.profit_increment_scope != "run" or not _increment_on():
+        # Off (none / 0) or per-session scope: no run in the background, and
+        # a leftover run never comes back when the increment is re-enabled.
+        _end_run("increment off" if state.profit_increment_scope == "run" else "scope session")
+        return
+    run = _load_run()
+    if run and run["first_session"] > _db_max_session_id() + 1:
+        logger.warning("RUN file points past the stats DB (reset?) — starting a new run")
+        run = None
+    if run:
+        state.run_first_session = run["first_session"]
+        state.run_since = run["started_at"]
+        state.run_bumps = run["bumps"]
+        state.run_profit_done = _run_profit_done_from_db(run["first_session"])
+        if state.profit_increment and state.run_bumps:
+            state.base_bet = round(state.base_bet + state.run_bumps * state.profit_increment, 8)
+            state.current_bet = state.base_bet
+    if state.profit_threshold:
+        state.next_profit_milestone = (state.run_bumps + 1) * state.profit_threshold
+    logger.warning("RUN %s  since #%s  bumps=%d  run profit=%+.8f  base_bet=%.8f",
+                   "resumed" if run else "new", state.run_first_session or "next",
+                   state.run_bumps, state.run_profit_done, state.base_bet)
+
+
+def _end_run(reason: str) -> None:
+    """Drop this lane's run: file removed, run counters cleared."""
+    had = state.run_first_session is not None
+    try:
+        os.remove(_run_path())
+        had = True
+    except OSError:
+        pass
+    state.run_first_session = None
+    state.run_since = None
+    state.run_bumps = 0
+    state.run_profit_done = 0.0
+    if had:
+        logger.warning("RUN ended (%s) — the next run starts fresh", reason)
+
+
+def _attach_run(session_id: int) -> None:
+    """A new run begins at the first session this bot starts."""
+    if (state.profit_increment_scope == "run" and _increment_on()
+            and state.run_first_session is None):
+        state.run_first_session = session_id
+        state.run_since = datetime.now().isoformat()
+        _save_run()
+
+
+def cmd_run_reset(lane: int = None) -> int:
+    """Delete the run file(s): the next start begins a new run. Returns count removed."""
+    n = 0
+    for k in ([lane] if lane else range(1, LANES_MAX + 1)):
+        try:
+            os.remove(_lane_path(RUN_PATH, k))
+            n += 1
+        except OSError:
+            continue
+    console.print(f"[green]Run reset[/] — {n} run file(s) removed. "
+                  "The next start begins a new run total.")
+    return n
 
 
 def lane_equity():
@@ -2245,29 +2456,7 @@ def betting_loop():
                 state.lowest_balance = new_balance
 
             # ── profit-based base bet increment ──
-            if (state.profit_increment is not None and state.profit_threshold
-                    and state.profit >= state.next_profit_milestone):
-                state.base_bet += state.profit_increment
-                state.next_profit_milestone += state.profit_threshold
-                # v2.29.0 — for auto-games the Martingale progression runs
-                # server-side on WolfBet using the base_bet submitted at
-                # /auto/start. A CLI-side base_bet bump means nothing until
-                # we restart the WolfBet auto-cycle. Clearing _auto_uuid
-                # makes the next loop tick call api_auto_start with the
-                # fresh base — same CLI session, new WolfBet UUID. Same
-                # invariant as v2.25.0 max-nonce recovery.
-                if is_auto_game(state.game) and state._auto_uuid:
-                    state._auto_uuid = None
-                    logger.info(
-                        "PROFIT INCREMENT: base_bet → %.8f + auto-bet UUID "
-                        "cleared for restart with new base (next milestone at "
-                        "%.8f profit)", state.base_bet, state.next_profit_milestone,
-                    )
-                else:
-                    logger.info(
-                        "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
-                        state.base_bet, state.next_profit_milestone,
-                    )
+            _check_profit_increment()
 
             # profit graph snapshot (every 5 bets)
             if state.total_bets % 5 == 0:
@@ -2487,23 +2676,7 @@ def _apply_outcome_locked(envelope: dict) -> None:
         if new_balance < state.lowest_balance:
             state.lowest_balance = new_balance
 
-        if (state.profit_increment is not None and state.profit_threshold
-                and state.profit >= state.next_profit_milestone):
-            state.base_bet += state.profit_increment
-            state.next_profit_milestone += state.profit_threshold
-            # v2.29.0 — auto-game UUID reset so WolfBet-side base_bet follows.
-            if is_auto_game(state.game) and state._auto_uuid:
-                state._auto_uuid = None
-                logger.info(
-                    "PROFIT INCREMENT: base_bet → %.8f + auto-bet UUID "
-                    "cleared for restart with new base (next milestone at "
-                    "%.8f profit)", state.base_bet, state.next_profit_milestone,
-                )
-            else:
-                logger.info(
-                    "PROFIT INCREMENT: base_bet → %.8f (next milestone at %.8f profit)",
-                    state.base_bet, state.next_profit_milestone,
-                )
+        _check_profit_increment()
 
         if state.total_bets % 5 == 0:
             state.profit_history.append(state.profit)
@@ -3358,6 +3531,11 @@ def _save_state_file():
             "lanes_count": state.lanes_count,
             "lane_share": state.lane_share,
             "lane_split": state.lane_split,
+            # v2.37.0 — run-wide profit increment
+            "profit_increment_scope": state.profit_increment_scope,
+            "run_profit_total": run_profit_total(),
+            "run_first_session": state.run_first_session,
+            "run_bumps": state.run_bumps,
             "lane_equity": lane_equity(),
             "soft_pace_delay": state.soft_pace_delay,
             "pause_remaining_sec": (
@@ -4644,6 +4822,14 @@ def setup_wizard():
             return False
         state.profit_increment = float(v) if v else None
 
+        if state.profit_threshold and state.profit_increment:
+            v = _ask("Measure profit per session or across the whole run? (session/run)",
+                     default=state.profit_increment_scope or "session",
+                     choices=list(PROFIT_INCREMENT_SCOPES) + ["back"])
+            if v is _BACK or v == "back":
+                return False
+            state.profit_increment_scope = v
+
         # init milestone
         if state.profit_threshold:
             state.next_profit_milestone = state.profit_threshold
@@ -4993,6 +5179,10 @@ def _build_config_progress_row(d: dict) -> str:
         next_ms = float(d.get("next_profit_milestone")
                         or profit_threshold or 0.0)
         profit  = float(d.get("profit", 0.0) or 0.0)
+        # v2.37.0 — run scope measures the total since the run started.
+        _run_scope = d.get("profit_increment_scope") == "run"
+        if _run_scope:
+            profit = float(d.get("run_profit_total", profit) or 0.0)
         # v2.30.7 — display window-relative progress ("how close to the NEXT
         # bump?") not cumulative profit-vs-next-ms. Denominator is one
         # threshold unit; numerator resets after every bump. Matches operator
@@ -5003,7 +5193,7 @@ def _build_config_progress_row(d: dict) -> str:
         pct = min(100.0, (window_progress / float(profit_threshold) * 100)
                   if profit_threshold else 0.0)
         segments.append(
-            f"{_a('dim','Ms')} "
+            f"{_a('dim','RunMs' if _run_scope else 'Ms')} "
             f"{_a(_pct_color(pct), f'+{window_progress:.8f}/{float(profit_threshold):.8f} ({pct:.0f}%)')}"
         )
 
@@ -5585,7 +5775,16 @@ def cmd_status():
     pi = d.get("profit_increment")
     pt = d.get("profit_threshold")
     if pi and pt:
-        rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
+        if d.get("profit_increment_scope") == "run":
+            rows.append(("Profit Bump", f"+{pi:.8f} every {pt} run profit"))
+            nxt = d.get("next_profit_milestone")
+            rows.append(("Run Profit",
+                         f"{float(d.get('run_profit_total') or 0):+.8f}  "
+                         f"[dim](since #{d.get('run_first_session') or '?'}, "
+                         f"{d.get('run_bumps') or 0} bump(s)"
+                         + (f", next at {float(nxt):+.8f}" if nxt else "") + ")[/]"))
+        else:
+            rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
 
     # ── Observability (v2.26.1 — from state file) ──
     api_p50 = d.get("api_p50_ms")
@@ -5705,6 +5904,7 @@ _CONFIG_SHOW_FIELDS = [
     ("stop_on_balance",       "Stop when balance floor reached"),
     ("profit_increment",      "Bump base_bet by this at every profit milestone"),
     ("profit_threshold",      "Profit interval between increments"),
+    ("profit_increment_scope", "session = each session's profit · run = total since run start (wolfctl run-reset)"),
     ("recurring",             "Auto-restart cycle on non-loss stop"),
     ("recurring_delay",       "Seconds to pause between recurring cycles (0 = back-to-back)"),
     ("streak_reset_losses",   "Restart session on first win after N losses in a row (profit ≥ 0)"),
@@ -7231,6 +7431,9 @@ def main():
     group.add_argument("--lanes-status", action="store_true",
                        help="Show one row per parallel lane + totals")
     group.add_argument("--stop",    action="store_true", help="Stop a running daemon session")
+    group.add_argument("--run-reset", action="store_true",
+                       help="Start a new run total for the run-wide profit increment "
+                            "(all lanes, or --lane K)")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
     group.add_argument("--stats",   action="store_true", help="Show recent 20 sessions in detail")
     # v2.30.9 fix — modifiers, not commands: must combine WITH --stats, so they
@@ -7340,6 +7543,9 @@ def main():
     if args.stop:
         cmd_stop()
         return
+    if args.run_reset:
+        cmd_run_reset(args.lane)
+        return
     if args.list_presets:
         cmd_list_presets()
         return
@@ -7436,7 +7642,9 @@ def main():
     if state.lane > 1:
         time.sleep((state.lane - 1) * 2.0)
 
+    _init_run()           # v2.37.0 — restore run-wide increment (scope run)
     state.session_id    = _db_start_session()
+    _attach_run(state.session_id)
     state.session_start = time.time()
     state.run_started_at = state.session_start
     state.initial_multiplier = state.multiplier

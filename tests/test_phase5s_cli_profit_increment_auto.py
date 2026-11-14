@@ -61,8 +61,10 @@ def test_source_both_sites_have_auto_uuid_clearing():
 
 
 def test_source_guards_on_is_auto_game():
-    assert "is_auto_game(state.game)" in inspect.getsource(wb.betting_loop)
-    assert "is_auto_game(state.game)" in inspect.getsource(wb._apply_outcome_locked)
+    # v2.37.0 — both outcome paths share _check_profit_increment.
+    assert "is_auto_game(state.game)" in inspect.getsource(wb._check_profit_increment)
+    assert "_check_profit_increment()" in inspect.getsource(wb.betting_loop)
+    assert "_check_profit_increment()" in inspect.getsource(wb._apply_outcome_locked)
 
 
 def test_non_auto_game_leaves_uuid_intact():

@@ -197,6 +197,7 @@ Press `T` in the dashboard (or `/tweak <param> <value>` on Telegram). Aliases ar
 | `msprofit` | `milestone_profit` | `msprofit 0.001` |
 | `pi` | `profit_increment` | `pi 0.0001` |
 | `pt` | `profit_threshold` | `pt 0.005` |
+| `piscope` | `profit_increment_scope` | `piscope run` |
 | `recurring` | `recurring` | `recurring on` |
 
 **Auto-restart params** (change forces a clean cycle restart):
@@ -239,6 +240,7 @@ With v2.27.0's async writer + tuned PRAGMAs, the tmpfs hack shouldn't be necessa
 - **`basebet_pct`** — dynamic base bet as % of current balance (recomputes every cycle reset).
 - **Milestones** — `milestone_bets`, `milestone_wins`, `milestone_losses`, `milestone_profit` — pause + log at each checkpoint.
 - **Profit-lock** — `profit_increment` + `profit_threshold` — raise floor as profit climbs.
+  - **Scope (v2.37.0).** `profit_increment_scope=session` (default) measures each session's profit, and the milestone resets every recurring / streak-reset cycle. With `run`, profit is totalled across every session since the run started, so a large threshold can be reached even with many short sessions. The run, its bumps and its total survive stop / start / restart / update. `wolfctl run-reset` starts a new run, and `wolfctl reset` also starts one. Setting `pi` or `pt` to `none`, `off` or `0` turns the increment fully off and ends the run, so nothing keeps counting in the background. Turning it back on starts a new run. Each lane has its own run. `wolfctl status` shows `Run Profit` (since session #N, bumps, next milestone), and the monitor shows `RunMs`.
 - **Pipeline depth** — `--pipeline N` / `T pipeline N` (see below).
 
 ---
