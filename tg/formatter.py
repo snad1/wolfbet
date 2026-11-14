@@ -102,7 +102,13 @@ def format_full_config(s: dict) -> list:
     npm = s.get("next_profit_milestone")
     if pi is not None and pt:
         nxt = f" (next at `{float(npm):.8f}`)" if npm else ""
-        lines.append(f"  Profit bump: `+{float(pi):.8f}` every `{float(pt):.8f}`{nxt}")
+        if s.get("profit_increment_scope") == "run":
+            lines.append(f"  Profit bump: `+{float(pi):.8f}` every `{float(pt):.8f}` run profit{nxt}")
+            if s.get("run_first_session"):
+                lines.append(f"  Run profit: `{float(s.get('run_profit_total') or 0):+.8f}` "
+                             f"(since #{s['run_first_session']}, {int(s.get('run_bumps') or 0)} bump(s))")
+        else:
+            lines.append(f"  Profit bump: `+{float(pi):.8f}` every `{float(pt):.8f}`{nxt}")
 
     # milestone
     mb = s.get("milestone_bets")

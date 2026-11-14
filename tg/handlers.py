@@ -178,8 +178,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`milestonewins` — Notify every N wins (0=off)\n"
         "`milestonelosses` — Notify every N losses (0=off)\n"
         "`milestoneprofit` — Notify every X profit (0=off)\n"
-        "`profitthreshold` — Auto-raise base bet every X profit (`off` to disable)\n"
-        "`profitincrement` — Amount to add to base bet (`0` = restart only, `off` to disable)\n"
+        "`profitthreshold` — Auto-raise base bet every X profit (`off`/`0` to disable)\n"
+        "`profitincrement` — Amount to add to base bet (`off`/`0` to disable)\n"
+        "`piscope` — `session` (each session's profit) or `run` (your total since the run started)\n"
         "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
         "`recurringdelay` — Seconds before restart (default 60)\n"
         "`srloss` — Restart on first win after N losses in a row (profit ≥ 0; `off` to disable)\n"
@@ -194,6 +195,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/bet — Start session\n"
         "/stop — Stop session (`/stop all` or `/stop 2`)\n"
         "/stop recurring — Cancel all recurring bets and stop sessions\n"
+        "/runreset — Start a new run total for `piscope run` (stop sessions first)\n"
         "/tweak — Live-edit running session (stop conditions, pipeline, bet size)\n"
         "/pause — Pause (`/pause all` or `/pause 2`)\n"
         "/resume — Resume (`/resume all` or `/resume 2`)\n"
@@ -522,7 +524,8 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pi = config.get("profit_increment")
         pt = config.get("profit_threshold")
         if pi is not None and pt:
-            lines.append(f"Profit increment: `+{float(pi):.8f} every {float(pt):.8f} profit`")
+            _scope = "run" if config.get("profit_increment_scope") == "run" else "session"
+            lines.append(f"Profit increment: `+{float(pi):.8f} every {float(pt):.8f} profit` ({_scope})")
 
         # Milestones
         ms = []
@@ -800,23 +803,25 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("milestoneprofit", "msprofit"):
             config["milestone_profit"] = float(value)
         elif param in ("profitthreshold", "pt"):
-            if value.lower() != "off":
-                val = float(value)
-                if val <= 0:
-                    await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
-                    return
-                config["profit_threshold"] = val
-            else:
-                config["profit_threshold"] = None
+            # v1.21.0 — off / none / 0 all mean off (ends a run total too).
+            val = None if value.lower() in ("off", "none") else float(value)
+            if val is not None and val < 0:
+                await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
+                return
+            config["profit_threshold"] = val or None
         elif param in ("profitincrement", "pi"):
-            if value.lower() != "off":
-                val = float(value)
-                if val < 0:
-                    await update.message.reply_text("Profit increment must be >= 0 (or 'off').")
-                    return
-                config["profit_increment"] = val
-            else:
-                config["profit_increment"] = None
+            val = None if value.lower() in ("off", "none") else float(value)
+            if val is not None and val < 0:
+                await update.message.reply_text("Profit increment must be > 0 (or 'off').")
+                return
+            config["profit_increment"] = val or None
+        elif param in ("piscope", "pscope", "profitincrementscope"):
+            v = value.lower()
+            if v not in ("session", "run"):
+                await update.message.reply_text("piscope must be `session` or `run`.",
+                                                parse_mode="Markdown")
+                return
+            config["profit_increment_scope"] = v
         elif param == "recurring":
             if value.lower() in ("on", "true", "yes", "1"):
                 config["recurring"] = True
@@ -1082,6 +1087,11 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
                 config[k] = live_config.get(k)
         # Carry forward the current base_bet (profit increment may have raised it)
         config["base_bet"] = engine.base_bet
+        # v1.21.0 — run scope: base before run bumps, so they never stack twice.
+        config["_run_base_origin"] = getattr(engine, "_run_base_origin", None)
+        if live_config is not None:
+            for k in ("profit_increment", "profit_threshold", "profit_increment_scope"):
+                config[k] = live_config.get(k)
         task = asyncio.create_task(
             _recurring_restart(chat_id, user_id, slot, live_delay, config, app))
         task.add_done_callback(_log_task_exception)
@@ -1089,6 +1099,24 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     elif rec and not recurring_on:
         # User turned recurring off — clean up the snapshot so it doesn't linger
         recurring_state.get(user_id, {}).pop(slot, None)
+
+
+# ── /runreset (v1.21.0) ──────────────────────────────────
+async def cmd_runreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start a new run total for profit_increment_scope=run."""
+    user_id = update.effective_user.id
+    if _get_running(user_id) or recurring_state.get(user_id):
+        await _reply(update, "Stop your sessions first (`/stop recurring`), then /runreset — "
+                             "running sessions hold the run's raised base bet.",
+                     parse_mode="Markdown")
+        return
+    path = os.path.join(os.path.dirname(user_db_path(user_id)), "run.json")
+    try:
+        os.remove(path)
+        msg = "Run total reset. The next /bet starts a new run (base bet from /config)."
+    except OSError:
+        msg = "No run total to reset."
+    await _reply(update, msg)
 
 
 def _streak_reset_delay(config: dict) -> int:
@@ -1376,9 +1404,9 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("milestonewins", "mswins"):
             changes["milestone_wins"] = int(value)
         elif param in ("profitincrement", "pi"):
-            changes["profit_increment"] = None if off else float(value)
+            changes["profit_increment"] = None if off or float(value) <= 0 else float(value)
         elif param in ("profitthreshold", "pt"):
-            changes["profit_threshold"] = None if off else float(value)
+            changes["profit_threshold"] = None if off or float(value) <= 0 else float(value)
         else:
             await update.message.reply_text(f"Unknown tweak param: `{param}`\nUse `/tweak` for options.", parse_mode="Markdown")
             return

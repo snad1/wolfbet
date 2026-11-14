@@ -1,5 +1,23 @@
 # Changelog
 
+## TG v1.21.0 — run-wide profit increment (parity with CLI v2.37.0) (2026-11-14)
+
+The Telegram bot gains `profit_increment_scope`. The default, `session`, is unchanged.
+
+### `/set piscope run|session`
+- `run`: one total per user across **all slots and sessions** since the run started (DB sum of the run's other sessions, refreshed after each periodic save, plus the engine's live profit). The milestone is `(bumps + 1) × threshold`.
+- Bumps are shared through `<user dir>/run.json` `{first_session, started_at, bumps}`. A bump in one slot raises every slot's base bet: running slots apply it on their next refresh and restart their auto-bet. Single event loop, so there is no race.
+- `_run_base_origin` (the base before run bumps) is carried through recurring restarts and snapshots, so bumps never stack twice. Old snapshots without it subtract the bumps back out.
+- The run survives recurring cycles, `/stop` + `/bet` and bot restarts until `/runreset`. A run file that points past the DB's last session starts a new run.
+- **none / off / 0 = off** for `pi` / `pt` (`/set` and `/tweak`): no bumps and no background run. The run file is removed at the next start, or right away through `/tweak`. Re-enabling through `/tweak` starts a run at the current session. **Behaviour change:** `/set pi 0` used to mean "restart auto-bet only at each milestone" and now turns the increment off.
+- `/runreset` deletes the run total. It refuses while sessions or recurring restarts are active (stop with `/stop recurring` first).
+- The duplicated increment code in the pipelined and serial loops is merged into `_maybe_profit_increment()`.
+- `/config` shows the scope. Status / full config show `run profit` plus `Run profit +x (since #N, k bump(s))`.
+
+**Tests**: `tests/test_tg_run_increment.py` (20): session scope unchanged, run create / bump / save, other-session sum, shared bump picked up by a second slot, recurring and fresh-start origin, resume without origin, snapshot fields, stale file, off at start (4 cases), zero increment, `/tweak` off / on, run reset seen by a running slot, formatter, `/set piscope` + `pi 0`, `/runreset` refuse / delete, wiring. TG version pins bumped. **819 total passing.**
+
+`tg.VERSION` `1.20.0` → `1.21.0`.
+
 ## CLI v2.37.0 / wolfctl v3.12 — run-wide profit increment (2026-11-14)
 
 `profit_threshold` / `profit_increment` only measured the current session's profit, and the milestone reset every recurring / streak-reset cycle. With many short sessions, a large threshold was never reached. The increment can now measure the total across the whole run.
