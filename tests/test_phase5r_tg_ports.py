@@ -1,4 +1,4 @@
-"""Phase 5r — TG ports from CLI (v1.18.0): /diagnose, /analytics, uptime
+"""Phase 5r: TG ports from CLI (v1.18.0): /diagnose, /analytics, uptime
 pause bookkeeping, SQLite PRAGMA tuning.
 
 Run: WOLFBET_ENV=testing pytest wolfbet/tests/test_phase5r_tg_ports.py -q
@@ -232,4 +232,4 @@ def test_help_mentions_new_commands():
 # ── version ───────────────────────────────────────────────
 def test_tg_version_bumped():
     import tg
-    assert tg.VERSION == "1.21.0"
+    assert tg.VERSION == "1.21.1"

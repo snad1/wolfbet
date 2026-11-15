@@ -1,4 +1,4 @@
-"""Phase 6e — date-range analytics: CLI --analytics --since/--until + TG /analytics dates (v2.31.0 / TG v1.19.0).
+"""Phase 6e: date-range analytics: CLI --analytics --since/--until + TG /analytics dates (v2.31.0 / TG v1.19.0).
 
 v2.30.9 shipped --stats --since/--until. This wave extends the same window to
 analytics (CLI helpers + TG handler). Sibling bots get CLI stats + TG analytics
@@ -31,7 +31,7 @@ def test_wolfbet_version():
 
 
 def test_tg_version():
-    assert tg.VERSION == "1.21.0"
+    assert tg.VERSION == "1.21.1"
 
 
 # ── Seeded temp DB ───────────────────────────────────────

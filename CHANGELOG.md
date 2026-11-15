@@ -43,6 +43,31 @@ A run-scope increment that landed on a losing bet cleared the auto-bet UUID. The
 
 `VERSION` `2.37.0` -> `2.37.1`.
 
+## TG v1.21.1 - old web hardening (2026-11-15)
+
+The admin web that ships with the TG bot no longer starts with the shipped credentials and no longer listens on a public interface.
+
+### Startup refuses weak credentials
+- `WOLFBET_WEB_SECRET_KEY` must be at least 32 bytes and must not be the shipped default.
+- `WOLFBET_WEB_ADMIN_PASS` must be at least 12 characters and must not be `changeme123`.
+- The check runs when `web/config.py` is imported, so `wolfbet-web` exits before binding. The message names the setting and never prints the value.
+
+### Installer
+- Generates the secret and prompts for the admin password (12+ characters); with no TTY it generates a password and prints it once so it can be stored.
+- Writes `.env` with `printf`, so a password containing `$`, a backtick or `#` is stored verbatim. The file stays mode 0600.
+- Refuses to continue when an existing `.env` still holds the shipped secret or password.
+- Systemd `ExecStart` always binds `127.0.0.1`. Without `--domain` the installer prints the SSH tunnel command instead of exposing the app.
+- The closing banner no longer prints the default password.
+
+### Live session WebSocket
+- `web/bot_db.py` exports the bound `_connect_ro(user_id)` wrapper, so `/ws/session/...` no longer fails on its first poll.
+- One poller per session channel instead of one per connection: it starts with the first subscriber and stops with the last. New bets and the session row are broadcast to every subscriber from that single task, and the SQLite read runs in a worker thread.
+- History replay on first subscribe is unchanged; the chart still drops points it already holds.
+
+**Tests**: `tests/test_phase11a_web_hardening.py` (8): shipped and short secret refused, shipped and short password refused, a strong pair accepted, bets stream to a temp bot DB over the live socket, two subscribers share one fetch per tick, the poller stops with the last subscriber, and the installer binds loopback only. **827 total passing.**
+
+`tg.VERSION` `1.21.0` -> `1.21.1`. The web ships with the TG bot.
+
 ## TG v1.21.0 — run-wide profit increment (parity with CLI v2.37.0) (2026-11-14)
 
 The Telegram bot gains `profit_increment_scope`. The default, `session`, is unchanged.
