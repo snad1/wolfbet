@@ -19,9 +19,39 @@ The operator saved `base_bet 0.00005805`, started the bot, and it kept betting `
 
 Known interaction, unchanged: with `basebet_pct > 0` the base is recomputed from balance every 10 bets, so a hand-set base is transient there. The live value is now visible either way.
 
-**Tests**: `tests/test_phase13_base_bet_truth.py` (11) plus updated expectations in `test_phase5p_live_reload.py`. **839 total passing.**
+**Tests**: `tests/test_phase13_base_bet_truth.py` (11) plus updated expectations in `test_phase5p_live_reload.py`. **839 total passing** on `main`; the dashboard branch adds the web suite on top.
 
 `VERSION` `2.37.1` -> `2.37.2`.
+## TG v1.21.2 - old web authorization and token hardening (2026-11-15)
+
+The old web stops serving one Telegram user's data to another, and the shared auth layer behind all six bots loses its weakest assumptions. Most of the change is in `casino-shared` 0.3.2; this release wires it into WolfBet.
+
+### Per-user access control
+- `require_user_access(user_id)` replaces `get_current_user` on all six `/api/users/{user_id}/...` routes (sessions, CSVs, session detail, bets, bets CSV, chart). An admin reads any user; a Telegram user reads only their own id and gets 403 otherwise.
+
+### Tokens
+- A token with no `jti` is rejected when the session check runs; the one-time link exchange still accepts it because it carries its own `jti` and is now consumed on first use.
+- `?token=` is no longer accepted on HTTP requests or on a WebSocket handshake; both read the httpOnly cookie. The browser sends it on the upgrade, so the live chart and the log stream keep working. `web/static/chart.js` and `admin/logs.html` drop the query string.
+- A WebSocket handshake whose `Origin` host differs from the `Host` header is refused.
+
+### Sessions and cookies
+- `POST /logout` with a double-submit `csrf_token`; `GET /logout` now answers 405. Both nav bars post the form.
+- Login sets a `csrf_token` cookie and both cookies are `Secure` whenever `APP_ENV=production`.
+- A Telegram deep link opens one session: the link's `jti` is recorded on the exchange and a second use shows the invalid-link page.
+
+### Login
+- Five failed attempts for the same address and username lock the pair for 15 minutes; a successful login clears the counter. The state lives in the web database, so it holds across both uvicorn workers and restarts.
+
+### Passwords
+- PBKDF2 raised from 260k to 600k iterations with the count stored in the hash (`pbkdf2:sha256:600000:salt:hash`). Existing hashes still verify and are rehashed on the next successful login.
+
+### Admin page
+- The Tier and Block controls on a Telegram user's page are gone, replaced by a note: the bot never reads those columns.
+- Every admin and dashboard page passed the template name and context to `TemplateResponse` in the pre-0.29 order. Starlette 1.x reads the first argument as the request, so each render raised `TypeError: unhashable type: 'dict'` on a fresh install (`install.sh` only pins `fastapi>=0.115`). All 16 call sites in `admin_routes.py` and `user_routes.py` now pass `request` first.
+
+**Tests**: `tests/test_phase11m_web_authz.py` (20): every user route table-driven for owner 200, other user 403, admin 200; jti-less token 401; `?token=` 401. `tests/test_phase11m_web_pages.py` (4): the admin pages render and the user page carries the note instead of the controls. Shared suite adds the token, WebSocket-origin, lockout, single-use-link, logout and hash-upgrade cases. **860 total passing** in this repo.
+
+`tg.VERSION` `1.21.1` -> `1.21.2`.
 
 ## CLI v2.37.1 - a profit increment no longer stops the bot (2026-11-15)
 

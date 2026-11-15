@@ -1,4 +1,4 @@
-"""Admin panel routes — dashboard, users, services, logs."""
+"""Admin panel routes: dashboard, users, services, logs."""
 
 from math import ceil
 
@@ -23,7 +23,7 @@ async def dashboard(request: Request, admin: dict = Depends(get_current_admin)):
     stats = get_platform_stats()
     services = await all_service_statuses()
     metrics = system_metrics()
-    return templates.TemplateResponse("admin/dashboard.html", {
+    return templates.TemplateResponse(request, "admin/dashboard.html", {
         "request": request,
         "admin": admin,
         "stats": stats,
@@ -38,7 +38,7 @@ async def users_list(request: Request, admin: dict = Depends(get_current_admin))
     # Enrich with session stats
     for u in users:
         u["stats"] = get_session_stats(u["user_id"])
-    return templates.TemplateResponse("admin/users.html", {
+    return templates.TemplateResponse(request, "admin/users.html", {
         "request": request,
         "admin": admin,
         "users": users,
@@ -58,7 +58,7 @@ async def user_detail(request: Request, user_id: int, page: int = Query(1, ge=1)
     sessions = get_sessions(user_id, limit=per_page, offset=offset)
     stats = get_session_stats(user_id)
     config = get_user_config(user_id)
-    return templates.TemplateResponse("admin/user_detail.html", {
+    return templates.TemplateResponse(request, "admin/user_detail.html", {
         "request": request,
         "admin": admin,
         "user": user,
@@ -89,7 +89,7 @@ async def admin_session_detail(
     page = min(page, total_pages)
     offset = (page - 1) * per_page
     bets = get_bets(user_id, session_id, limit=per_page, offset=offset)
-    return templates.TemplateResponse("admin/session_detail.html", {
+    return templates.TemplateResponse(request, "admin/session_detail.html", {
         "request": request,
         "admin": admin,
         "user_id": user_id,
@@ -129,7 +129,7 @@ async def toggle_block(request: Request, user_id: int, admin: dict = Depends(get
 async def services_page(request: Request, admin: dict = Depends(get_current_admin)):
     services = await all_service_statuses()
     metrics = system_metrics()
-    return templates.TemplateResponse("admin/services.html", {
+    return templates.TemplateResponse(request, "admin/services.html", {
         "request": request,
         "admin": admin,
         "services": services,
@@ -140,7 +140,7 @@ async def services_page(request: Request, admin: dict = Depends(get_current_admi
 @router.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request, admin: dict = Depends(get_current_admin)):
     services_list = await all_service_statuses()
-    return templates.TemplateResponse("admin/logs.html", {
+    return templates.TemplateResponse(request, "admin/logs.html", {
         "request": request,
         "admin": admin,
         "services": services_list,
@@ -150,7 +150,7 @@ async def logs_page(request: Request, admin: dict = Depends(get_current_admin)):
 @router.get("/audit", response_class=HTMLResponse)
 async def audit_page(request: Request, admin: dict = Depends(get_current_admin)):
     logs = get_audit_log(200)
-    return templates.TemplateResponse("admin/audit.html", {
+    return templates.TemplateResponse(request, "admin/audit.html", {
         "request": request,
         "admin": admin,
         "logs": logs,
@@ -159,7 +159,7 @@ async def audit_page(request: Request, admin: dict = Depends(get_current_admin))
 
 @router.get("/change-password", response_class=HTMLResponse)
 async def change_password_page(request: Request, admin: dict = Depends(get_current_admin)):
-    return templates.TemplateResponse("admin/change_password.html", {
+    return templates.TemplateResponse(request, "admin/change_password.html", {
         "request": request,
         "admin": admin,
         "error": None,
@@ -178,25 +178,25 @@ async def change_password(
     admin_id = int(admin["sub"].split(":", 1)[1]) if ":" in admin["sub"] else 1
 
     if new_password != confirm_password:
-        return templates.TemplateResponse("admin/change_password.html", {
+        return templates.TemplateResponse(request, "admin/change_password.html", {
             "request": request, "admin": admin,
             "error": "New passwords do not match.", "success": None,
         })
 
     if len(new_password) < 6:
-        return templates.TemplateResponse("admin/change_password.html", {
+        return templates.TemplateResponse(request, "admin/change_password.html", {
             "request": request, "admin": admin,
             "error": "Password must be at least 6 characters.", "success": None,
         })
 
     if not change_admin_password(admin_id, current_password, new_password):
-        return templates.TemplateResponse("admin/change_password.html", {
+        return templates.TemplateResponse(request, "admin/change_password.html", {
             "request": request, "admin": admin,
             "error": "Current password is incorrect.", "success": None,
         })
 
     audit(admin["sub"], "change_password", "Admin password changed")
-    return templates.TemplateResponse("admin/change_password.html", {
+    return templates.TemplateResponse(request, "admin/change_password.html", {
         "request": request, "admin": admin,
         "error": None, "success": "Password changed successfully.",
     })

@@ -1,9 +1,9 @@
 /**
- * WolfBet AutoBot — Trading-style balance chart
+ * WolfBet AutoBot: Trading-style balance chart
  * Powered by Lightweight Charts (TradingView)
  *
  * X-axis uses bet IDs (unique ascending integers) so every point is
- * guaranteed unique — no duplicate-timestamp issues with rapid bets.
+ * guaranteed unique, no duplicate-timestamp issues with rapid bets.
  */
 
 (function () {
@@ -244,9 +244,8 @@
 
     // ── Live WebSocket ──────────────────────────────────────────────────────
     function connectLiveWS(uid, sid) {
-        const token = getCookie('wolfbet_admin_token') || getCookie('wolfbet_token');
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const url   = `${proto}//${location.host}/ws/session/${uid}/${sid}?token=${token}`;
+        const url   = `${proto}//${location.host}/ws/session/${uid}/${sid}`;
 
         wsClient = new WebSocket(url);
         wsClient.onopen  = () => updateWsIndicator(true);

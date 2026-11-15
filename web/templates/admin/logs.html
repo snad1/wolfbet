@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Logs — {{ app_name }}{% endblock %}
+{% block title %}Logs: {{ app_name }}{% endblock %}
 
 {% block content %}
 <div class="mb-6">
@@ -37,16 +37,10 @@
 <script>
 let logWs = null;
 
-function getCookie(name) {
-    const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
-    return m ? m.pop() : '';
-}
-
 function connectLog(service) {
     if (logWs) { logWs.close(); logWs = null; }
-    const token = getCookie('wolfbet_admin_token');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    logWs = new WebSocket(`${proto}//${location.host}/ws/logs/${service}?token=${token}`);
+    logWs = new WebSocket(`${proto}//${location.host}/ws/logs/${service}`);
 
     logWs.onopen = () => {
         document.getElementById('log-ws-status').className = 'ws-indicator ws-connected';

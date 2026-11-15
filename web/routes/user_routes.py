@@ -1,4 +1,4 @@
-"""Telegram user-facing routes — dashboard, sessions, settings."""
+"""Telegram user-facing routes: dashboard, sessions, settings."""
 
 from math import ceil
 
@@ -26,7 +26,7 @@ async def user_dashboard(request: Request, user: dict = Depends(get_current_tg_u
     uid = _user_id(user)
     sessions = get_sessions(uid, limit=10)
     stats = get_session_stats(uid)
-    return templates.TemplateResponse("user/dashboard.html", {
+    return templates.TemplateResponse(request, "user/dashboard.html", {
         "request": request,
         "user": user,
         "user_id": uid,
@@ -44,7 +44,7 @@ async def session_list(request: Request, page: int = Query(1, ge=1), user: dict 
     page = min(page, total_pages)
     offset = (page - 1) * per_page
     sessions = get_sessions(uid, limit=per_page, offset=offset)
-    return templates.TemplateResponse("user/history.html", {
+    return templates.TemplateResponse(request, "user/history.html", {
         "request": request,
         "user": user,
         "user_id": uid,
@@ -68,7 +68,7 @@ async def session_detail(request: Request, session_id: int, page: int = Query(1,
     page = min(page, total_pages)
     offset = (page - 1) * per_page
     bets = get_bets(uid, session_id, limit=per_page, offset=offset)
-    return templates.TemplateResponse("user/session.html", {
+    return templates.TemplateResponse(request, "user/session.html", {
         "request": request,
         "user": user,
         "user_id": uid,
@@ -85,7 +85,7 @@ async def session_detail(request: Request, session_id: int, page: int = Query(1,
 async def settings_page(request: Request, user: dict = Depends(get_current_tg_user)):
     uid = _user_id(user)
     config = get_user_config(uid)
-    return templates.TemplateResponse("user/settings.html", {
+    return templates.TemplateResponse(request, "user/settings.html", {
         "request": request,
         "user": user,
         "user_id": uid,

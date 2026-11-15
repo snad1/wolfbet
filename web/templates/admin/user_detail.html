@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "components/pagination.html" import render as pagination %}
-{% block title %}User {{ user.user_id }} — {{ app_name }}{% endblock %}
+{% block title %}User {{ user.user_id }}: {{ app_name }}{% endblock %}
 
 {% block content %}
 <div class="mb-6">
@@ -11,21 +11,9 @@
             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{ user.username or 'No username' }} &middot; Joined {{ user.first_seen[:10] if user.first_seen else 'unknown' }}</p>
         </div>
         <div class="flex items-center gap-3">
-            <!-- Tier selector -->
-            <form method="POST" action="/admin/users/{{ user.user_id }}/tier" class="flex items-center gap-2">
-                <select name="tier" class="text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-brand-500 outline-none">
-                    <option value="free" {% if user.tier == 'free' %}selected{% endif %}>Free</option>
-                    <option value="trial" {% if user.tier == 'trial' %}selected{% endif %}>Trial</option>
-                    <option value="premium" {% if user.tier == 'premium' %}selected{% endif %}>Premium</option>
-                </select>
-                <button type="submit" class="btn btn-secondary text-xs">Update Tier</button>
-            </form>
-            <!-- Block toggle -->
-            <form method="POST" action="/admin/users/{{ user.user_id }}/block">
-                <button type="submit" class="btn {% if user.is_blocked %}btn-primary{% else %}btn-danger{% endif %} text-xs">
-                    {% if user.is_blocked %}Unblock{% else %}Block{% endif %}
-                </button>
-            </form>
+            <p class="text-xs text-gray-500 dark:text-gray-400 max-w-xs text-right">
+                Tier and blocking take effect in the new dashboard. The bot does not read them today.
+            </p>
         </div>
     </div>
 </div>
@@ -93,15 +81,15 @@
             <tr class="table-row cursor-pointer" onclick="location.href='/admin/users/{{ user.user_id }}/sessions/{{ s.id }}'">
                 <td class="px-6 py-3 text-sm font-mono">{{ s.id }}</td>
                 <td class="px-6 py-3 text-sm"><span class="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">{{ (s.game or 'dice')|upper }}</span></td>
-                <td class="px-6 py-3 text-sm">{{ s.strategy or '—' }}</td>
+                <td class="px-6 py-3 text-sm">{{ s.strategy or '-' }}</td>
                 <td class="px-6 py-3 text-sm font-mono">{{ "{:,}".format(s.total_bets) }}</td>
                 <td class="px-6 py-3 text-sm font-mono {% if s.profit >= 0 %}text-green-600{% else %}text-red-600{% endif %}">
                     {{ "%.8f"|format(s.profit) }}
                 </td>
-                <td class="px-6 py-3 text-sm text-gray-500 dark:text-gray-400">{{ s.started_at[:16] if s.started_at else '—' }}</td>
+                <td class="px-6 py-3 text-sm text-gray-500 dark:text-gray-400">{{ s.started_at[:16] if s.started_at else '-' }}</td>
                 <td class="px-6 py-3 text-sm text-gray-500 dark:text-gray-400">
                     {% if s.ended_at and s.started_at %}
-                    —
+                    -
                     {% else %}
                     <span class="badge badge-green">Running</span>
                     {% endif %}
