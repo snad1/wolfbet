@@ -1,5 +1,22 @@
 # Changelog
 
+## TG v1.21.3 - `/update` owner gate and handlers off the event loop (2026-11-15)
+
+### `/update`
+- The owner is `TG_OWNER_ID` and nothing else. The built-in fallback id is gone: with the variable unset or non-numeric, `/update` answers "Owner only." and startup logs one warning.
+- The command is an argument list for `systemd-run --user` with `--on-active=2s`, `--working-directory`, and `StandardOutput`/`StandardError` appended to the log. No `bash -c`, so a path from `BOT_REPO_DIR` is inert.
+- The ctl path must be absolute, existing and executable; the repo directory must be absolute and exist.
+- The log is `<data dir>/update.log`, created 0600, instead of a predictable file under `/tmp`.
+- `systemd-run` itself runs in a worker thread so a slow start cannot hold the loop.
+
+### Event loop
+- `/benchmark` posts through `httpx.AsyncClient` with the engine's request timeout instead of up to 50 blocking `requests` calls, so other users' commands and engines keep running during a benchmark.
+- `/stats`, the session history list, `/lastbets`, session detail, stop-zombie cleanup and session delete read and write through the new async helpers in `tg/database.py`; `migrate_db` runs in a worker thread too.
+
+**Tests**: `tests/test_phase11n_tg_hardening.py` (16): owner gate with unset, non-numeric and configured ids, refusals for a non-owner and for the old fallback id, argv shape with a hostile path, path validation, a loop that keeps ticking during a benchmark, and the async DB helpers. **887 total passing.**
+
+`tg.VERSION` `1.21.2` -> `1.21.3`.
+
 ## CLI v2.37.2 - the base bet you set is the base bet it bets (2026-11-15)
 
 The operator saved `base_bet 0.00005805`, started the bot, and it kept betting `0.00006534`. Three separate defects produced that, and each one hid the others.

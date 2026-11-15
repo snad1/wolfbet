@@ -1,4 +1,4 @@
-"""Telegram command handlers — all bot commands and callback queries."""
+"""Telegram command handlers: all bot commands and callback queries."""
 
 import os
 import json
@@ -14,7 +14,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-# v2.28.0 — shared helpers (previously duplicated between CLI and TG).
+# v2.28.0: shared helpers (previously duplicated between CLI and TG).
 # validate_proxy: broader off-value vocabulary than the old inline check.
 # mask_proxy: port-safe (previously leaked "None" when the URL had no port).
 # percentile + benchmark_verdict: TG /benchmark gains p50/p99 + plain verdict.
@@ -25,6 +25,7 @@ from . import VERSION
 from .config import APP_ENV, CONFIG_KEYS, DATA_DIR, TIERS, get_user_tier, logger
 from .database import (
     user_db_path, load_user_config, save_user_config,
+    fetch_all, fetch_one, execute,
     load_presets, save_presets,
 )
 from core.database import migrate_db, cleanup_old_bets
@@ -87,7 +88,7 @@ def _resolve_engine(user_id: int, args: list) -> tuple:
     if len(running) == 1:
         slot, engine = next(iter(running.items()))
         return slot, engine, None
-    # Multiple — check if slot specified
+    # Multiple: check if slot specified
     if args:
         try:
             slot = int(args[0])
@@ -116,10 +117,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🐺 *WolfBet Bot v{VERSION}*\n\n"
         "Auto-betting engine for WolfBet Dice via Telegram.\n\n"
         "*Setup:*\n"
-        "/setkey — Set your WolfBet API key\n"
-        "/balance — Check your balances\n"
-        "/seed — Rotate WolfBet server seed\n"
-        "/config — View current configuration\n\n"
+        "/setkey: Set your WolfBet API key\n"
+        "/balance: Check your balances\n"
+        "/seed: Rotate WolfBet server seed\n"
+        "/config: View current configuration\n\n"
         "*Configure:*\n"
         "/set currency usdt\n"
         "/set game dice\n"
@@ -130,17 +131,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set maxprofit 0.01\n"
         "/set maxloss 0.005\n\n"
         "*Session:*\n"
-        "/bet — Start betting session (up to 5 concurrent)\n"
-        "/stop — Stop session (`/stop all` for all)\n"
-        "/stop recurring — Cancel all recurring bets\n"
+        "/bet: Start betting session (up to 5 concurrent)\n"
+        "/stop: Stop session (`/stop all` for all)\n"
+        "/stop recurring: Cancel all recurring bets\n"
         "/tweak \u2014 Live-edit running session\n"
         "/pause / /resume (add slot# for multi-session)\n"
-        "/status — Live status (`/status 2` for slot)\n"
-        "/monitor — Auto-updating status\n"
-        "/stats — Session history\n"
-        "/session — Session detail\n\n"
-        "/strategies — List all strategies\n"
-        "/help — Full command reference",
+        "/status: Live status (`/status 2` for slot)\n"
+        "/monitor: Auto-updating status\n"
+        "/stats: Session history\n"
+        "/session: Session detail\n\n"
+        "/strategies: List all strategies\n"
+        "/help: Full command reference",
         parse_mode="Markdown",
     )
 
@@ -150,79 +151,79 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "*Commands:*\n\n"
         "*Setup*\n"
-        "/setkey — API key (message auto-deleted)\n"
-        "/balance — Show all balances\n"
-        "/seed — Rotate WolfBet server seed\n"
-        "/config — Show current config\n"
-        "/set — Set parameter\n"
-        "/strategies — List strategies\n\n"
+        "/setkey: API key (message auto-deleted)\n"
+        "/balance: Show all balances\n"
+        "/seed: Rotate WolfBet server seed\n"
+        "/config: Show current config\n"
+        "/set: Set parameter\n"
+        "/strategies: List strategies\n\n"
         "*Parameters for* /set*:*\n"
-        "`currency` — usdt, btc, eth, ltc, trx, bch, doge, xrp\n"
-        "`game` — dice (API v1), dice-manual (Manual v1), limbo (v2), limbo-auto (Auto v2), dice-auto (Auto v2)\n"
-        "`proxy` — http://user:pass@ip:port or socks5://... (`off` to disable)\n"
-        "`pipeline` — concurrent requests for auto-bet (1-50, default 1)\n"
-        "`strategy` — flat, martingale, antimartingale, dalembert, paroli, wolfrider, delaymartingale, rulebased\n"
-        "`multiplier` — target multiplier (e.g. 2.01)\n"
-        "`basebet` — base bet amount\n"
-        "`rule` — over / under\n"
-        "`lossmult` — loss multiplier (default 2.0)\n"
-        "`winmult` — win multiplier (default 1.0)\n"
-        "`delay` — seconds between bets\n"
-        "`maxprofit` — stop at profit\n"
-        "`maxloss` — stop at loss\n"
-        "`maxbets` — stop after N bets\n"
-        "`maxwins` — stop after N wins\n"
-        "`minbalance` — stop below balance\n"
-        "`delaythreshold` — Delay Martingale threshold\n"
-        "`milestonebets` — Notify every N bets (0=off)\n"
-        "`milestonewins` — Notify every N wins (0=off)\n"
-        "`milestonelosses` — Notify every N losses (0=off)\n"
-        "`milestoneprofit` — Notify every X profit (0=off)\n"
-        "`profitthreshold` — Auto-raise base bet every X profit (`off`/`0` to disable)\n"
-        "`profitincrement` — Amount to add to base bet (`off`/`0` to disable)\n"
-        "`piscope` — `session` (each session's profit) or `run` (your total since the run started)\n"
-        "`recurring` — Auto-restart on stop condition (`on`/`off`)\n"
-        "`recurringdelay` — Seconds before restart (default 60)\n"
-        "`srloss` — Restart on first win after N losses in a row (profit ≥ 0; `off` to disable)\n"
-        "`srdelay` — Seconds before streak-reset restart (default 600)\n"
-        "`streakdelay_loss` — Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
-        "`streakdelay_win` — Delay after N wins (`10:0.5` = every 10 wins → 0.5s)\n"
-        "`streakdelay_bets` — Delay after every N bets (`100:0.5` = every 100 bets → 0.5s)\n"
-        "`streakbet_loss` — Scale bet after N losses (`10:0.5` = every 10 losses → halve)\n"
-        "`basebet_pct` — Base bet as fraction of balance (`0.001` = 0.1%, `off` to disable)\n"
-        "`purgedays` — Auto-delete bets older than N days (1-30, default 1)\n\n"
+        "`currency`: usdt, btc, eth, ltc, trx, bch, doge, xrp\n"
+        "`game`: dice (API v1), dice-manual (Manual v1), limbo (v2), limbo-auto (Auto v2), dice-auto (Auto v2)\n"
+        "`proxy`: http://user:pass@ip:port or socks5://... (`off` to disable)\n"
+        "`pipeline`: concurrent requests for auto-bet (1-50, default 1)\n"
+        "`strategy`: flat, martingale, antimartingale, dalembert, paroli, wolfrider, delaymartingale, rulebased\n"
+        "`multiplier`: target multiplier (e.g. 2.01)\n"
+        "`basebet`: base bet amount\n"
+        "`rule`: over / under\n"
+        "`lossmult`: loss multiplier (default 2.0)\n"
+        "`winmult`: win multiplier (default 1.0)\n"
+        "`delay`: seconds between bets\n"
+        "`maxprofit`: stop at profit\n"
+        "`maxloss`: stop at loss\n"
+        "`maxbets`: stop after N bets\n"
+        "`maxwins`: stop after N wins\n"
+        "`minbalance`: stop below balance\n"
+        "`delaythreshold`: Delay Martingale threshold\n"
+        "`milestonebets`: Notify every N bets (0=off)\n"
+        "`milestonewins`: Notify every N wins (0=off)\n"
+        "`milestonelosses`: Notify every N losses (0=off)\n"
+        "`milestoneprofit`: Notify every X profit (0=off)\n"
+        "`profitthreshold`: Auto-raise base bet every X profit (`off`/`0` to disable)\n"
+        "`profitincrement`: Amount to add to base bet (`off`/`0` to disable)\n"
+        "`piscope`: `session` (each session's profit) or `run` (your total since the run started)\n"
+        "`recurring`: Auto-restart on stop condition (`on`/`off`)\n"
+        "`recurringdelay`: Seconds before restart (default 60)\n"
+        "`srloss`: Restart on first win after N losses in a row (profit ≥ 0; `off` to disable)\n"
+        "`srdelay`: Seconds before streak-reset restart (default 600)\n"
+        "`streakdelay_loss`: Delay after N losses (`5:1.0` = every 5 losses → 1s)\n"
+        "`streakdelay_win`: Delay after N wins (`10:0.5` = every 10 wins → 0.5s)\n"
+        "`streakdelay_bets`: Delay after every N bets (`100:0.5` = every 100 bets → 0.5s)\n"
+        "`streakbet_loss`: Scale bet after N losses (`10:0.5` = every 10 losses → halve)\n"
+        "`basebet_pct`: Base bet as fraction of balance (`0.001` = 0.1%, `off` to disable)\n"
+        "`purgedays`: Auto-delete bets older than N days (1-30, default 1)\n\n"
         "*Session* _(up to 5 concurrent)_\n"
-        "/bet — Start session\n"
-        "/stop — Stop session (`/stop all` or `/stop 2`)\n"
-        "/stop recurring — Cancel all recurring bets and stop sessions\n"
-        "/runreset — Start a new run total for `piscope run` (stop sessions first)\n"
-        "/tweak — Live-edit running session (stop conditions, pipeline, bet size)\n"
-        "/pause — Pause (`/pause all` or `/pause 2`)\n"
-        "/resume — Resume (`/resume all` or `/resume 2`)\n"
-        "/status — Live status (`/status 2` for specific slot)\n"
-        "/monitor — Auto-updating status (default 5s)\n"
-        "/stats — Session history\n"
-        "/session — Detailed session report\n"
-        "/lastbets — Recent bets\n"
-        "/diagnose — Bottleneck analysis (top blocker + advice)\n"
-        "/analytics — Lifetime analytics (per-game, per-strategy, top-5)\n"
-        "/analytics [SINCE] [UNTIL] — date-windowed (e.g. 2026-08-14)\n\n"
+        "/bet: Start session\n"
+        "/stop: Stop session (`/stop all` or `/stop 2`)\n"
+        "/stop recurring: Cancel all recurring bets and stop sessions\n"
+        "/runreset: Start a new run total for `piscope run` (stop sessions first)\n"
+        "/tweak: Live-edit running session (stop conditions, pipeline, bet size)\n"
+        "/pause: Pause (`/pause all` or `/pause 2`)\n"
+        "/resume: Resume (`/resume all` or `/resume 2`)\n"
+        "/status: Live status (`/status 2` for specific slot)\n"
+        "/monitor: Auto-updating status (default 5s)\n"
+        "/stats: Session history\n"
+        "/session: Detailed session report\n"
+        "/lastbets: Recent bets\n"
+        "/diagnose: Bottleneck analysis (top blocker + advice)\n"
+        "/analytics: Lifetime analytics (per-game, per-strategy, top-5)\n"
+        "/analytics [SINCE] [UNTIL]: date-windowed (e.g. 2026-08-14)\n\n"
         "*Rules*\n"
-        "/rules — List current rules\n"
-        "/addrule — Add rule (JSON)\n"
-        "/delrule — Delete rule by number\n"
-        "/editrule — Edit rule by number (JSON patch)\n"
-        "/clearrules — Clear all rules\n\n"
+        "/rules: List current rules\n"
+        "/addrule: Add rule (JSON)\n"
+        "/delrule: Delete rule by number\n"
+        "/editrule: Edit rule by number (JSON patch)\n"
+        "/clearrules: Clear all rules\n\n"
         "*Presets*\n"
-        "/presets — List presets\n"
-        "/savepreset — Save current config\n"
-        "/loadpreset — Load preset\n\n"
+        "/presets: List presets\n"
+        "/savepreset: Save current config\n"
+        "/loadpreset: Load preset\n\n"
         "*Maintenance*\n"
-        "/cleanup — Purge old bet records (`/cleanup 3` for 3 days)\n"
-        "/delsession — Delete a session by ID\n\n"
+        "/cleanup: Purge old bet records (`/cleanup 3` for 3 days)\n"
+        "/delsession: Delete a session by ID\n\n"
         "*Web*\n"
-        "/web — Open web dashboard\n"
-        "/benchmark — Test API response speed",
+        "/web: Open web dashboard\n"
+        "/benchmark: Test API response speed",
         parse_mode="Markdown",
     )
 
@@ -251,6 +252,11 @@ async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /benchmark ───────────────────────────────────────────
+async def _benchmark_post(client, url: str, payload: dict):
+    """One timed zero-amount bet against the casino API."""
+    return await client.post(url, json=payload)
+
+
 async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Run test bets (amount=0) and measure API response times."""
     user_id = update.effective_user.id
@@ -269,39 +275,41 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(f"Running {count} test bets (amount=0)...")
 
-    import requests as _req
-    import time as _time
-    from .config import API_BASE
+    import httpx
 
-    session = _req.Session()
-    session.headers.update({"Authorization": f"Bearer {api_key}"})
+    from .config import API_BASE
+    from .engine import REQUEST_TIMEOUT
+
     currency = config.get("currency") or "btc"
     multiplier = float(config.get("multiplier") or 2.0)
     bet_value = round(100 - 99 / multiplier - 0.01, 2)
     mult_str = f"{multiplier:.4f}".rstrip("0").rstrip(".") or "0"
     times = []
-    statuses = []   # v2.28.0 — capture HTTP status for shared verdict tiers
+    statuses = []   # v2.28.0: capture HTTP status for shared verdict tiers
 
-    for i in range(count):
-        payload = {
-            "currency": currency,
-            "game": "dice",
-            "amount": "0",
-            "rule": config.get("rule") or "over",
-            "multiplier": mult_str,
-            "bet_value": f"{bet_value:.2f}",
-        }
-        try:
-            t0 = _time.time()
-            r = session.post(f"{API_BASE}/bet/place", json=payload, timeout=(5, 15))
-            elapsed = (_time.time() - t0) * 1000
-            times.append(elapsed)
-            statuses.append(r.status_code)
-        except Exception:
-            times.append(-1)
-            statuses.append("ERR")
+    payload = {
+        "currency": currency,
+        "game": "dice",
+        "amount": "0",
+        "rule": config.get("rule") or "over",
+        "multiplier": mult_str,
+        "bet_value": f"{bet_value:.2f}",
+    }
 
-    session.close()
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=REQUEST_TIMEOUT,
+    ) as client:
+        for _ in range(count):
+            try:
+                t0 = time.time()
+                r = await _benchmark_post(client, f"{API_BASE}/bet/place", payload)
+                elapsed = (time.time() - t0) * 1000
+                times.append(elapsed)
+                statuses.append(r.status_code)
+            except Exception:
+                times.append(-1)
+                statuses.append("ERR")
 
     valid = [t for t in times if t > 0]
     if not valid:
@@ -313,7 +321,7 @@ async def cmd_benchmark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     failed = len(times) - len(valid)
     theoretical_bps = 1000 / avg if avg > 0 else 0
 
-    # v2.28.0 — shared with CLI's --benchmark verdict tiers.
+    # v2.28.0: shared with CLI's --benchmark verdict tiers.
     sorted_valid = sorted(valid)
     p50 = percentile(sorted_valid, 0.50)
     p99 = percentile(sorted_valid, 0.99)
@@ -347,7 +355,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Set your API key first: /setkey <token>", parse_mode="Markdown")
         return
 
-    await update.message.reply_text("Fetching balances…")
+    await update.message.reply_text("Fetching balances...")
     try:
         engine = BettingEngine(user_id, "", api_key, {})
         await engine._recreate_http()
@@ -379,15 +387,44 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /config ──────────────────────────────────────────────
 CTL_NAME = "wolfctl"
 REPO_DIR = os.environ.get("BOT_REPO_DIR", "/root/wolfbet")
-DEFAULT_OWNER_ID = 680974641
+UPDATE_LOG_NAME = "update.log"
+
+
+def _owner_id() -> int | None:
+    """Configured Telegram owner id, or None when TG_OWNER_ID is missing or not numeric."""
+    owner = os.environ.get("TG_OWNER_ID", "").strip()
+    return int(owner) if owner.isdigit() else None
 
 
 def _is_owner(user_id: int) -> bool:
-    """Telegram user must match TG_OWNER_ID (env var) or the default owner."""
-    owner = os.environ.get("TG_OWNER_ID")
-    if owner and owner.isdigit():
-        return user_id == int(owner)
-    return user_id == DEFAULT_OWNER_ID
+    """True only for the explicitly configured TG_OWNER_ID."""
+    return _owner_id() is not None and user_id == _owner_id()
+
+
+def _validated_path(path: str, *, is_dir: bool) -> bool:
+    return os.path.isabs(path) and (os.path.isdir(path) if is_dir else os.path.isfile(path))
+
+
+def _update_argv(ctl_path: str, repo_dir: str, log_file: str) -> list[str]:
+    """Command for systemd-run: argv only, no shell, every value in its own element."""
+    return [
+        "systemd-run", "--user", "--collect", "--no-block",
+        f"--unit=wolfbet-update-{int(time.time())}",
+        "--on-active=2s",
+        f"--working-directory={repo_dir}",
+        f"--property=StandardOutput=append:{log_file}",
+        f"--property=StandardError=append:{log_file}",
+        "--", ctl_path, "update",
+    ]
+
+
+def _prepare_update_log() -> str:
+    """Create the update log under the bot data dir with owner-only permissions."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    log_file = os.path.join(DATA_DIR, UPDATE_LOG_NAME)
+    fd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.close(fd)
+    return log_file
 
 
 async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,21 +434,22 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Owner only.")
         return
     ctl_path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
-    if not os.path.exists(ctl_path):
+    if not _validated_path(ctl_path, is_dir=False) or not os.access(ctl_path, os.X_OK):
         await update.message.reply_text(f"{CTL_NAME} not found in PATH.")
         return
-    if not shutil.which("systemd-run"):
-        await update.message.reply_text("systemd-run not found — update manually via SSH.")
+    if not _validated_path(REPO_DIR, is_dir=True):
+        logger.error("cmd_update: BOT_REPO_DIR is not an absolute existing directory: %r", REPO_DIR)
+        await update.message.reply_text("Repository directory is not configured correctly.")
         return
-    log_file = f"/tmp/{CTL_NAME}-update.log"
-    cmd = [
-        "systemd-run", "--user", "--collect", "--no-block",
-        "--", "bash", "-c",
-        f"echo \"=== Update via /update at $(date -Is) ===\" >> {log_file} 2>&1; "
-        f"sleep 2; cd {REPO_DIR} && {ctl_path} update >> {log_file} 2>&1",
-    ]
+    if not shutil.which("systemd-run"):
+        await update.message.reply_text("systemd-run not found: update manually via SSH.")
+        return
+
+    log_file = _prepare_update_log()
+    cmd = _update_argv(ctl_path, REPO_DIR, log_file)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True,
+                                         text=True, timeout=10)
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "no output").strip()[:300]
             logger.error("cmd_update: systemd-run rc=%d stderr=%s stdout=%s",
@@ -421,7 +459,7 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown")
             return
         await update.message.reply_text(
-            f"🔄 Update started — bot will restart in ~2s.\n"
+            f"🔄 Update started: bot will restart in ~2s.\n"
             f"Logs: `cat {log_file}`",
             parse_mode="Markdown")
     except subprocess.TimeoutExpired:
@@ -446,7 +484,7 @@ async def cmd_seed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await engine._recreate_http()
         ok = await engine._rotate_server_seed()
         await update.message.reply_text(
-            "Server seed rotated." if ok else "Seed rotation failed — check /balance / api key.")
+            "Server seed rotated." if ok else "Seed rotation failed: check /balance / api key.")
     except Exception as e:
         logger.error("cmd_seed error: %s", e, exc_info=True)
         msg = f"Error: `{e}`" if APP_ENV != "production" else "Something went wrong. Please try again."
@@ -560,7 +598,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         api_set = "Yes" if config.get("api_key") else "No"
         lines.append(f"API key: `{api_set}`")
         proxy = config.get("proxy")
-        # v2.28.0 — shared mask_proxy: strips userinfo + handles port-missing case.
+        # v2.28.0: shared mask_proxy: strips userinfo + handles port-missing case.
         if proxy:
             lines.append(f"Proxy: `{mask_proxy(proxy)}`")
         else:
@@ -594,7 +632,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if param == "currency":
             config["currency"] = value.lower()
         elif param == "proxy":
-            # v2.28.0 — shared validate_proxy: broader off-value vocabulary,
+            # v2.28.0: shared validate_proxy: broader off-value vocabulary,
             # same scheme rules as CLI. Zero user-visible behaviour change on
             # the happy path; raises ValueError on unknown schemes.
             try:
@@ -608,7 +646,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["proxy"] = normalized
             if normalized is None:
                 await update.message.reply_text(
-                    "Proxy disabled — using direct connection.", parse_mode="Markdown")
+                    "Proxy disabled: using direct connection.", parse_mode="Markdown")
                 save_user_config(user_id, config)
                 return
         elif param in ("streakdelay_loss", "sdloss"):
@@ -673,7 +711,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     f"Set `pipeline` = `{val}`\n\n"
                     f"Pipeline > 1 only works correctly with **Flat** strategy.\n"
-                    f"Your current strategy is sequential — pipeline will be forced to 1 at start.\n"
+                    f"Your current strategy is sequential: pipeline will be forced to 1 at start.\n"
                     f"Use `/set strategy flat` first, then `/set pipeline {val}`.",
                     parse_mode="Markdown")
                 save_user_config(user_id, config)
@@ -803,7 +841,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("milestoneprofit", "msprofit"):
             config["milestone_profit"] = float(value)
         elif param in ("profitthreshold", "pt"):
-            # v1.21.0 — off / none / 0 all mean off (ends a run total too).
+            # v1.21.0: off / none / 0 all mean off (ends a run total too).
             val = None if value.lower() in ("off", "none") else float(value)
             if val is not None and val < 0:
                 await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
@@ -867,7 +905,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["*Available Strategies:*\n"]
     for k, (name, desc) in STRATEGIES.items():
-        lines.append(f"`{k}` *{name}* — {desc}")
+        lines.append(f"`{k}` *{name}*: {desc}")
     lines.append("\nSet with: /set strategy <name>")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -924,7 +962,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine.on_milestone = _make_on_milestone(chat_id)
     engine.on_error = _make_on_error(chat_id)
 
-    msg = await update.message.reply_text("Connecting to WolfBet…")
+    msg = await update.message.reply_text("Connecting to WolfBet...")
 
     if not await engine.start():
         detail = f": {engine.last_error}" if APP_ENV != "production" else ""
@@ -967,7 +1005,7 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
     except Exception:
-        # Telegram timeout — session is already running, just couldn't send confirmation
+        # Telegram timeout: session is already running, just couldn't send confirmation
         logger.warning("User %d: Session started but Telegram confirmation timed out", user_id)
 
 
@@ -975,15 +1013,15 @@ async def _safe_send(app, chat_id, text, **kwargs):
     """Engine-driven send that swallows flood/network errors to avoid unraised Task exceptions.
 
     On a Markdown parse error, retries once as plain text so the user always
-    sees the notification — preventing silent /status-style outages.
+    sees the notification: preventing silent /status-style outages.
     """
     from telegram.error import RetryAfter, NetworkError, TimedOut
     try:
         await app.bot.send_message(chat_id, text, **kwargs)
     except RetryAfter as e:
-        logger.warning("Telegram flood — dropping notification (retry in %ss)", e.retry_after)
+        logger.warning("Telegram flood: dropping notification (retry in %ss)", e.retry_after)
     except (NetworkError, TimedOut) as e:
-        logger.warning("Telegram network — dropping notification: %s", e)
+        logger.warning("Telegram network: dropping notification: %s", e)
     except BadRequest as e:
         msg = str(e).lower()
         if "parse" in msg or "entity" in msg:
@@ -1062,7 +1100,7 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
     # Re-read the saved config at stop time so toggling /set recurring on/off applies to every session.
     rec = user_rec.get(slot)
     # Streak reset (first win after N+ losses, profit >= 0) is its own restart
-    # rule with its own delay — independent of the recurring flag.
+    # rule with its own delay: independent of the recurring flag.
     is_streak_reset = reason.startswith(STREAK_RESET_REASON)
     try:
         live_config = load_user_config(user_id)
@@ -1087,7 +1125,7 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
                 config[k] = live_config.get(k)
         # Carry forward the current base_bet (profit increment may have raised it)
         config["base_bet"] = engine.base_bet
-        # v1.21.0 — run scope: base before run bumps, so they never stack twice.
+        # v1.21.0: run scope: base before run bumps, so they never stack twice.
         config["_run_base_origin"] = getattr(engine, "_run_base_origin", None)
         if live_config is not None:
             for k in ("profit_increment", "profit_threshold", "profit_increment_scope"):
@@ -1097,7 +1135,7 @@ async def _notify_stop(chat_id: int, user_id: int, slot: int, reason: str, app):
         task.add_done_callback(_log_task_exception)
         rec["timer_task"] = task
     elif rec and not recurring_on:
-        # User turned recurring off — clean up the snapshot so it doesn't linger
+        # User turned recurring off: clean up the snapshot so it doesn't linger
         recurring_state.get(user_id, {}).pop(slot, None)
 
 
@@ -1106,7 +1144,7 @@ async def cmd_runreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start a new run total for profit_increment_scope=run."""
     user_id = update.effective_user.id
     if _get_running(user_id) or recurring_state.get(user_id):
-        await _reply(update, "Stop your sessions first (`/stop recurring`), then /runreset — "
+        await _reply(update, "Stop your sessions first (`/stop recurring`), then /runreset: "
                              "running sessions hold the run's raised base bet.",
                      parse_mode="Markdown")
         return
@@ -1175,11 +1213,11 @@ async def _recurring_restart(chat_id: int, user_id: int, old_slot: int,
 
     if not await engine.start():
         err = engine.last_error or "unknown error"
-        logger.warning("Recurring restart failed for user %d slot %d: %s — retrying in %ds",
+        logger.warning("Recurring restart failed for user %d slot %d: %s: retrying in %ds",
                        user_id, old_slot, err, delay)
         await _safe_send(app, chat_id,
-                         f"⚠️ Recurring restart failed: {err}\nRetrying in {delay}s…")
-        # Re-schedule retry — keep recurring state alive (don't pop)
+                         f"⚠️ Recurring restart failed: {err}\nRetrying in {delay}s...")
+        # Re-schedule retry: keep recurring state alive (don't pop)
         rec = user_rec.get(old_slot)
         if rec:
             retry_task = asyncio.create_task(
@@ -1273,14 +1311,14 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, ". ".join(parts) + ".")
         return
 
-    # /stop all — stop all sessions
+    # /stop all: stop all sessions
     if context.args and context.args[0].lower() == "all":
         _cancel_recurring_for_user(user_id)
         if running:
             for engine in running.values():
                 engine.stop_reason = "Stopped by user"
                 engine.stop()
-            await _reply(update, f"Stopping {len(running)} session(s)…")
+            await _reply(update, f"Stopping {len(running)} session(s)...")
             return
 
     if running:
@@ -1296,24 +1334,21 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Clean up zombie sessions (no active engine but DB says running)
     db_path = user_db_path(user_id)
     if os.path.exists(db_path):
-        conn = sqlite3.connect(db_path)
-        cur = conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL")
-        zombies = cur.fetchone()[0]
+        row = await fetch_one(db_path, "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL")
+        zombies = row[0]
         if zombies:
-            conn.execute(
-                "UPDATE sessions SET ended_at = ? "
-                "WHERE ended_at IS NULL", (datetime.now().isoformat(),))
-            conn.commit()
-            conn.close()
+            await execute(
+                db_path,
+                "UPDATE sessions SET ended_at = ? WHERE ended_at IS NULL",
+                (datetime.now().isoformat(),),
+            )
             await _reply(update, f"Cleaned up {zombies} stale session(s).")
             return
-        conn.close()
     await _reply(update, "No session running.")
 
 
 # ── /pause ───────────────────────────────────────────────
-# ── /tweak — mutate running session ─────────────────────
+# ── /tweak: mutate running session ─────────────────────
 async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change settings on a running session without stopping it.
     Usage: /tweak <param> <value> [slot]
@@ -1324,18 +1359,18 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "*Tweak a running session:*\n\n"
             "*Instant (no restart):*\n"
-            "`/tweak pipeline 20` — concurrent requests\n"
-            "`/tweak delay 0.1` — bet delay\n"
-            "`/tweak maxwins 5000` — stop at wins\n"
-            "`/tweak maxbets 10000` — stop at bets\n"
-            "`/tweak maxprofit 0.001` — stop at profit\n"
-            "`/tweak maxloss 0.001` — stop at loss\n"
-            "`/tweak minbalance 1.0` — stop below balance\n"
-            "`/tweak srloss 20` — restart on win after 20 losses\n"
-            "`/tweak milestonewins 1000` — milestone interval\n"
-            "`/tweak sdloss 5:1.0` — delay every 5 losses\n"
-            "`/tweak sdwin 10:0.5` — delay every 10 wins\n"
-            "`/tweak sdbets 100:0.5` — delay every 100 bets\n\n"
+            "`/tweak pipeline 20`: concurrent requests\n"
+            "`/tweak delay 0.1`: bet delay\n"
+            "`/tweak maxwins 5000`: stop at wins\n"
+            "`/tweak maxbets 10000`: stop at bets\n"
+            "`/tweak maxprofit 0.001`: stop at profit\n"
+            "`/tweak maxloss 0.001`: stop at loss\n"
+            "`/tweak minbalance 1.0`: stop below balance\n"
+            "`/tweak srloss 20`: restart on win after 20 losses\n"
+            "`/tweak milestonewins 1000`: milestone interval\n"
+            "`/tweak sdloss 5:1.0`: delay every 5 losses\n"
+            "`/tweak sdwin 10:0.5`: delay every 10 wins\n"
+            "`/tweak sdbets 100:0.5`: delay every 100 bets\n\n"
             "*Restarts auto-bet:*\n"
             "`/tweak basebet 0.00000002`\n"
             "`/tweak multiplier 2.5`\n"
@@ -1463,7 +1498,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "No session running. Start one with /bet", parse_mode="Markdown")
         return
 
-    # Multiple sessions and no slot specified — show summary
+    # Multiple sessions and no slot specified: show summary
     if len(running) > 1 and not context.args:
         lines = [f"*{len(running)} Active Sessions:*\n"]
         for slot, engine in sorted(running.items()):
@@ -1546,11 +1581,11 @@ async def _monitor_loop(msg, user_id: int, slot: int, interval: int):
                         ]])
                         try:
                             await msg.edit_text(
-                                "⏳ Session ended. Recurring restart pending…",
+                                "⏳ Session ended. Recurring restart pending...",
                                 reply_markup=keyboard)
                         except Exception:
                             pass
-                        continue  # keep looping — new engine will appear after restart
+                        continue  # keep looping: new engine will appear after restart
                 try:
                     await msg.edit_text(
                         "Session ended. Monitor stopped.",
@@ -1597,7 +1632,7 @@ def _parse_callback_slot(data: str) -> tuple:
     return data, None
 
 
-# ── /web — generate dashboard login link ─────────────────
+# ── /web: generate dashboard login link ─────────────────
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from .config import WEB_URL, WEB_SECRET
     if not WEB_URL or not WEB_SECRET:
@@ -1651,7 +1686,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action, slot = _parse_callback_slot(query.data)
 
-    # Resolve engine — use slot from callback, or auto-resolve single session
+    # Resolve engine: use slot from callback, or auto-resolve single session
     def _get_engine():
         if slot is not None:
             return slot, active_engines.get(user_id, {}).get(slot)
@@ -1676,7 +1711,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]])
                 try:
                     await query.edit_message_text(
-                        "⏳ Session ended. Recurring restart pending…",
+                        "⏳ Session ended. Recurring restart pending...",
                         reply_markup=keyboard)
                 except Exception:
                     pass
@@ -1770,12 +1805,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if engine and engine.running:
             engine.stop_reason = "Stopped by user"
             engine.stop()
-        await query.edit_message_text("Stopping session…")
+        await query.edit_message_text("Stopping session...")
 
 
 # ── /diagnose ────────────────────────────────────────────
 async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """v1.18.0 — mirrors CLI wolfctl diagnose: top bottleneck + advice."""
+    """v1.18.0: mirrors CLI wolfctl diagnose: top bottleneck + advice."""
     user_id = update.effective_user.id
     running = _get_running(user_id)
     if not running:
@@ -1808,7 +1843,7 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif top_name == "CLI overhead" and overhead > 30:
         advice.append("• CLI overhead high. Check disk I/O + CPU on host.")
     if engine.strategy_key == "1" and delay_ms == 0:
-        advice.append("• Strategy is Flat with no delay — CLI has a pipeline "
+        advice.append("• Strategy is Flat with no delay: CLI has a pipeline "
                       "option for concurrent bets.")
     if not advice:
         advice.append("• Nothing obvious. Session is running near its ceiling.")
@@ -1830,8 +1865,8 @@ async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /analytics ───────────────────────────────────────────
 async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """v1.18.0 — mirrors CLI wolfctl analytics: lifetime + per-game + top-N.
-    v1.19.0 — optional date window: /analytics [SINCE] [UNTIL] (bare dates
+    """v1.18.0: mirrors CLI wolfctl analytics: lifetime + per-game + top-N.
+    v1.19.0: optional date window: /analytics [SINCE] [UNTIL] (bare dates
     or ISO timestamps; bare UNTIL = inclusive end of day)."""
     user_id = update.effective_user.id
     db_path = user_db_path(user_id)
@@ -1839,12 +1874,12 @@ async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No session history yet.")
         return
 
-    # v1.19.0 — /analytics [since] [until]
+    # v1.19.0: /analytics [since] [until]
     since = until = None
     args = list(context.args or [])
     if len(args) > 2:
         await update.message.reply_text(
-            "Usage: `/analytics [SINCE] [UNTIL]` — e.g. `/analytics 2026-08-14` "
+            "Usage: `/analytics [SINCE] [UNTIL]`: e.g. `/analytics 2026-08-14` "
             "or `/analytics 2026-08-01 2026-08-15`",
             parse_mode="Markdown")
         return
@@ -1862,44 +1897,40 @@ async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wconds.append("started_at <= ?")
         wparams.append(until)
     where = (" WHERE " + " AND ".join(wconds)) if wconds else ""
-    window_label = f"  ({since or '…'} → {args[1] if len(args) == 2 else '…'})" if args else ""
+    window_label = f"  ({since or '...'} → {args[1] if len(args) == 2 else '...'})" if args else ""
 
-    migrate_db(db_path)
-    conn = sqlite3.connect(db_path)
-    try:
-        lifetime = conn.execute(f"""
-            SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
-                   COALESCE(SUM(losses),0), COALESCE(SUM(wagered),0),
-                   COALESCE(SUM(profit),0), COALESCE(MAX(profit),0),
-                   COALESCE(MIN(profit),0),
-                   SUM(CASE WHEN profit>=0 THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN profit<0  THEN 1 ELSE 0 END)
-            FROM sessions{where}
-        """, tuple(wparams)).fetchone()
-        by_game = conn.execute(f"""
-            SELECT COALESCE(game,'?'), COUNT(*), COALESCE(SUM(total_bets),0),
-                   COALESCE(SUM(wins),0), COALESCE(SUM(losses),0),
-                   COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
-            FROM sessions{where} GROUP BY game ORDER BY 6 DESC
-        """, tuple(wparams)).fetchall()
-        by_strat = conn.execute(f"""
-            SELECT COALESCE(strategy,'?'), COUNT(*), COALESCE(SUM(total_bets),0),
-                   COALESCE(SUM(wins),0), COALESCE(SUM(losses),0),
-                   COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
-            FROM sessions{where} GROUP BY strategy ORDER BY 6 DESC
-        """, tuple(wparams)).fetchall()
-        top_best = conn.execute(f"""
-            SELECT id, COALESCE(game,'?'), COALESCE(strategy,'?'),
-                   COALESCE(total_bets,0), COALESCE(profit,0)
-            FROM sessions{where} ORDER BY profit DESC LIMIT 5
-        """, tuple(wparams)).fetchall()
-        top_worst = conn.execute(f"""
-            SELECT id, COALESCE(game,'?'), COALESCE(strategy,'?'),
-                   COALESCE(total_bets,0), COALESCE(profit,0)
-            FROM sessions{where} ORDER BY profit ASC LIMIT 5
-        """, tuple(wparams)).fetchall()
-    finally:
-        conn.close()
+    await asyncio.to_thread(migrate_db, db_path)
+    lifetime = await fetch_one(db_path, f"""
+        SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
+               COALESCE(SUM(losses),0), COALESCE(SUM(wagered),0),
+               COALESCE(SUM(profit),0), COALESCE(MAX(profit),0),
+               COALESCE(MIN(profit),0),
+               SUM(CASE WHEN profit>=0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN profit<0  THEN 1 ELSE 0 END)
+        FROM sessions{where}
+    """, tuple(wparams))
+    by_game = await fetch_all(db_path, f"""
+        SELECT COALESCE(game,'?'), COUNT(*), COALESCE(SUM(total_bets),0),
+               COALESCE(SUM(wins),0), COALESCE(SUM(losses),0),
+               COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
+        FROM sessions{where} GROUP BY game ORDER BY 6 DESC
+    """, tuple(wparams))
+    by_strat = await fetch_all(db_path, f"""
+        SELECT COALESCE(strategy,'?'), COUNT(*), COALESCE(SUM(total_bets),0),
+               COALESCE(SUM(wins),0), COALESCE(SUM(losses),0),
+               COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0)
+        FROM sessions{where} GROUP BY strategy ORDER BY 6 DESC
+    """, tuple(wparams))
+    top_best = await fetch_all(db_path, f"""
+        SELECT id, COALESCE(game,'?'), COALESCE(strategy,'?'),
+               COALESCE(total_bets,0), COALESCE(profit,0)
+        FROM sessions{where} ORDER BY profit DESC LIMIT 5
+    """, tuple(wparams))
+    top_worst = await fetch_all(db_path, f"""
+        SELECT id, COALESCE(game,'?'), COALESCE(strategy,'?'),
+               COALESCE(total_bets,0), COALESCE(profit,0)
+        FROM sessions{where} ORDER BY profit ASC LIMIT 5
+    """, tuple(wparams))
 
     (sess_total, bets_total, wins_total, losses_total,
      wagered_total, profit_total, best_p, worst_p, in_prof, in_loss) = lifetime
@@ -1920,13 +1951,13 @@ async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if by_game:
         lines += ["", "*🎲 By game*"]
         for g, n, b, w, l, p, wag in by_game:
-            gr = f"{w/b*100:.1f}%" if b > 0 else "—"
+            gr = f"{w/b*100:.1f}%" if b > 0 else "-"
             sp = "+" if p >= 0 else ""
             lines.append(f"`{g}`  ·  {n} sess  ·  {b} bets  ·  {gr}  ·  `{sp}{p:.8f}`")
     if by_strat:
         lines += ["", "*🎯 By strategy*"]
         for s, n, b, w, l, p, wag in by_strat:
-            gr = f"{w/b*100:.1f}%" if b > 0 else "—"
+            gr = f"{w/b*100:.1f}%" if b > 0 else "-"
             sp = "+" if p >= 0 else ""
             lines.append(f"`{s}`  ·  {n} sess  ·  {b} bets  ·  {gr}  ·  `{sp}{p:.8f}`")
     if top_best:
@@ -1967,9 +1998,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filter_clause = " WHERE game = ?"
             filter_params = (g,)
 
-    migrate_db(db_path)
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(f"""
+    await asyncio.to_thread(migrate_db, db_path)
+    rows = await fetch_all(db_path, f"""
         SELECT id, started_at, ended_at,
                UPPER(currency), COALESCE(game, 'dice'), strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
@@ -1982,9 +2012,9 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
                COALESCE(config_snapshot, '')
         FROM sessions{filter_clause} ORDER BY id DESC LIMIT 10
-    """, filter_params).fetchall()
+    """, filter_params)
 
-    totals = conn.execute(f"""
+    totals = await fetch_one(db_path, f"""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
                COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
                COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
@@ -1995,8 +2025,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
                COALESCE(AVG(bets_per_second),0)
         FROM sessions{filter_clause}
-    """, filter_params).fetchone()
-    conn.close()
+    """, filter_params)
 
     if not rows:
         msg = f"No sessions found for `{game_filter}`." if game_filter else "No sessions found."
@@ -2014,7 +2043,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"\n_View session detail:_ /session <id>")
 
     text = "\n".join(lines)
-    # Telegram limit is 4096 chars — split if needed
+    # Telegram limit is 4096 chars: split if needed
     if len(text) <= 4096:
         await update.message.reply_text(text, parse_mode="Markdown")
     else:
@@ -2035,12 +2064,10 @@ async def cmd_lastbets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No data.")
         return
 
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute("""
+    rows = await fetch_all(db_path, """
         SELECT timestamp, amount, result_value, state, profit, balance_after
         FROM bets ORDER BY id DESC LIMIT ?
-    """, (n,)).fetchall()
-    conn.close()
+    """, (n,))
 
     if not rows:
         await update.message.reply_text("No bets found.")
@@ -2074,15 +2101,15 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "*Usage:* /addrule <json>\n\n"
             "*Condition types (`cond_type`):*\n"
-            "`sequence` — count-based (streaks, every N)\n"
-            "`profit` — profit/balance threshold\n"
-            "`bet` — bet amount threshold\n\n"
+            "`sequence`: count-based (streaks, every N)\n"
+            "`profit`: profit/balance threshold\n"
+            "`bet`: bet amount threshold\n\n"
             "*Sequence modes (`cond_mode`):*\n"
-            "`every` — Every N total (wins/losses/bets)\n"
-            "`every_streak` — Every N in streak (N, 2N, 3N…)\n"
-            "`first_streak` — First streak of N (once, resets)\n"
-            "`streak_above` — Every bet past streak N\n"
-            "`streak_below` — Streak below N\n\n"
+            "`every`: Every N total (wins/losses/bets)\n"
+            "`every_streak`: Every N in streak (N, 2N, 3N...)\n"
+            "`first_streak`: First streak of N (once, resets)\n"
+            "`streak_above`: Every bet past streak N\n"
+            "`streak_below`: Streak below N\n\n"
             "*Profit/bet modes (`cond_mode`):*\n"
             "`gte` >=  `gt` >  `lte` <=  `lt` <\n\n"
             "*Profit fields (`cond_field`):*\n"
@@ -2091,30 +2118,30 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`win` `loss` `bet`\n\n"
             "*Actions (`action`):*\n"
             "_Bet amount:_\n"
-            "`reset_amount` — Reset to base bet\n"
-            "`increase_amount` — Increase by % (value=1 → +1%)\n"
-            "`decrease_amount` — Decrease by %\n"
-            "`add_amount` — Add fixed amount\n"
-            "`deduct_amount` — Deduct fixed amount\n"
-            "`set_amount` — Set exact amount\n"
+            "`reset_amount`: Reset to base bet\n"
+            "`increase_amount`: Increase by % (value=1 → +1%)\n"
+            "`decrease_amount`: Decrease by %\n"
+            "`add_amount`: Add fixed amount\n"
+            "`deduct_amount`: Deduct fixed amount\n"
+            "`set_amount`: Set exact amount\n"
             "_Win chance:_\n"
-            "`reset_winchance` — Reset win chance\n"
-            "`set_winchance` — Set win chance\n"
-            "`increase_wc` — Increase win chance by %\n"
-            "`decrease_wc` — Decrease win chance by %\n"
-            "`add_wc` — Add to win chance\n"
-            "`deduct_wc` — Deduct from win chance\n"
+            "`reset_winchance`: Reset win chance\n"
+            "`set_winchance`: Set win chance\n"
+            "`increase_wc`: Increase win chance by %\n"
+            "`decrease_wc`: Decrease win chance by %\n"
+            "`add_wc`: Add to win chance\n"
+            "`deduct_wc`: Deduct from win chance\n"
             "_Payout (multiplier):_\n"
-            "`reset_payout` — Reset payout\n"
-            "`set_payout` — Set payout\n"
-            "`increase_payout` — Increase payout by %\n"
-            "`decrease_payout` — Decrease payout by %\n"
-            "`add_payout` — Add to payout\n"
-            "`deduct_payout` — Deduct from payout\n"
+            "`reset_payout`: Reset payout\n"
+            "`set_payout`: Set payout\n"
+            "`increase_payout`: Increase payout by %\n"
+            "`decrease_payout`: Decrease payout by %\n"
+            "`add_payout`: Add to payout\n"
+            "`deduct_payout`: Deduct from payout\n"
             "_Other:_\n"
-            "`switch` — Switch over/under (dice rule)\n"
-            "`stop` — Stop betting\n"
-            "`reset_game` — Full reset\n\n"
+            "`switch`: Switch over/under (dice rule)\n"
+            "`stop`: Stop betting\n"
+            "`reset_game`: Full reset\n\n"
             "*Examples:*\n"
             '`/addrule {"cond_type":"sequence","cond_mode":"every","cond_value":1,"cond_trigger":"loss","action":"increase_amount","action_value":1}`\n'
             "_Every loss → increase bet by 1%_\n\n"
@@ -2127,7 +2154,7 @@ async def cmd_addrule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw = " ".join(context.args)
-    # Telegram replaces " with smart quotes — fix them
+    # Telegram replaces " with smart quotes: fix them
     raw = raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
     try:
         d = json.loads(raw)
@@ -2250,7 +2277,7 @@ async def cmd_presets(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["*Presets:*\n"]
     for name, p in presets.items():
-        lines.append(f"`{name}` — {p.get('strategy', '?')} {p.get('multiplier', '?')}x")
+        lines.append(f"`{name}`: {p.get('strategy', '?')} {p.get('multiplier', '?')}x")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -2313,9 +2340,8 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No data.")
         return
 
-    migrate_db(db_path)
-    conn = sqlite3.connect(db_path)
-    sess = conn.execute("""
+    await asyncio.to_thread(migrate_db, db_path)
+    sess = await fetch_one(db_path, """
         SELECT id, started_at, ended_at,
                UPPER(currency), COALESCE(game, 'dice'), strategy, multiplier, base_bet,
                total_bets, wins, losses, profit, wagered,
@@ -2328,18 +2354,18 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
                COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
                COALESCE(config_snapshot, '')
         FROM sessions WHERE id = ?
-    """, (session_id,)).fetchone()
+    """, (session_id,))
 
     if not sess:
-        conn.close()
         await update.message.reply_text(f"Session #{session_id} not found.")
         return
 
     # streak distribution
-    bet_rows = conn.execute(
+    bet_rows = await fetch_all(
+        db_path,
         "SELECT state FROM bets WHERE session_id=? ORDER BY id",
-        (session_id,)
-    ).fetchall()
+        (session_id,),
+    )
 
     dist = {"win": {}, "loss": {}}
     cur_type = None
@@ -2357,11 +2383,10 @@ async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dist[cur_type][cur_len] = dist[cur_type].get(cur_len, 0) + 1
 
     # recent bets
-    recent = conn.execute("""
+    recent = await fetch_all(db_path, """
         SELECT timestamp, amount, result_value, state, profit, balance_after
         FROM bets WHERE session_id = ? ORDER BY id DESC LIMIT 20
-    """, (session_id,)).fetchall()
-    conn.close()
+    """, (session_id,))
 
     text = format_session_detail(sess, dist, recent)
     if len(text) <= 4096:
@@ -2433,7 +2458,7 @@ async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Usage: /cleanup [days]\nDefault: 3")
             return
 
-    await update.message.reply_text(f"Cleaning up bet records older than {days} day(s)…")
+    await update.message.reply_text(f"Cleaning up bet records older than {days} day(s)...")
     deleted = cleanup_old_bets(db_path, bet_age_days=days)
     await update.message.reply_text(
         f"Deleted *{deleted:,}* bet record(s).\n"
@@ -2468,19 +2493,27 @@ async def cmd_delsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Session #{session_id} is currently running. Stop it first with /stop.")
             return
 
-    conn = sqlite3.connect(db_path, timeout=10)
-    row = conn.execute("SELECT id, total_bets, profit FROM sessions WHERE id = ?",
-                       (session_id,)).fetchone()
+    def _delete_session_rows() -> tuple | None:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT id, total_bets, profit FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute("DELETE FROM bets WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.commit()
+            conn.execute("VACUUM")
+            return row
+        finally:
+            conn.close()
+
+    row = await asyncio.to_thread(_delete_session_rows)
     if not row:
-        conn.close()
         await update.message.reply_text(f"Session #{session_id} not found.")
         return
 
-    conn.execute("DELETE FROM bets WHERE session_id = ?", (session_id,))
-    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-    conn.commit()
-    conn.execute("VACUUM")
-    conn.close()
     await update.message.reply_text(
         f"Deleted session *#{session_id}* ({row[1]:,} bets, profit: {row[2]:.8f}).",
         parse_mode="Markdown",
@@ -2499,7 +2532,7 @@ async def load_resume_state(application):
         logger.error("Failed to load resume file: %s", e)
         return
     finally:
-        os.remove(RESUME_FILE)  # consume it — don't re-resume on crash
+        os.remove(RESUME_FILE)  # consume it: don't re-resume on crash
 
     resumed = 0
 
@@ -2564,7 +2597,7 @@ async def load_resume_state(application):
                 resumed += 1
                 await application.bot.send_message(
                     chat_id,
-                    f"Bot updated — session #{engine.session_id} (slot {slot}) resumed.\n"
+                    f"Bot updated: session #{engine.session_id} (slot {slot}) resumed.\n"
                     f"Use /status to check progress.",
                 )
             else:
