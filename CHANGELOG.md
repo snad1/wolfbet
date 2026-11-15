@@ -1,5 +1,28 @@
 # Changelog
 
+## CLI v2.37.2 - the base bet you set is the base bet it bets (2026-11-15)
+
+The operator saved `base_bet 0.00005805`, started the bot, and it kept betting `0.00006534`. Three separate defects produced that, and each one hid the others.
+
+### A saved base reaches the running daemon
+- `base_bet` joins `_LIVE_RELOAD_KEYS`, so `config-set` and the wizard's save take effect over SIGHUP instead of waiting for a restart that may never come.
+- The reload re-baselines the run: bumps earned on the old base are dropped, the milestone re-anchors above the run's current profit, and the auto cycle restarts at a safe tick with the new base through `_auto_restart_pending`.
+
+### Bumps belong to the base they were earned on
+- The run file now stores `base`, the configured base the bumps were earned on.
+- `_init_run` drops the bumps when that base no longer matches the configured one, so a newly set base is never re-inflated on start. Run files written before this version keep their bumps once and adopt the current base.
+
+### The screen shows the live value
+- `config-show` reads the daemon's live snapshot and marks the row `0.00005805  (live 0.00006534, +729 bumps)` when the running base differs from the file.
+- `wolfctl start` on an already-active unit reports `already running - nothing restarted` with the `wolfctl restart` hint instead of claiming a start that did not happen.
+- The monitor prints `Daemon stopped.` only when the stop action actually ran; every other exit reports a detach.
+
+Known interaction, unchanged: with `basebet_pct > 0` the base is recomputed from balance every 10 bets, so a hand-set base is transient there. The live value is now visible either way.
+
+**Tests**: `tests/test_phase13_base_bet_truth.py` (11) plus updated expectations in `test_phase5p_live_reload.py`. **839 total passing.**
+
+`VERSION` `2.37.1` -> `2.37.2`.
+
 ## CLI v2.37.1 - a profit increment no longer stops the bot (2026-11-15)
 
 A run-scope increment that landed on a losing bet cleared the auto-bet UUID. The next loop tick found no UUID, the mid-chain guard saw a negative streak, and the daemon exited cleanly with the loss still open. On the live server this ended an overnight run at 05:00:37 after one bet. `Restart=on-failure` does not respawn a clean exit, and the unit was never enabled, so nothing brought it back.

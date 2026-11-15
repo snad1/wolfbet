@@ -50,9 +50,13 @@ def test_live_reload_includes_streak_tuples():
 
 def test_live_reload_excludes_unsafe_fields():
     """Fields whose mid-session change would corrupt session identity or the
-    Martingale ladder MUST require a full restart."""
+    Martingale ladder MUST require a full restart.
+
+    `base_bet` is deliberately absent from this list: an operator-set base
+    applies live and re-baselines the run.
+    """
     for k in ("api_key", "currency", "game", "rule", "multiplier",
-              "bet_value", "strategy", "strategy_key", "base_bet",
+              "bet_value", "strategy", "strategy_key",
               "loss_mult", "win_mult", "delay_martin_threshold"):
         assert k not in wb._LIVE_RELOAD_KEYS, f"{k!r} must NOT be live-reloadable"
 
@@ -127,12 +131,16 @@ def test_reload_skips_unsafe_game_field(monkeypatch, caplog):
                for rec in caplog.records)
 
 
-def test_reload_skips_unsafe_base_bet(monkeypatch):
+def test_reload_applies_base_bet(monkeypatch):
+    """A base saved while the bot runs must reach it: the incident base."""
+    monkeypatch.setattr(wb, "RUN_PATH", "/tmp/nonexistent-wolfbet-run.json")
+    wb.state.base_bet = wb.state.current_bet = 0.0001
+    wb.state.run_first_session = None
     _fresh_config(monkeypatch, {"base_bet": 0.0009})
-    wb.state.base_bet = 0.0001
     applied = wb._reload_live_config()
-    assert wb.state.base_bet == 0.0001
-    assert "base_bet" not in applied
+    assert wb.state.base_bet == 0.0009
+    assert wb.state.current_bet == 0.0009
+    assert "base_bet" in applied
 
 
 # ── Missing file / bad JSON safety ────────────────────────

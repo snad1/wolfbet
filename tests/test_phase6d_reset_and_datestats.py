@@ -32,7 +32,7 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.37.1"
+    assert wb.VERSION == "2.37.2"
 
 
 def test_wolfctl_version_constant_3_9():

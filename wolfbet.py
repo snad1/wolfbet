@@ -823,7 +823,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 — lane 1 pa
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.37.1"
+VERSION      = "2.37.2"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1125,7 +1125,7 @@ _LIVE_RELOAD_KEYS = {
     # Stop conditions
     "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
     # Pacing + basebet scaling
-    "bet_delay", "basebet_pct",
+    "bet_delay", "basebet_pct", "base_bet",
     # Streak-based pacing
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
     # Milestones + profit ramp
@@ -1185,6 +1185,8 @@ def _reload_live_config() -> dict:
             state.next_profit_milestone = state.profit_threshold
     if "proxy" in applied:
         _apply_proxy_to_session()
+    if "base_bet" in applied:
+        _rebase_run_for_base_change(applied["base_bet"][1])
     if "custom_rules_text" in applied and state.custom_rules_text:
         try:
             state.custom_rules = _load_rules_from_text(state.custom_rules_text)
@@ -1480,6 +1482,7 @@ class BotState:
         self.run_since: Optional[str] = None   # ISO time the run began
         self.run_bumps        = 0
         self.run_profit_done  = 0.0     # finished sessions of this run
+        self.run_base_origin: Optional[float] = None  # base the bumps were earned on
 
         # ── strategy internal state ──
         self.dalembert_unit = 0
@@ -2168,7 +2171,8 @@ def _load_run(lane: int = None):
             d = json.load(f)
         return {"first_session": int(d["first_session"]),
                 "started_at": d.get("started_at"),
-                "bumps": max(0, int(d.get("bumps") or 0))}
+                "bumps": max(0, int(d.get("bumps") or 0)),
+                "base": float(d["base"]) if d.get("base") is not None else None}
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -2183,7 +2187,8 @@ def _save_run() -> None:
         with os.fdopen(fd, "w") as f:
             json.dump({"first_session": state.run_first_session,
                        "started_at": state.run_since,
-                       "bumps": state.run_bumps}, f)
+                       "bumps": state.run_bumps,
+                       "base": state.run_base_origin}, f)
         os.replace(tmp, path)
     except OSError as e:
         logger.warning("run file save failed: %s", e)
@@ -2241,16 +2246,51 @@ def _init_run() -> None:
     if run:
         state.run_first_session = run["first_session"]
         state.run_since = run["started_at"]
-        state.run_bumps = run["bumps"]
+        origin = run.get("base")
+        if origin is not None and abs(origin - state.base_bet) > 1e-12:
+            logger.warning("RUN base changed (%.8f -> %.8f) - dropping %d bump(s), re-anchoring",
+                           origin, state.base_bet, run["bumps"])
+            state.run_bumps = 0
+        else:
+            state.run_bumps = run["bumps"]
+        state.run_base_origin = state.base_bet if origin is None else origin
         state.run_profit_done = _run_profit_done_from_db(run["first_session"])
         if state.profit_increment and state.run_bumps:
             state.base_bet = round(state.base_bet + state.run_bumps * state.profit_increment, 8)
             state.current_bet = state.base_bet
     if state.profit_threshold:
-        state.next_profit_milestone = (state.run_bumps + 1) * state.profit_threshold
+        state.next_profit_milestone = _next_milestone_above(state.run_bumps,
+                                                            state.profit_threshold,
+                                                            state.run_profit_done)
     logger.warning("RUN %s  since #%s  bumps=%d  run profit=%+.8f  base_bet=%.8f",
                    "resumed" if run else "new", state.run_first_session or "next",
                    state.run_bumps, state.run_profit_done, state.base_bet)
+
+
+def _next_milestone_above(bumps: int, threshold: float, profit: float) -> float:
+    """Next bump level for a run: one step past `bumps`, never below `profit`."""
+    thr = float(threshold or 0)
+    if thr <= 0:
+        return 0.0
+    return ((max(int(bumps), math.floor(profit / thr)) + 1) * thr)
+
+
+def _rebase_run_for_base_change(new_base: float) -> None:
+    """Make an operator-set base authoritative for the rest of the run.
+
+    Bumps earned on the previous base are dropped and the milestone re-anchors
+    above the run's current profit, so the next bump needs fresh profit.
+    """
+    with state.lock:
+        state.current_bet = new_base
+        if state.profit_increment_scope == "run" and state.run_first_session is not None:
+            state.run_bumps = 0
+            state.run_base_origin = new_base
+            state.next_profit_milestone = _next_milestone_above(
+                0, state.profit_threshold, run_profit_total())
+            _save_run()
+        if is_auto_game(state.game):
+            state._auto_restart_pending = True
 
 
 def _end_run(reason: str) -> None:
@@ -2265,6 +2305,7 @@ def _end_run(reason: str) -> None:
     state.run_since = None
     state.run_bumps = 0
     state.run_profit_done = 0.0
+    state.run_base_origin = None
     if had:
         logger.warning("RUN ended (%s) — the next run starts fresh", reason)
 
@@ -2275,6 +2316,7 @@ def _attach_run(session_id: int) -> None:
             and state.run_first_session is None):
         state.run_first_session = session_id
         state.run_since = datetime.now().isoformat()
+        state.run_base_origin = state.base_bet
         _save_run()
 
 
@@ -5569,9 +5611,11 @@ def cmd_monitor():
         # Handle stop action — go through systemctl when systemd manages the
         # daemon so the unit's Restart= policy doesn't respawn on a clean exit.
         # Fall back to SIGTERM for non-systemd installs.
+        stopped = False
         if _monitor_action[0] == "stop" or (locals().get("action") == "stop"):
+            _pid = locals().get("pid") or 0
             stopped_via_systemd = False
-            if _is_systemd_managed(pid):
+            if _is_systemd_managed(_pid):
                 try:
                     import subprocess as _sp
                     _sp.run(["systemctl", "--user", "stop", "wolfbet"],
@@ -5579,11 +5623,13 @@ def cmd_monitor():
                     stopped_via_systemd = True
                 except Exception:
                     pass
-            if not stopped_via_systemd and pid:
+            if not stopped_via_systemd and _pid:
                 try:
-                    os.kill(pid, signal.SIGTERM)
+                    os.kill(_pid, signal.SIGTERM)
                 except OSError:
                     pass
+            stopped = True
+        _monitor_action[0] = None
     finally:
         _monitor_running[0] = False
         # Restore terminal
@@ -5601,7 +5647,7 @@ def cmd_monitor():
         except Exception:
             pass
 
-    if _monitor_action[0] == "stop":
+    if stopped:
         console.print("[bold red]Daemon stopped.[/]")
     else:
         console.print("[dim]Detached from monitor. Daemon continues running.[/]")
@@ -5991,12 +6037,21 @@ def cmd_config_show():
     key_state = "[bold green](SET)[/]" if state.api_key else "[bold red](NOT SET)[/]"
     tbl.add_row("api_key", f"[dim]{_mask_key(state.api_key)}[/] {key_state}",
                 "API bearer token (set via WOLFBET_API_KEY env var)")
+    live = _monitor_read_state()
+    if not (live and _monitor_get_pid(live)):
+        live = None
     for field, desc in _CONFIG_SHOW_FIELDS:
         try:
             val = getattr(state, field)
         except AttributeError:
             continue
-        tbl.add_row(field, _fmt_config_value(field, val), desc)
+        shown = _fmt_config_value(field, val)
+        if field == "base_bet" and live and live.get("base_bet") is not None:
+            live_base = float(live["base_bet"])
+            if abs(live_base - float(val)) > 1e-12:
+                shown = (f"{shown}  [dim](live {live_base:.8f}, "
+                         f"+{int(live.get('run_bumps') or 0)} bumps)[/]")
+        tbl.add_row(field, shown, desc)
     console.print(tbl)
     # v2.35.0 — parallel lanes: count + per-lane overrides
     try:
