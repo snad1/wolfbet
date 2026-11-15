@@ -27,6 +27,7 @@ try:
     from rich.prompt import Prompt, Confirm
     from rich.align import Align
     from rich.rule import Rule
+    from rich.markup import escape
     from rich import box
 except ImportError:
     print("Missing dependencies. Run:  pip install requests rich")
@@ -321,6 +322,7 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.current_bet    = state.base_bet
         # Reset auto-bet UUID so betting_loop fires a fresh /auto/start next tick.
         state._auto_uuid     = None
+        state._auto_restart_pending = False
         state._last_profit_milestone = 0.0
         # v2.30.1 — reset the profit-increment milestone so each cycle hunts
         # a fresh target. Base_bet is deliberately preserved above (bumps
@@ -821,7 +823,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 — lane 1 pa
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.37.0"
+VERSION      = "2.37.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1425,6 +1427,7 @@ class BotState:
 
         # ── auto-bet state (dice-auto / limbo-auto) ──
         self._auto_uuid: Optional[str] = None
+        self._auto_restart_pending: bool = False
         self._auto_start_last_time: float = 0.0
         self._auto_start_remaining: Optional[int] = None
 
@@ -1859,6 +1862,7 @@ def api_auto_stop() -> None:
         pass
     with state.lock:
         state._auto_uuid = None
+        state._auto_restart_pending = False
 
 
 def _fmt_auto_stop_reason(sr) -> str:
@@ -1896,6 +1900,22 @@ def _midchain_loss_reason() -> str:
         return (f"Auto-cycle lost mid-chain (streak {state.current_streak}, "
                 f"profit {state.profit:+.8f})")
     return ""
+
+
+def _maybe_apply_pending_auto_restart() -> None:
+    """Restart the auto cycle for a pending base-bet change once the chain is closed.
+
+    Clearing the UUID while the session is in the red makes the next loop tick hit
+    the mid-chain guard, which stops the daemon. The increment waits here until
+    profit and streak are non-negative instead.
+    """
+    if not (is_auto_game(state.game) and state._auto_restart_pending):
+        return
+    if _midchain_loss_reason():
+        return
+    with state.lock:
+        state._auto_uuid = None
+        state._auto_restart_pending = False
 
 
 def _recover_expired_session() -> bool:
@@ -2122,14 +2142,15 @@ def _check_profit_increment() -> None:
         state.run_bumps += 1
         _save_run()
     tag = "RUN PROFIT INCREMENT" if run else "PROFIT INCREMENT"
-    # v2.29.0 — for auto-games the Martingale progression runs server-side
-    # on WolfBet using the base_bet submitted at /auto/start. Clearing
-    # _auto_uuid makes the next loop tick call api_auto_start with the fresh
-    # base — same CLI session, new WolfBet UUID.
+    # For auto-games the Martingale progression runs server-side on WolfBet
+    # using the base_bet submitted at /auto/start, so a new base needs a new
+    # UUID. The restart is deferred to the loop tick that owns the UUID swap,
+    # which skips it while the session is in the red. Same CLI session, new
+    # WolfBet UUID.
     if is_auto_game(state.game) and state._auto_uuid:
-        state._auto_uuid = None
-        logger.info("%s: base_bet → %.8f + auto-bet UUID cleared for restart with "
-                    "new base (next milestone at %.8f profit)",
+        state._auto_restart_pending = True
+        logger.info("%s: base_bet → %.8f + auto-cycle restart pending once the loss chain closes "
+                    "(next milestone at %.8f profit)",
                     tag, state.base_bet, state.next_profit_milestone)
     else:
         logger.info("%s: base_bet → %.8f (next milestone at %.8f profit)",
@@ -2344,6 +2365,7 @@ def betting_loop():
             _apply_basebet_pct()
 
         # ── auto-bet: ensure we have a live UUID (with max-nonce recovery) ──
+        _maybe_apply_pending_auto_restart()
         if is_auto_game(state.game) and not state._auto_uuid:
             # v2.32.1 — a new server cycle restarts the progression at base_bet.
             # Mid loss chain / in the red that abandons the loss with no way out.
@@ -5074,6 +5096,7 @@ def _print_summary():
 
     pairs = [
         ("Session ID",      str(state.session_id)),
+        ("Stop reason",     escape(state.status) if state.status else "-"),
         ("Total Bets",      str(state.total_bets)),
         ("Wins / Losses",   f"{state.wins} / {state.losses}"),
         ("Win Rate",        f"{state.wins/state.total_bets*100:.1f}%" if state.total_bets else "—"),
@@ -7758,6 +7781,8 @@ def main():
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
+        logger.warning("DAEMON EXIT  session=%d  bets=%d  profit=%+.8f  reason=%s",
+                       state.session_id, state.total_bets, state.profit, state.status)
         _print_summary()
         return
 

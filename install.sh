@@ -215,6 +215,8 @@ WDTIMEREOF
 sudo loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
 systemctl --user daemon-reload
+# enable (no --now): boot-only, so a manual stop stays stopped
+systemctl --user enable ${SERVICE_NAME} 2>/dev/null || true
 systemctl --user enable --now ${TG_SERVICE_NAME}-watchdog.timer 2>/dev/null || true
 echo "   Services installed:"
 echo "     ${SERVICE_NAME}.service              (CLI bot)"

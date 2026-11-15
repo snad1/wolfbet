@@ -53,11 +53,14 @@ def _reset(game="dice"):
     wb.state.highest_win = 0.0
     wb.state.biggest_loss = 0.0
     wb.state._auto_uuid = "uuid-old"
+    wb.state._auto_restart_pending = False
 
 
-def test_source_both_sites_have_auto_uuid_clearing():
+def test_source_deferral_wired_into_loop():
     src = inspect.getsource(wb)
-    assert src.count("auto-bet UUID ") >= 2
+    assert "_auto_restart_pending = True" in inspect.getsource(wb._check_profit_increment)
+    assert "_maybe_apply_pending_auto_restart()" in inspect.getsource(wb.betting_loop)
+    assert "_auto_restart_pending" in src
 
 
 def test_source_guards_on_is_auto_game():
@@ -73,16 +76,18 @@ def test_non_auto_game_leaves_uuid_intact():
     assert wb.state._auto_uuid == "uuid-old"
 
 
-def test_limbo_auto_clears_uuid_on_increment():
+def test_limbo_auto_defers_uuid_clear_on_increment():
     _reset(game="limbo-auto")
     wb._apply_outcome_locked(_envelope(profit=0.0005))
-    assert wb.state._auto_uuid is None
+    assert wb.state._auto_uuid == "uuid-old"
+    assert wb.state._auto_restart_pending is True
 
 
-def test_dice_auto_clears_uuid_on_increment():
+def test_dice_auto_defers_uuid_clear_on_increment():
     _reset(game="dice-auto")
     wb._apply_outcome_locked(_envelope(profit=0.0005))
-    assert wb.state._auto_uuid is None
+    assert wb.state._auto_uuid == "uuid-old"
+    assert wb.state._auto_restart_pending is True
 
 
 def test_session_id_unchanged_after_increment():

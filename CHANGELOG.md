@@ -1,5 +1,25 @@
 # Changelog
 
+## CLI v2.37.1 - a profit increment no longer stops the bot (2026-11-15)
+
+A run-scope increment that landed on a losing bet cleared the auto-bet UUID. The next loop tick found no UUID, the mid-chain guard saw a negative streak, and the daemon exited cleanly with the loss still open. On the live server this ended an overnight run at 05:00:37 after one bet. `Restart=on-failure` does not respawn a clean exit, and the unit was never enabled, so nothing brought it back.
+
+### Increment defers its auto-cycle restart
+- `_check_profit_increment` still bumps `base_bet` and saves the run file, but sets `_auto_restart_pending` instead of clearing `_auto_uuid`.
+- `_maybe_apply_pending_auto_restart` performs the swap at the top of the betting loop, and only when profit and streak are both non-negative. A new base bet waits for the loss chain to close instead of abandoning it.
+- The mid-chain guard is unchanged, so a cycle the server ended still stops the bot as designed.
+
+### The daemon records why it exited
+- Session summary carries a `Stop reason` row, and the daemon logs `DAEMON EXIT session=... reason=...` at WARNING on its way out. Previously the reason existed only in memory, and the state file was deleted before anything could read it.
+- The reason string is escaped before rendering, so a value carrying brackets cannot break the console output.
+
+### Installer
+- `install.sh` enables `${SERVICE_NAME}`, so the CLI bot comes back after a reboot. `enable` without `--now`: a manual `wolfctl stop` stays stopped.
+
+**Tests**: `tests/test_phase12_increment_restart.py` (9) plus updated expectations in `test_phase5s_cli_profit_increment_auto.py` and `test_phase10b_run_increment.py`. **836 total passing.**
+
+`VERSION` `2.37.0` -> `2.37.1`.
+
 ## TG v1.21.0 — run-wide profit increment (parity with CLI v2.37.0) (2026-11-14)
 
 The Telegram bot gains `profit_increment_scope`. The default, `session`, is unchanged.

@@ -154,13 +154,14 @@ def test_recurring_reset_keeps_run_milestone_and_total():
     assert 'state.profit_increment_scope != "run"' in body
 
 
-def test_auto_game_bump_clears_uuid(_env):
+def test_auto_game_bump_defers_uuid_clear(_env):
     _cfg("run")
     wb.state.game, wb.state._auto_uuid = "dice-auto", "u"
     wb.state.run_first_session = 1
     wb.state.run_profit_done, wb.state.profit = 0.02, 0.0
     wb._check_profit_increment()
-    assert wb.state._auto_uuid is None and wb.state.run_bumps == 1
+    assert wb.state._auto_uuid == "u"
+    assert wb.state._auto_restart_pending is True and wb.state.run_bumps == 1
 
 
 # ── config / commands ─────────────────────────────────────
