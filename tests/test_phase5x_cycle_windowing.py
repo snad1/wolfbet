@@ -1,7 +1,7 @@
-"""Phase 5x — cycle-metric windowing + windowed efficiency + sharpened advice (v2.30.4).
+"""Phase 5x: cycle-metric windowing + windowed efficiency + sharpened advice (v2.30.4).
 
 v2.30.3 replaced a broken sum formula and added rolling api_avg, but the underlying
-cycle_ms was still α=0.1 EMA — one 400 ms iteration held the display up for
+cycle_ms was still α=0.1 EMA: one 400 ms iteration held the display up for
 5-10 samples, and diagnose could momentarily show `Actual > Theoretical`.
 v2.30.4 mirrors the api_p50/p99 windowing pattern for cycle_ms and unifies the
 windows so efficiency stays algebraically consistent.
@@ -34,7 +34,7 @@ def _reset_cycle_samples():
 
 # ── Windowed cycle metrics ───────────────────────────────
 def test_cycle_p50_stable_across_single_outlier():
-    """One huge outlier must NOT drag the p50 (median) upward — was the EMA
+    """One huge outlier must NOT drag the p50 (median) upward: was the EMA
     behaviour before v2.30.4."""
     _reset_cycle_samples()
     for ms in [80] * 20:
@@ -42,13 +42,13 @@ def test_cycle_p50_stable_across_single_outlier():
     median_before = wb._compute_cycle_p50()
     wb._record_cycle_ms(2000)  # one 2-second iteration (retention worker / GC / /auto/start)
     median_after = wb._compute_cycle_p50()
-    # Median should be unchanged (still 80) — outlier lives only in p99.
+    # Median should be unchanged (still 80): outlier lives only in p99.
     assert abs(median_after - median_before) <= 5.0, \
         f"median moved {median_before}→{median_after}, expected ~stable"
 
 
 def test_cycle_p99_catches_outliers():
-    """p99 by definition is the 99th percentile — feed >1% outliers so they
+    """p99 by definition is the 99th percentile: feed >1% outliers so they
     land in the tail (matches the existing api_p99 semantics)."""
     _reset_cycle_samples()
     for ms in [80] * 90:
@@ -156,7 +156,7 @@ def test_cmd_diagnose_source_shows_recent_and_median():
 
 def test_cmd_diagnose_source_has_shared_tenancy_advice():
     """Sharpened advice: on healthy DB + healthy rate-limit, don't mislead the
-    user into hunting a bug that isn't there — say shared-tenancy silicon."""
+    user into hunting a bug that isn't there: say shared-tenancy silicon."""
     src = inspect.getsource(wb.cmd_diagnose)
     assert "shared-tenancy CPU/disk jitter" in src
 
@@ -168,4 +168,4 @@ def test_cmd_diagnose_source_has_efficiency_over_100_flag():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.37.3"

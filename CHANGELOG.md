@@ -1,5 +1,17 @@
 # Changelog
 
+## CLI v2.37.3 / TG v1.21.4 - limits reject nan and inf (2026-11-15)
+
+A `nan` limit passes every `< 0` guard and every stop comparison, so `/set maxloss nan` silently disabled the stop-loss and `--config-set` accepted the same value.
+
+- `_apply_mutation` parses every limit through `core.validation.finite_float`: rejects `nan`, `inf`, non-numeric and fractional integers, and names the field.
+- `/set` and `/tweak` route their numeric values through the same check, so the command answers "Invalid value" and keeps the stored limit.
+- `core/validation.py` re-exports the shared helper, so the CLI keeps its existing `core.*` imports.
+
+**Tests**: `tests/test_phase11o_limit_validation.py` (10). **887 total passing** before this file.
+
+`wolfbet.py` `2.37.2` -> `2.37.3`; `tg.VERSION` `1.21.3` -> `1.21.4`.
+
 ## TG v1.21.3 - `/update` owner gate and handlers off the event loop (2026-11-15)
 
 ### `/update`

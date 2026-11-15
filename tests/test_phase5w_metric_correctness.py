@@ -1,4 +1,4 @@
-"""Phase 5w — metric correctness (v2.30.3).
+"""Phase 5w: metric correctness (v2.30.3).
 
 Fixes three defects surfaced from live 18h/1M-bet server data:
   A) _record_cycle_ms mixed smoothed cycle EMA with UNSMOOTHED _last_api_ms,
@@ -8,7 +8,7 @@ Fixes three defects surfaced from live 18h/1M-bet server data:
   C) cmd_status "BPS ceiling" = 1000/cycle_ms is wrong for auto-games (server
      batches many bets per outer iteration) and disagreed with cmd_diagnose's
      Theoretical max.
-  D) _compute_theoretical_max_bps used all-time api_avg — 18h sessions biased
+  D) _compute_theoretical_max_bps used all-time api_avg: 18h sessions biased
      by cold-start samples.
 
 Run: WOLFBET_ENV=testing pytest wolfbet/tests/test_phase5w_metric_correctness.py -q
@@ -43,7 +43,7 @@ def _reset_metric_state():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.37.3"
 
 
 # ── Defect A: overhead stable across single-sample perturbation ─
@@ -72,7 +72,7 @@ def test_overhead_stable_when_single_sample_spikes():
 def test_overhead_falls_back_to_last_api_ms_when_deque_empty():
     """No API samples yet → no p50 available → falls back to _last_api_ms.
 
-    v2.30.4 — also requires the cycle deque to be reset alongside so the
+    v2.30.4: also requires the cycle deque to be reset alongside so the
     first sample IS the median (test invariant unchanged from v2.30.3)."""
     _reset_metric_state()
     from collections import deque
@@ -96,7 +96,7 @@ def test_diagnose_uses_approx_not_equals():
     assert "≈" in src
     assert "Measured cycle" in src
     assert "decomposition" in src
-    # v2.30.4 — "outer-iteration EMA" is retired; label now reads "median of last N iterations".
+    # v2.30.4: "outer-iteration EMA" is retired; label now reads "median of last N iterations".
     assert "median of last" in src
     # Old fake-equality line is gone.
     assert "= [magenta]{cycle_ms:.0f}ms[/]/bet" not in src

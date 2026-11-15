@@ -1,4 +1,4 @@
-"""Phase 6c — bet_value derivation + auto-correct on load / config-set (v2.30.8).
+"""Phase 6c: bet_value derivation + auto-correct on load / config-set (v2.30.8).
 
 Real-world outage: `wolfctl start` hit `HTTP 422` and placed zero bets.
 Root cause: on-disk config held `multiplier=10` + stale `bet_value=50.49`
@@ -8,9 +8,9 @@ never recomputed `bet_value`; auto games never hit `/bet` so the in-line
 self-correction code path didn't help either.
 
 Fixes:
-  - New `_derive_bet_value(multiplier, rule)` helper — single source of truth.
+  - New `_derive_bet_value(multiplier, rule)` helper: single source of truth.
   - `load_config()` re-derives on load when disk value mismatches.
-  - `_apply_mutation({"multiplier": …})` re-derives when no explicit
+  - `_apply_mutation({"multiplier": ...})` re-derives when no explicit
     `bet_value` in the same call.
   - `api_auto_start` includes the WolfBet response body in `state.last_error`
     so operators self-diagnose via `wolfctl status` instead of log-trawling.
@@ -37,7 +37,7 @@ import wolfbet as wb  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.37.3"
 
 
 # ── _derive_bet_value ───────────────────────────────────
@@ -50,7 +50,7 @@ def test_derive_bet_value_over_2x():
 
 
 def test_derive_bet_value_over_2_01x():
-    # 99/2.01 = 49.2537…; over → 100 - 49.2537 - 0.01 = 50.7362 → 50.74.
+    # 99/2.01 = 49.2537...; over → 100 - 49.2537 - 0.01 = 50.7362 → 50.74.
     assert wb._derive_bet_value(2.01, "over") == 50.74
 
 
@@ -59,7 +59,7 @@ def test_derive_bet_value_under_10x():
 
 
 def test_derive_bet_value_zero_multiplier_safe_default():
-    """No ZeroDivisionError — returns the wizard's safe-default."""
+    """No ZeroDivisionError: returns the wizard's safe-default."""
     assert wb._derive_bet_value(0, "over") == 50.74
 
 
@@ -80,7 +80,7 @@ def _write_config(monkeypatch, tmp_path, **overrides):
 
 
 def test_load_config_corrects_stale_bet_value(monkeypatch, tmp_path):
-    """v2.30.8 — disk says bet_value=50.49; multiplier=10 means it should
+    """v2.30.8: disk says bet_value=50.49; multiplier=10 means it should
     be 90.09 after load."""
     _write_config(monkeypatch, tmp_path)
     assert wb.load_config() is True
@@ -139,12 +139,12 @@ def test_apply_mutation_multiplier_in_range_no_re_derive_msg():
 
 # ── api_auto_start surfaces body in last_error ──────────
 def test_api_auto_start_includes_body_snippet_in_error():
-    """v2.30.8 — grep-based source check: state.last_error must include a
+    """v2.30.8: grep-based source check: state.last_error must include a
     body snippet so operators self-diagnose from `wolfctl status`."""
     src = inspect.getsource(wb.api_auto_start)
     assert "body_snip" in src
-    # Format: f"… — {body_snip}" appended conditionally.
-    assert re.search(r'\+\s*\(f" — \{body_snip\}"\s+if\s+body_snip', src)
+    # Format: f"...: {body_snip}" appended conditionally.
+    assert re.search(r'\+\s*\(f": \{body_snip\}"\s+if\s+body_snip', src)
 
 
 # ── Source markers ──────────────────────────────────────

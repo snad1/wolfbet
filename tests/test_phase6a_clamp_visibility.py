@@ -1,7 +1,7 @@
-"""Phase 6a — silent-clamp visibility + raised recurring_delay cap (v2.30.6).
+"""Phase 6a: silent-clamp visibility + raised recurring_delay cap (v2.30.6).
 
 Real-world report: `wolfctl config-set recurring_delay=10800` panel showed
-`recurring_delay: 3600 → 3600` — the 3600 s cap silently swallowed the
+`recurring_delay: 3600 → 3600`: the 3600 s cap silently swallowed the
 operator's input (10800 = 3 h). Investigation confirmed the cap was an
 arbitrary TG-mirror, not a technical limit (time.sleep(86400) is fine).
 
@@ -30,12 +30,12 @@ import wolfbet as wb  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.37.3"
 
 
 # ── recurring_delay accepts values previously clamped ────
 def test_recurring_delay_10800_survives_apply_mutation():
-    """3-hour pause — the user's exact real-world scenario."""
+    """3-hour pause: the user's exact real-world scenario."""
     wb.state.recurring_delay = 60.0
     msgs = wb._apply_mutation({"recurring_delay": 10800})
     assert wb.state.recurring_delay == 10800.0
@@ -44,7 +44,7 @@ def test_recurring_delay_10800_survives_apply_mutation():
 
 
 def test_recurring_delay_86400_survives_apply_mutation():
-    """24-hour pause — the new cap boundary."""
+    """24-hour pause: the new cap boundary."""
     wb.state.recurring_delay = 60.0
     msgs = wb._apply_mutation({"recurring_delay": 86400})
     assert wb.state.recurring_delay == 86400.0
@@ -106,7 +106,7 @@ def test_pipeline_depth_in_range_no_warning():
 
 # ── Source markers: helper exists + cmd_config_set surfaces msgs ─
 def test_clamped_helper_source_present():
-    """v2.30.6 — the _clamped helper lives inside _apply_mutation and is the
+    """v2.30.6: the _clamped helper lives inside _apply_mutation and is the
     single source of truth for the three clamp-and-warn sites."""
     src = inspect.getsource(wb._apply_mutation)
     assert "def _clamped(" in src

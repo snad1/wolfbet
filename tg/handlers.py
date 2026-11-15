@@ -19,6 +19,7 @@ from telegram.ext import ContextTypes
 # mask_proxy: port-safe (previously leaked "None" when the URL had no port).
 # percentile + benchmark_verdict: TG /benchmark gains p50/p99 + plain verdict.
 from core.net_helpers import validate_proxy, mask_proxy
+from core.validation import finite_float
 from core.diagnostics import percentile, benchmark_verdict
 
 from . import VERSION
@@ -615,6 +616,14 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+def _finite(value, cast=float):
+    """Parse a numeric /set or /tweak value, rejecting nan, inf and fractional integers."""
+    number = finite_float("value", value)
+    if cast is int and not number.is_integer():
+        raise ValueError("value must be a whole number")
+    return cast(number)
+
+
 # ── /set ─────────────────────────────────────────────────
 async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -686,7 +695,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["basebet_pct"] = None
             else:
                 try:
-                    val = float(value)
+                    val = _finite(value)
                 except ValueError:
                     await update.message.reply_text("basebet_pct must be a fraction (e.g. `0.001` = 0.1% of balance)", parse_mode="Markdown")
                     return
@@ -695,13 +704,13 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 config["basebet_pct"] = val
         elif param in ("purgedays", "purge_days"):
-            val = int(value)
+            val = _finite(value, int)
             if val < 1 or val > 30:
                 await update.message.reply_text("Purge days must be 1-30.")
                 return
             config["purge_days"] = val
         elif param == "pipeline":
-            val = int(value)
+            val = _finite(value, int)
             if val < 1 or val > 50:
                 await update.message.reply_text("Pipeline must be 1-50. Only works with auto-bet games.")
                 return
@@ -744,7 +753,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config["strategy_key"] = key
             config["strategy"] = STRATEGY_NAMES[key]
         elif param == "multiplier":
-            mult = float(value)
+            mult = _finite(value)
             if mult <= 1.0:
                 await update.message.reply_text("Multiplier must be > 1.0")
                 return
@@ -753,7 +762,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rule = config.get("rule", "over")
             config["bet_value"] = round(100.0 - wc - 0.01, 2) if rule == "over" else round(wc, 2)
         elif param == "basebet":
-            val = float(value)
+            val = _finite(value)
             if val < 0:
                 await update.message.reply_text("Base bet must be >= 0.")
                 return
@@ -768,26 +777,26 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wc = 99.0 / mult
             config["bet_value"] = round(100.0 - wc - 0.01, 2) if value.lower() == "over" else round(wc, 2)
         elif param == "lossmult":
-            val = float(value)
+            val = _finite(value)
             if val <= 0:
                 await update.message.reply_text("Loss multiplier must be > 0.")
                 return
             config["loss_mult"] = val
         elif param == "winmult":
-            val = float(value)
+            val = _finite(value)
             if val <= 0:
                 await update.message.reply_text("Win multiplier must be > 0.")
                 return
             config["win_mult"] = val
         elif param == "delay":
-            val = float(value)
+            val = _finite(value)
             if val < 0:
                 await update.message.reply_text("Delay must be >= 0.")
                 return
             config["bet_delay"] = val
         elif param == "maxprofit":
             if value.lower() != "off":
-                val = float(value)
+                val = _finite(value)
                 if val <= 0:
                     await update.message.reply_text("Max profit must be > 0.")
                     return
@@ -796,7 +805,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_profit"] = None
         elif param == "maxloss":
             if value.lower() != "off":
-                val = float(value)
+                val = _finite(value)
                 if val <= 0:
                     await update.message.reply_text("Max loss must be > 0.")
                     return
@@ -805,7 +814,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_loss"] = None
         elif param == "maxbets":
             if value.lower() != "off":
-                val = int(value)
+                val = _finite(value, int)
                 if val <= 0:
                     await update.message.reply_text("Max bets must be > 0.")
                     return
@@ -814,7 +823,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_bets"] = None
         elif param == "maxwins":
             if value.lower() != "off":
-                val = int(value)
+                val = _finite(value, int)
                 if val <= 0:
                     await update.message.reply_text("Max wins must be > 0.")
                     return
@@ -823,7 +832,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config["max_wins"] = None
         elif param == "minbalance":
             if value.lower() != "off":
-                val = float(value)
+                val = _finite(value)
                 if val < 0:
                     await update.message.reply_text("Min balance must be >= 0.")
                     return
@@ -831,24 +840,24 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 config["stop_on_balance"] = None
         elif param == "delaythreshold":
-            config["delay_martin_threshold"] = int(value)
+            config["delay_martin_threshold"] = _finite(value, int)
         elif param in ("milestonebets", "msbets"):
-            config["milestone_bets"] = int(value)
+            config["milestone_bets"] = _finite(value, int)
         elif param in ("milestonewins", "mswins"):
-            config["milestone_wins"] = int(value)
+            config["milestone_wins"] = _finite(value, int)
         elif param in ("milestonelosses", "mslosses"):
-            config["milestone_losses"] = int(value)
+            config["milestone_losses"] = _finite(value, int)
         elif param in ("milestoneprofit", "msprofit"):
-            config["milestone_profit"] = float(value)
+            config["milestone_profit"] = _finite(value)
         elif param in ("profitthreshold", "pt"):
             # v1.21.0: off / none / 0 all mean off (ends a run total too).
-            val = None if value.lower() in ("off", "none") else float(value)
+            val = None if value.lower() in ("off", "none") else _finite(value)
             if val is not None and val < 0:
                 await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
                 return
             config["profit_threshold"] = val or None
         elif param in ("profitincrement", "pi"):
-            val = None if value.lower() in ("off", "none") else float(value)
+            val = None if value.lower() in ("off", "none") else _finite(value)
             if val is not None and val < 0:
                 await update.message.reply_text("Profit increment must be > 0 (or 'off').")
                 return
@@ -869,7 +878,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Use: `/set recurring on` or `/set recurring off`", parse_mode="Markdown")
                 return
         elif param in ("recurringdelay", "recdelay"):
-            val = int(value)
+            val = _finite(value, int)
             if val < 5:
                 await update.message.reply_text("Recurring delay must be >= 5 seconds.")
                 return
@@ -878,13 +887,13 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if value.lower() in ("off", "none", "0"):
                 config["streak_reset_losses"] = None
             else:
-                val = int(value)
+                val = _finite(value, int)
                 if val < 1:
                     await update.message.reply_text("Streak reset must be >= 1 losses (or 'off').")
                     return
                 config["streak_reset_losses"] = val
         elif param in ("streakresetdelay", "srdelay"):
-            val = int(value)
+            val = _finite(value, int)
             if val < 5 or val > 86400:
                 await update.message.reply_text("Streak reset delay must be 5-86400 seconds.")
                 return
@@ -1394,15 +1403,15 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
     changes = {}
     try:
         if param == "pipeline":
-            val = int(value)
+            val = _finite(value, int)
             if val < 1 or val > 50:
                 await update.message.reply_text("Pipeline must be 1-50.")
                 return
             changes["pipeline"] = val
         elif param in ("basebet", "base_bet"):
-            changes["base_bet"] = float(value)
+            changes["base_bet"] = _finite(value)
         elif param == "delay":
-            changes["bet_delay"] = float(value)
+            changes["bet_delay"] = _finite(value)
         elif param in ("sdloss", "streakdelay_loss"):
             changes["streak_delay_loss"] = None if off else value
         elif param in ("sdwin", "streakdelay_win"):
@@ -1412,36 +1421,36 @@ async def cmd_tweak(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param in ("sbloss", "streakbet_loss"):
             changes["streakbet_loss"] = None if off else value
         elif param in ("bbpct", "basebet_pct"):
-            changes["basebet_pct"] = None if off else float(value)
+            changes["basebet_pct"] = None if off else _finite(value)
         elif param == "multiplier":
-            changes["multiplier"] = float(value)
+            changes["multiplier"] = _finite(value)
         elif param in ("lossmult", "loss_mult"):
-            changes["loss_mult"] = float(value)
+            changes["loss_mult"] = _finite(value)
         elif param in ("winmult", "win_mult"):
-            changes["win_mult"] = float(value)
+            changes["win_mult"] = _finite(value)
         elif param == "maxprofit":
-            changes["max_profit"] = None if off else float(value)
+            changes["max_profit"] = None if off else _finite(value)
         elif param == "maxloss":
-            changes["max_loss"] = None if off else float(value)
+            changes["max_loss"] = None if off else _finite(value)
         elif param == "maxbets":
-            changes["max_bets"] = None if off else int(value)
+            changes["max_bets"] = None if off else _finite(value, int)
         elif param == "maxwins":
-            changes["max_wins"] = None if off else int(value)
+            changes["max_wins"] = None if off else _finite(value, int)
         elif param == "minbalance":
-            changes["stop_on_balance"] = None if off else float(value)
+            changes["stop_on_balance"] = None if off else _finite(value)
         elif param in ("streakreset", "srloss"):
-            val = None if off else int(value)
+            val = None if off else _finite(value, int)
             if val is not None and val < 1:
                 raise ValueError(value)
             changes["streak_reset_losses"] = val
         elif param in ("milestonebets", "msbets"):
-            changes["milestone_bets"] = int(value)
+            changes["milestone_bets"] = _finite(value, int)
         elif param in ("milestonewins", "mswins"):
-            changes["milestone_wins"] = int(value)
+            changes["milestone_wins"] = _finite(value, int)
         elif param in ("profitincrement", "pi"):
-            changes["profit_increment"] = None if off or float(value) <= 0 else float(value)
+            changes["profit_increment"] = None if off or _finite(value) <= 0 else _finite(value)
         elif param in ("profitthreshold", "pt"):
-            changes["profit_threshold"] = None if off or float(value) <= 0 else float(value)
+            changes["profit_threshold"] = None if off or _finite(value) <= 0 else _finite(value)
         else:
             await update.message.reply_text(f"Unknown tweak param: `{param}`\nUse `/tweak` for options.", parse_mode="Markdown")
             return
