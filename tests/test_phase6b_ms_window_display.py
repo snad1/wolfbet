@@ -1,10 +1,10 @@
-"""Phase 6b — CFG-row Ms shows progress within the current threshold window (v2.30.7).
+"""Phase 6b - CFG-row Ms shows progress within the current threshold window (v2.30.7).
 
 Real-world report: monitor showed `Ms +1.54943550/1.94295672 (80%)` with
-profit_threshold=0.64765224. The 80% was cumulative (profit / next_ms) —
+profit_threshold=0.64765224. The 80% was cumulative (profit / next_ms) -
 technically true but not what an operator asking "how close to the next
 bump?" would expect. After 2 bumps, next_ms had climbed to 3×threshold,
-so the cumulative pct doesn't reset per bump — confusing.
+so the cumulative pct doesn't reset per bump - confusing.
 
 v2.30.7: denominator is now one profit_threshold unit; numerator is
 progress within the current window (profit - (next_ms - threshold)).
@@ -59,7 +59,7 @@ def test_reproduces_user_scenario_39pct_not_80pct():
     assert "+0.25413102" in row
 
 
-# ── Fresh session (no bumps yet) — no regression from phase5t ────
+# ── Fresh session (no bumps yet) - no regression from phase5t ────
 def test_fresh_session_no_bumps_still_shows_progress():
     row = _row(profit=0.0005, profit_threshold=0.001)  # no next_ms → defaults to threshold
     # window_start = 0.001 - 0.001 = 0; window_progress = 0.0005; pct = 50%.
@@ -100,7 +100,7 @@ def test_denominator_always_profit_threshold():
 def test_pre_v2_30_1_state_file_still_renders():
     """Pre-v2.30.1 state files never persisted next_profit_milestone. The
     fallback pins next_ms to profit_threshold, so window_start = 0 and
-    display collapses to `profit / threshold` — the natural first-window
+    display collapses to `profit / threshold` - the natural first-window
     reading. Preserves phase5t/5u behaviour."""
     row = _row(profit=0.0035, profit_threshold=0.007)
     assert "/0.00700000" in row
@@ -116,4 +116,4 @@ def test_segment_elided_when_threshold_missing():
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.38.0"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════╗
-║   🐺  WolfBet AutoBot v2.31.0  — Live Dashboard         ║
+║   🐺  WolfBet AutoBot v2.31.0  - Live Dashboard         ║
 ║   Auto-betting engine with live TUI & session logging   ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -15,7 +15,7 @@ from logging.handlers import TimedRotatingFileHandler
 try:
     import readline  # enables arrow keys, history, and line editing in input()
 except ImportError:
-    pass  # fallback — input() still works, just no line editing
+    pass  # fallback - input() still works, just no line editing
 
 try:
     import requests
@@ -42,7 +42,7 @@ from core.strategy import (
 )
 from core.database import init_db as _core_init_db, migrate_db, db_connect, secure_path
 from core.database import cleanup_old_bets, cleanup_live_bets
-# v2.28.0 — shared helpers extracted for CLI ↔ TG parity + dedup.
+# v2.28.0 - shared helpers extracted for CLI ↔ TG parity + dedup.
 from core.net_helpers import (
     validate_proxy, mask_proxy, classify_auto_stop_reason, parse_streak_delay,
 )
@@ -58,6 +58,11 @@ from core.games import (
     wolfbet_hash, is_auto_game, fmt_multiplier, request_hash_header,
     custom_rule_to_wolfbet, build_auto_config, build_auto_start_payload,
 )
+from core.session_rules import (
+    PHASE_BASE, PHASE_RECOVER, PHASE_PRESS, HALF_SAT,
+    next_phase, loss_room, floor_room, config_errors,
+    parse_amount, parse_flag, parse_multiple, parse_strategy_key,
+)
 
 # ══════════════════════════════════════════════════════════
 #  CONSTANTS (configurable via environment variables)
@@ -65,20 +70,20 @@ from core.games import (
 API_BASE     = os.environ.get("WOLFBET_API_BASE",    "https://wolfbet.com/api")
 
 # Phase 6: game registry, endpoint tables, hash + auto-bet builders live in
-# wolfbet/core/games.py — imported at the top of this file. Legacy in-repo
+# wolfbet/core/games.py - imported at the top of this file. Legacy in-repo
 # copies of _wolfbet_hash / _is_auto_game / GAME_ENDPOINTS etc. removed.
 #
 # NOTE: this CLI's legacy static-hash manual endpoints (dice-manual / limbo)
-# now go through the shared "dynamic" hash_spec instead — the two hardcoded
+# now go through the shared "dynamic" hash_spec instead - the two hardcoded
 # md5 strings that used to live here weren't valid without a matching nonce
 # in any modern WolfBet session anyway (dead code). Both v1.15.7 (TG) and
 # v2.15.0 (CLI) already committed to "dynamic" for those endpoints.
 
 
 # ══════════════════════════════════════════════════════════
-#  PHASE 2 helpers — session robustness (ported from tg/engine.py)
+#  PHASE 2 helpers - session robustness (ported from tg/engine.py)
 # ══════════════════════════════════════════════════════════
-# _parse_streak_delay — extracted to core.net_helpers in v2.28.0; alias kept for
+# _parse_streak_delay - extracted to core.net_helpers in v2.28.0; alias kept for
 # call-site + test compatibility. Same behaviour (empty/malformed → (0, 0.0)).
 _parse_streak_delay = parse_streak_delay
 
@@ -87,7 +92,7 @@ def _apply_basebet_pct() -> bool:
     """Recompute base_bet from basebet_pct * current_balance. Returns True if changed."""
     if state.basebet_pct <= 0 or state.current_balance <= 0:
         return False
-    # v2.36.0 — bet split divides the derived base bet too.
+    # v2.36.0 - bet split divides the derived base bet too.
     new_base = round(state.current_balance * state.basebet_pct / _split_bet_divisor(), 8)
     if new_base <= 0:
         return False
@@ -140,7 +145,7 @@ def _check_milestone(last_bet_state: str) -> Optional[str]:
     # Losses milestone
     if state.milestone_losses > 0 and last_bet_state != "win" and state.losses > 0 and state.losses % state.milestone_losses == 0:
         return f"{state.losses} losses"
-    # Profit milestone — every X profit units crossed
+    # Profit milestone - every X profit units crossed
     if state.milestone_profit > 0 and state.profit > 0:
         threshold = state.milestone_profit
         # crossed a new multiple of threshold since last check?
@@ -167,7 +172,7 @@ def martingale_chain_depth(balance: float, base: float, mult: float) -> int:
 def _check_risky_config() -> list:
     """Inspect state.* for combinations known to drain balance quickly.
 
-    Returns a list of human-readable heads-up strings. Never blocks — every
+    Returns a list of human-readable heads-up strings. Never blocks - every
     warning is a hint the user can override. Empty list = clean config.
     Called by step_confirm at wizard exit.
     """
@@ -179,18 +184,18 @@ def _check_risky_config() -> list:
     # Aggressive Martingale
     if sk == "2" and loss_mult >= 2.5:
         warnings.append(
-            f"Aggressive Martingale (loss_mult={loss_mult}) — a 5-loss streak needs "
+            f"Aggressive Martingale (loss_mult={loss_mult}) - a 5-loss streak needs "
             f"~{loss_mult**5:.0f}× base_bet in reserve."
         )
     # Doubling with no loss floor
     if sk in ("2", "7") and state.max_loss is None:
         warnings.append(
-            "No `max_loss` set — Martingale-style strategies can drain balance "
+            "No `max_loss` set - Martingale-style strategies can drain balance "
             "on a bad streak. Consider `t maxloss <amount>` (or set it in the wizard) "
             "to establish a floor."
         )
-    # Streak reset can't fire in the red — the balance caps the chain it can survive
-    # v2.35.0 — with a lane budget, each lane may only risk its share of the balance.
+    # Streak reset can't fire in the red - the balance caps the chain it can survive
+    # v2.35.0 - with a lane budget, each lane may only risk its share of the balance.
     _split = _split_budget_on()
     _bank = state.current_balance / state.lanes_count if _split else state.current_balance
     depth = martingale_chain_depth(_bank, state.base_bet, loss_mult)
@@ -212,7 +217,7 @@ def _check_risky_config() -> list:
         pct = state.base_bet / state.current_balance * 100
         warnings.append(
             f"Base bet is {pct:.1f}% of current balance ({state.base_bet:.8f} of "
-            f"{state.current_balance:.8f}) — small bankrolls drain in ~7 losses at this size."
+            f"{state.current_balance:.8f}) - small bankrolls drain in ~7 losses at this size."
         )
     # High multiplier
     if mult > 10:
@@ -226,7 +231,7 @@ def _check_risky_config() -> list:
         rd = getattr(state, "recurring_delay", 0.0) or 0.0
         gap = f"delay {rd:.0f}s between cycles" if rd > 0 else "back-to-back (no delay)"
         warnings.append(
-            "Recurring restart is on with no max_profit and no max_bets — "
+            "Recurring restart is on with no max_profit and no max_bets - "
             f"sessions could restart indefinitely ({gap}). "
             "Consider setting at least one cap."
         )
@@ -239,24 +244,24 @@ def _check_risky_config() -> list:
     # Aggressive basebet_pct
     if state.basebet_pct >= 0.05:
         warnings.append(
-            f"basebet_pct = {state.basebet_pct*100:.1f}% of balance — "
+            f"basebet_pct = {state.basebet_pct*100:.1f}% of balance - "
             "the base bet grows quickly on winning streaks."
         )
     # Pipeline on a strategy that can't safely pipeline
     if state.pipeline_depth > 1 and sk != "1":
         warnings.append(
-            f"pipeline_depth={state.pipeline_depth} but strategy is {state.strategy} — "
+            f"pipeline_depth={state.pipeline_depth} but strategy is {state.strategy} - "
             "will be forced to 1 (Flat-only). Set strategy 1 (Flat) to actually pipeline."
         )
     if state.pipeline_depth > 1 and is_auto_game(state.game):
         warnings.append(
-            f"pipeline_depth={state.pipeline_depth} but game is {state.game} — "
+            f"pipeline_depth={state.pipeline_depth} but game is {state.game} - "
             "auto-bet is server-side single-flight, will be forced to 1."
         )
-    # Proxy on cleartext channel — credentials on the wire (non-blocking)
+    # Proxy on cleartext channel - credentials on the wire (non-blocking)
     if state.proxy and state.proxy.startswith("http://"):
         warnings.append(
-            f"proxy scheme is http:// ({_mask_proxy(state.proxy)}) — "
+            f"proxy scheme is http:// ({_mask_proxy(state.proxy)}) - "
             "credentials + traffic travel unencrypted between you and the proxy. "
             "Prefer https:// or socks5:// when possible."
         )
@@ -264,6 +269,8 @@ def _check_risky_config() -> list:
 
 
 STREAK_RESET_REASON = "Loss streak reset"
+LOSS_CAP_REASON = "Loss cap"
+BALANCE_GOAL_REASON = "Balance goal reached"
 
 
 def _restart_delay_for(reason: str) -> float:
@@ -277,7 +284,7 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
     """Reset per-session counters while preserving config. Starts a new DB session row."""
     if delay is None:
         delay = state.recurring_delay
-    # v2.28.4 — freeze the "bet end" timestamp BEFORE the sleep so uptime +
+    # v2.28.4 - freeze the "bet end" timestamp BEFORE the sleep so uptime +
     # DB ended_at reflect the real betting window (not "5 min bet + 1 h pause"
     # lumped together). Cleared just before we set the new session_start.
     _bet_end = time.time()
@@ -285,11 +292,11 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.session_bet_ended_at = _bet_end
         state.session_pause_started_at = _bet_end
         state.session_pause_total = delay
-    # Recurring delay — pause BEFORE the next cycle so the user has time to
+    # Recurring delay - pause BEFORE the next cycle so the user has time to
     # intervene, the server settles, and the dashboard shows why the bot is idle.
     if delay > 0:
         with state.lock:
-            state.status = f"Recurring pause {delay:.0f}s before next cycle…"
+            state.status = f"Recurring pause {delay:.0f}s before next cycle..."
         logger.info("RECURRING pause %.0fs before next cycle", delay)
         time.sleep(delay)
     with state.lock:
@@ -301,9 +308,9 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.total_bets     = 0
         state.wins           = 0
         state.losses         = 0
-        # v2.35.0 — lane equity carries the lane's result across its sessions.
+        # v2.35.0 - lane equity carries the lane's result across its sessions.
         state.lane_run_profit += state.profit
-        # v2.37.0 — the run total keeps the finished session's result.
+        # v2.37.0 - the run total keeps the finished session's result.
         state.run_profit_done += state.profit
         state.profit         = 0.0
         state.wagered        = 0.0
@@ -320,27 +327,30 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.highest_balance = state.current_balance
         state.lowest_balance  = state.current_balance
         state.current_bet    = state.base_bet
+        state.hybrid_phase   = PHASE_BASE
+        state.dalembert_unit = 0
+        state.paroli_count   = 0
         # Reset auto-bet UUID so betting_loop fires a fresh /auto/start next tick.
         state._auto_uuid     = None
         state._auto_restart_pending = False
         state._last_profit_milestone = 0.0
-        # v2.30.1 — reset the profit-increment milestone so each cycle hunts
+        # v2.30.1 - reset the profit-increment milestone so each cycle hunts
         # a fresh target. Base_bet is deliberately preserved above (bumps
         # stack across cycles). Without this, cycle 2+ would need to accumulate
         # past cycle 1's high-water mark before any bump could fire.
-        # v2.37.0 — run scope keeps its milestone across sessions.
+        # v2.37.0 - run scope keeps its milestone across sessions.
         if state.profit_threshold and state.profit_increment_scope != "run":
             state.next_profit_milestone = state.profit_threshold
         state.consecutive_errors = 0
         state.backoff_delay  = 1.0
         state.last_error     = ""
-        state.status         = f"Recurring restart — session #{state.session_id}"
+        state.status         = f"Recurring restart - session #{state.session_id}"
     logger.info("RECURRING RESTART complete: new session #%d, base_bet=%.8f, balance=%.8f",
                 state.session_id, state.base_bet, state.current_balance)
 
 
 # ══════════════════════════════════════════════════════════
-#  PHASE 4b — runtime tweak grammar (mirrors tg/handlers.cmd_tweak)
+#  PHASE 4b - runtime tweak grammar (mirrors tg/handlers.cmd_tweak)
 # ══════════════════════════════════════════════════════════
 _TWEAK_ALIAS = {
     "delay":       "bet_delay",
@@ -374,6 +384,11 @@ _TWEAK_ALIAS = {
     "dbmode":      "db_write_mode",
     "dbwritemode": "db_write_mode",
 }
+_SESSION_RULE_KEYS = (
+    "hard_cap", "restart_after_loss", "balance_goal",
+    "hybrid_recover_at", "hybrid_recover_strategy", "hybrid_recover_bet",
+    "hybrid_press_at", "hybrid_press_floor", "hybrid_press_strategy", "hybrid_press_bet",
+)
 _TWEAK_PARAMS = {
     "bet_delay", "basebet_pct",
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
@@ -386,6 +401,7 @@ _TWEAK_PARAMS = {
     "pipeline_depth",
     "proxy", "purge_days",
     "db_write_mode",
+    *_SESSION_RULE_KEYS,
 }
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
@@ -393,10 +409,10 @@ _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n"
 def _derive_bet_value(multiplier: float, rule: str) -> float:
     """Canonical WolfBet win-chance derivation. 99% RTP (1% house edge).
 
-    v2.30.9 — single source of truth used by the wizard, `load_config`,
+    v2.30.9 - single source of truth used by the wizard, `load_config`,
     and `_apply_mutation`. Was inline in three places and silently stale
-    in any config where `wolfctl config-set multiplier=…` ran without the
-    wizard — server returned HTTP 422 "Incorrect win chance given" on
+    in any config where `wolfctl config-set multiplier=...` ran without the
+    wizard - server returned HTTP 422 "Incorrect win chance given" on
     /auto/start (top cause of the 2026-08-01 outage on vmi3142201).
     """
     if multiplier <= 0:
@@ -408,7 +424,7 @@ def _derive_bet_value(multiplier: float, rule: str) -> float:
 
 
 def _apply_mutation(changes: dict) -> list:
-    """Apply {param → value} mutations to state.* — returns human status list.
+    """Apply {param → value} mutations to state.* - returns human status list.
 
     Mirrors tg/engine.py:1274-1387 for CLI parity. Raises ValueError on malformed
     numeric input; caller is responsible for surfacing that cleanly."""
@@ -418,7 +434,7 @@ def _apply_mutation(changes: dict) -> list:
         return isinstance(v, str) and v.lower() in _TWEAK_OFF_VALUES or v is None
 
     def _clamped(name: str, raw: float, lo: float, hi: float) -> float:
-        """v2.30.6 — clamp raw into [lo, hi]; append a warning to msgs when
+        """v2.30.6 - clamp raw into [lo, hi]; append a warning to msgs when
         clamped. Was three copy-paste sites that silently swallowed
         out-of-range input; now the user sees exactly what happened."""
         clamped = max(lo, min(hi, raw))
@@ -456,7 +472,7 @@ def _apply_mutation(changes: dict) -> list:
             else:
                 msgs.append(f"{label}: off")
 
-    # Stop conditions — instant
+    # Stop conditions - instant
     for attr, label, cast in [("max_profit",      "Max profit",  float),
                               ("max_loss",        "Max loss",    float),
                               ("max_bets",        "Max bets",    int),
@@ -471,7 +487,7 @@ def _apply_mutation(changes: dict) -> list:
                 setattr(state, attr, cast(v))
                 msgs.append(f"{label}: {getattr(state, attr)}")
 
-    # Milestone thresholds — instant
+    # Milestone thresholds - instant
     for attr, label in [("milestone_bets",   "Milestone bets"),
                         ("milestone_wins",   "Milestone wins"),
                         ("milestone_losses", "Milestone losses")]:
@@ -484,20 +500,20 @@ def _apply_mutation(changes: dict) -> list:
         state.milestone_profit = 0.0 if _is_off(v) else float(v)
         msgs.append(f"Milestone profit: {state.milestone_profit:.8f}" if state.milestone_profit else "Milestone profit: off")
 
-    # Profit increment — instant
+    # Profit increment - instant
     if "profit_increment" in changes:
         v = changes["profit_increment"]
         state.profit_increment = None if _is_off(v) else float(v)
         if state.profit_increment is not None and state.profit_increment <= 0:
-            state.profit_increment = None     # v2.37.0 — 0 / 0.0 means off
+            state.profit_increment = None     # v2.37.0 - 0 / 0.0 means off
         msgs.append(f"Profit increment: {state.profit_increment:.8f}" if state.profit_increment else "Profit increment: off")
     if "profit_threshold" in changes:
         v = changes["profit_threshold"]
         state.profit_threshold = None if _is_off(v) else float(v)
         if state.profit_threshold is not None and state.profit_threshold <= 0:
-            state.profit_threshold = None     # v2.37.0 — 0 / 0.0 means off
+            state.profit_threshold = None     # v2.37.0 - 0 / 0.0 means off
         if state.profit_threshold:
-            # v2.37.0 — run scope: next milestone after the bumps already made.
+            # v2.37.0 - run scope: next milestone after the bumps already made.
             _done = state.run_bumps if state.profit_increment_scope == "run" else 0
             state.next_profit_milestone = (_done + 1) * state.profit_threshold
         msgs.append(f"Profit threshold: {state.profit_threshold:.8f}" if state.profit_threshold else "Profit threshold: off")
@@ -508,20 +524,20 @@ def _apply_mutation(changes: dict) -> list:
         state.profit_increment_scope = v
         msgs.append(f"Profit increment scope: {v} (applies on next start)")
 
-    # Recurring — instant boolean
+    # Recurring - instant boolean
     if "recurring" in changes:
         v = str(changes["recurring"]).lower()
         state.recurring = v in ("on", "true", "yes", "y", "1")
         msgs.append(f"Recurring: {'on' if state.recurring else 'off'}")
 
-    # Recurring delay — pause between cycles in seconds (0 = back-to-back).
+    # Recurring delay - pause between cycles in seconds (0 = back-to-back).
     if "recurring_delay" in changes:
         v = changes["recurring_delay"]
         if _is_off(v):
             state.recurring_delay = 0.0
         else:
             try:
-                # v2.30.6 — cap raised from 3600 (arbitrary TG mirror) to 86400
+                # v2.30.6 - cap raised from 3600 (arbitrary TG mirror) to 86400
                 # (24 h). Silent clamp swapped for visible warning via _clamped.
                 state.recurring_delay = _clamped(
                     "recurring_delay", float(v), 0.0, 86400.0)
@@ -530,7 +546,7 @@ def _apply_mutation(changes: dict) -> list:
         msgs.append(f"Recurring delay: {state.recurring_delay:.0f}s"
                     if state.recurring_delay > 0 else "Recurring delay: off")
 
-    # Streak reset — end + restart the session on the first win after
+    # Streak reset - end + restart the session on the first win after
     # N+ consecutive losses (only when session profit >= 0).
     if "streak_reset_losses" in changes:
         v = changes["streak_reset_losses"]
@@ -560,7 +576,7 @@ def _apply_mutation(changes: dict) -> list:
         msgs.append(f"Streak reset delay: {state.streak_reset_delay:.0f}s"
                     if state.streak_reset_delay > 0 else "Streak reset delay: off")
 
-    # Proxy — validated + applied to the shared HTTP session.
+    # Proxy - validated + applied to the shared HTTP session.
     if "proxy" in changes:
         try:
             state.proxy = _validate_proxy(changes["proxy"])
@@ -569,8 +585,8 @@ def _apply_mutation(changes: dict) -> list:
         _apply_proxy_to_session()
         msgs.append(f"Proxy: {_mask_proxy(state.proxy)}")
 
-    # Purge days — bet-row retention window (1-30). "off" resets to default 3;
-    # numeric values (including 0) clamp to [1, 30] — 0 days is nonsensical, so it maps to 1.
+    # Purge days - bet-row retention window (1-30). "off" resets to default 3;
+    # numeric values (including 0) clamp to [1, 30] - 0 days is nonsensical, so it maps to 1.
     if "purge_days" in changes:
         v = changes["purge_days"]
         if isinstance(v, str) and v.strip().lower() in ("off", "none", "false", "disable", "no"):
@@ -582,7 +598,7 @@ def _apply_mutation(changes: dict) -> list:
                 raise ValueError(f"purge_days must be an integer 1-30, got {v!r}")
         msgs.append(f"Purge days: {state.purge_days}")
 
-    # DB write mode — "async" (batched, tuned) or "sync" (legacy, per-bet fsync).
+    # DB write mode - "async" (batched, tuned) or "sync" (legacy, per-bet fsync).
     if "db_write_mode" in changes:
         v = str(changes["db_write_mode"]).strip().lower()
         if v not in ("async", "sync"):
@@ -590,7 +606,7 @@ def _apply_mutation(changes: dict) -> list:
         state.db_write_mode = v
         msgs.append(f"DB write mode: {state.db_write_mode}")
 
-    # Pipeline depth — instant int (dispatcher re-evaluates on next iteration).
+    # Pipeline depth - instant int (dispatcher re-evaluates on next iteration).
     # Guardrail is enforced by _effective_pipeline_depth(); we just clamp to [1, 8].
     if "pipeline_depth" in changes:
         v = changes["pipeline_depth"]
@@ -603,7 +619,28 @@ def _apply_mutation(changes: dict) -> list:
                 raise ValueError(f"pipeline_depth must be an integer 1-8, got {v!r}")
         msgs.append(f"Pipeline depth: {state.pipeline_depth}")
 
-    # ── Strategy-config changes — auto games clear UUID for fresh restart ──
+    for attr in ("hard_cap", "restart_after_loss"):
+        if attr in changes:
+            setattr(state, attr, parse_flag(attr, changes[attr]))
+            msgs.append(f"{attr}: {'on' if getattr(state, attr) else 'off'}")
+    for attr in ("balance_goal", "hybrid_recover_at", "hybrid_press_at"):
+        if attr in changes:
+            amount = parse_amount(attr, changes[attr])
+            setattr(state, attr, amount)
+            msgs.append(f"{attr}: {amount:.8f}" if amount else f"{attr}: off")
+    if "hybrid_press_floor" in changes:
+        state.hybrid_press_floor = parse_amount("hybrid_press_floor", changes["hybrid_press_floor"]) or 0.0
+        msgs.append(f"hybrid_press_floor: {state.hybrid_press_floor:.8f}")
+    for attr in ("hybrid_recover_bet", "hybrid_press_bet"):
+        if attr in changes:
+            setattr(state, attr, parse_multiple(attr, changes[attr]))
+            msgs.append(f"{attr}: {getattr(state, attr):g}x base_bet")
+    for attr in ("hybrid_recover_strategy", "hybrid_press_strategy"):
+        if attr in changes:
+            setattr(state, attr, parse_strategy_key(attr, changes[attr]))
+            msgs.append(f"{attr}: {STRATEGY_NAMES[getattr(state, attr)]}")
+
+    # ── Strategy-config changes - auto games clear UUID for fresh restart ──
     strategy_touched = False
     if "base_bet" in changes:
         state.base_bet = float(changes["base_bet"])
@@ -613,7 +650,7 @@ def _apply_mutation(changes: dict) -> list:
     if "multiplier" in changes:
         state.multiplier = float(changes["multiplier"])
         msgs.append(f"Multiplier: {state.multiplier:.2f}")
-        # v2.30.9 — re-derive bet_value to match new multiplier (was silently
+        # v2.30.9 - re-derive bet_value to match new multiplier (was silently
         # stale, top cause of HTTP 422 "Incorrect win chance given" on
         # /auto/start). Explicit bet_value override in the same call wins.
         if "bet_value" not in changes and state.rule in ("over", "under"):
@@ -625,7 +662,7 @@ def _apply_mutation(changes: dict) -> list:
                     f"(was {old_bv:.2f}; from multiplier={state.multiplier} rule={state.rule})"
                 )
         strategy_touched = True
-    # v2.30.9 — explicit bet_value override (advanced; normally derived from
+    # v2.30.9 - explicit bet_value override (advanced; normally derived from
     # multiplier+rule). Apply last so the operator's value wins over the
     # auto-derive above.
     if "bet_value" in changes:
@@ -640,32 +677,56 @@ def _apply_mutation(changes: dict) -> list:
         state.win_mult = float(changes["win_mult"])
         msgs.append(f"Win mult: {state.win_mult:.2f}")
         strategy_touched = True
+    if any(key.startswith("hybrid_") for key in changes):
+        strategy_touched = True
 
     if strategy_touched and is_auto_game(state.game) and state._auto_uuid:
         with state.lock:
             state._auto_uuid = None
-        msgs.append("Auto-bet UUID cleared — restarts on next bet")
+        msgs.append("Auto-bet UUID cleared - restarts on next bet")
 
+    msgs.extend(f"⚠ {problem}" for problem in _session_rule_errors())
     return msgs
 
 
-def _should_recurring_restart(reason: str) -> bool:
-    """Whitelist safe stop-reasons for recurring restart. Loss / insufficient-balance never restart."""
-    if state.profit < 0:
+def _loss_restart_allowed(reason: str) -> bool:
+    """True when a session that ended in the red may start a new one.
+
+    Needs restart_after_loss with recurring, the pre-bet cap, max_loss and a
+    balance floor, a balance still above that floor, and a session that ended
+    at its loss cap. Every other loss stop ends the run.
+    """
+    if not (state.restart_after_loss and state.recurring and _hard_cap_on()):
         return False
-    # Streak reset is its own restart rule — independent of the recurring flag.
+    if state.max_loss is None or state.stop_on_balance is None:
+        return False
+    if state.current_balance <= state.stop_on_balance:
+        return False
+    return reason.startswith(("Max loss hit", LOSS_CAP_REASON))
+
+
+def _should_recurring_restart(reason: str) -> bool:
+    """Whether a stopped session starts a new one.
+
+    In profit: streak reset, or recurring after a profit target, max bets or
+    max wins. In the red: only the guarded loss restart. Insufficient balance
+    and the balance floor never restart.
+    """
+    if state.profit < 0:
+        return _loss_restart_allowed(reason)
+    # Streak reset is its own restart rule - independent of the recurring flag.
     if reason.startswith(STREAK_RESET_REASON):
         return bool(state.streak_reset_losses)
     if not state.recurring:
         return False
-    # Positive whitelist — only these three reasons trigger recurring:
+    # Positive whitelist - only these three reasons trigger recurring:
     #   Profit target reached | Max bets reached | Max wins reached
     safe_prefixes = ("Profit target", "Max bets", "Max wins")
     return any(reason.startswith(p) for p in safe_prefixes)
 
 
 # ══════════════════════════════════════════════════════════
-#  PHASE 3 metrics — observability helpers (ported from tg/engine.py:1487-1508)
+#  PHASE 3 metrics - observability helpers (ported from tg/engine.py:1487-1508)
 # ══════════════════════════════════════════════════════════
 def _compute_api_avg() -> float:
     """Rolling average API time in ms (0 when no samples yet)."""
@@ -701,7 +762,7 @@ def _compute_on_target_pct() -> Optional[float]:
 def _compute_api_rolling_avg() -> float:
     """Mean API ms from the last-N-sample deque (0 when empty).
 
-    v2.30.3 — same window as p50/p99. Prevents cold-start samples from
+    v2.30.3 - same window as p50/p99. Prevents cold-start samples from
     biasing the mean over long sessions.
     """
     if not state._api_samples:
@@ -712,7 +773,7 @@ def _compute_api_rolling_avg() -> float:
 def _compute_cycle_p50() -> float:
     """Median per-iteration cycle time in ms from the rolling window (0 when empty).
 
-    v2.30.4 — replaces the α=0.1 EMA. Same window semantics as api_p50, so
+    v2.30.4 - replaces the α=0.1 EMA. Same window semantics as api_p50, so
     overhead = cycle_p50 − api_p50 stays algebraically consistent and stable.
     """
     if not state._cycle_samples:
@@ -733,7 +794,7 @@ def _compute_cycle_p99() -> float:
 def _compute_cycle_mean() -> float:
     """Arithmetic mean per-iteration cycle time in ms (0 when empty).
 
-    v2.30.5 — symmetrical with _compute_api_rolling_avg so Recent BPS and
+    v2.30.5 - symmetrical with _compute_api_rolling_avg so Recent BPS and
     Theoretical BPS both derive from mean(latency). Little's-Law-consistent:
     throughput ≈ 1 / mean_latency. Median (cycle_p50) stays available in the
     display for tail-jitter visibility but no longer drives the ratio.
@@ -744,9 +805,9 @@ def _compute_cycle_mean() -> float:
 
 
 def _compute_recent_bps() -> float:
-    """Windowed BPS from cycle_mean — same statistic as theoretical_max_bps.
+    """Windowed BPS from cycle_mean - same statistic as theoretical_max_bps.
 
-    v2.30.5 — was cycle_p50 (median). On right-skewed cycle distributions
+    v2.30.5 - was cycle_p50 (median). On right-skewed cycle distributions
     (a few slow iterations from GC / retention / /auto/start handshakes)
     median < mean, so Recent > Theoretical fired ">100% efficiency" as the
     default reading rather than a rare drift signal. Both sides now use
@@ -759,7 +820,7 @@ def _compute_recent_bps() -> float:
 def _compute_theoretical_max_bps() -> float:
     """Ceiling bps = 1 / max(bet_delay, api_rolling_avg). 0 when both are 0.
 
-    v2.30.3 — was all-time mean; now rolling to match p50/p99 window semantics.
+    v2.30.3 - was all-time mean; now rolling to match p50/p99 window semantics.
     """
     api_avg_s = _compute_api_rolling_avg() / 1000.0
     floor = max(state.bet_delay, api_avg_s)
@@ -769,10 +830,10 @@ def _compute_theoretical_max_bps() -> float:
 def _compute_efficiency_pct() -> float:
     """Recent bps as % of theoretical max (capped at 100). 0 when no ceiling yet.
 
-    v2.30.4 — uses _compute_recent_bps (windowed) instead of session-wide
+    v2.30.4 - uses _compute_recent_bps (windowed) instead of session-wide
     bets_per_second so the ratio stays algebraically consistent with the
     same window feeding theoretical_max_bps. Session-wide actual can exceed
-    the windowed ceiling when api_avg drifts up momentarily — that used
+    the windowed ceiling when api_avg drifts up momentarily - that used
     to render as impossible ">100% efficiency" or clamp-and-hide.
     """
     tmax = _compute_theoretical_max_bps()
@@ -780,7 +841,7 @@ def _compute_efficiency_pct() -> float:
         return 0.0
     recent = _compute_recent_bps()
     if recent <= 0:
-        # Cycle window hasn't populated yet — fall back to session-wide
+        # Cycle window hasn't populated yet - fall back to session-wide
         # so early-session status isn't blank.
         recent = state.bets_per_second
     return min(100.0, recent / tmax * 100)
@@ -802,14 +863,14 @@ def _record_api_ms(dt_ms: float) -> None:
 def _record_cycle_ms(cycle_observed_ms: float) -> None:
     """Push one per-iteration cycle observation; expose p50 + p99 via helpers.
 
-    v2.30.4 — replaces the α=0.1 EMA that held onto outliers for 5-10 samples
+    v2.30.4 - replaces the α=0.1 EMA that held onto outliers for 5-10 samples
     (a single 400 ms iteration would bump displayed cycle by ~40 ms and hold).
     Now uses a rolling deque, mirroring _api_samples. Median (cycle_p50) is
     the stable "typical" cycle; p99 shows tail jitter separately.
     """
     with state.lock:
         state._cycle_samples.append(cycle_observed_ms)
-        # _cycle_ms aliased to cycle_p50 for backwards state-file compat —
+        # _cycle_ms aliased to cycle_p50 for backwards state-file compat -
         # existing readers see a stable median instead of a spiky EMA.
         state._cycle_ms = _compute_cycle_p50()
         api_ref = _compute_api_p50() if state._api_samples else state._last_api_ms
@@ -818,12 +879,12 @@ DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolf
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
-_BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 — lane 1 paths
-# v2.37.0 — run-wide profit increment tracking (one file per lane)
+_BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 - lane 1 paths
+# v2.37.0 - run-wide profit increment tracking (one file per lane)
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.37.2"
+VERSION      = "2.38.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -897,7 +958,7 @@ def _lanes_count(data: dict) -> int:
     return max(1, min(LANES_MAX, n))
 
 
-# v2.36.0 — how lanes share the money. Default "none": every lane uses the
+# v2.36.0 - how lanes share the money. Default "none": every lane uses the
 # full base bet and no budget guard (the user sizes the bets themselves).
 #   budget → each lane may risk balance ÷ lanes (stop "Lane budget exceeded")
 #   bet    → base bet (and basebet_pct) ÷ lanes
@@ -944,7 +1005,7 @@ def _lane_config(data: dict, lane: int) -> dict:
         if split > 0:
             merged["base_bet"] = split
         else:
-            logger.warning("lane split: base_bet %.8f ÷ %d rounds to 0 — using full bet",
+            logger.warning("lane split: base_bet %.8f ÷ %d rounds to 0 - using full bet",
                            merged["base_bet"], n)
     return merged
 
@@ -970,33 +1031,34 @@ _CONFIG_KEYS = [
     "pipeline_depth", "recurring_delay",
     "proxy", "purge_days",
     "db_write_mode",
-    # v2.28.2 — previously missing from _CONFIG_KEYS despite living in
+    # v2.28.2 - previously missing from _CONFIG_KEYS despite living in
     # _PRESET_KEYS / _CONFIG_SHOW_FIELDS / _TWEAK_PARAMS. Every wolfctl
     # config-set on these fields silently reverted on the next process
     # launch since Phase 2 (v2.16.0). Now honestly persisted.
     "recurring", "basebet_pct",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "streak_reset_losses", "streak_reset_delay",
+    *_SESSION_RULE_KEYS,
 ]
 
 def _mask_key(key: str) -> str:
     """Mask API key for safe logging: show first 8 + last 4 chars."""
     if not key or len(key) < 16:
         return "***"
-    return f"{key[:8]}…{key[-4:]}"
+    return f"{key[:8]}...{key[-4:]}"
 
 def save_config():
     if getattr(state, "lane", 1) > 1:
-        # v2.35.0 — a lane's state holds base + its overrides; writing it back
+        # v2.35.0 - a lane's state holds base + its overrides; writing it back
         # would leak the overrides into the shared base config.
         logger.info("save_config skipped on lane %d (base config is lane 1's)", state.lane)
         return
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
-    # v2.36.0 — bet split: an untouched split base bet is saved as the full one.
+    # v2.36.0 - bet split: an untouched split base bet is saved as the full one.
     _sb = getattr(state, "base_bet_split", None)
     if _sb is not None and state.base_bet == _sb:
         data["base_bet"] = state.base_bet_disk
-    # v2.35.0 — keep the lanes block (count + per-lane overrides) intact.
+    # v2.35.0 - keep the lanes block (count + per-lane overrides) intact.
     try:
         with open(CONFIG_PATH) as f:
             _old = json.load(f)
@@ -1004,8 +1066,8 @@ def save_config():
             data["lanes"] = _old["lanes"]
     except (OSError, ValueError):
         pass
-    # v2.28.2 — streak-tuple fields round-trip as "N:X" strings (or null when
-    # disabled). Same encoding presets already use — one grammar, no forks.
+    # v2.28.2 - streak-tuple fields round-trip as "N:X" strings (or null when
+    # disabled). Same encoding presets already use - one grammar, no forks.
     for k in _STREAK_TUPLE_KEYS:
         tup = getattr(state, k, None)
         if tup and tup[0] > 0:
@@ -1026,13 +1088,13 @@ def load_config() -> bool:
         for k in _CONFIG_KEYS:
             if k in data:
                 setattr(state, k, data[k])
-        # v2.28.2 — decode streak-tuple fields via parse_streak_delay.
+        # v2.28.2 - decode streak-tuple fields via parse_streak_delay.
         # Older configs (pre-v2.28.2) lack these keys; the loop silently
         # skips them and defaults from BotState.__init__ apply.
         for k in _STREAK_TUPLE_KEYS:
             if k in data:
                 setattr(state, k, parse_streak_delay(data[k]))
-        # v2.35.0 — lane count + this lane's overrides on top of the base.
+        # v2.35.0 - lane count + this lane's overrides on top of the base.
         state.lanes_count = _lanes_count(data)
         state.lane_split = _lane_split(data)
         merged = _lane_config(data, state.lane)
@@ -1059,16 +1121,16 @@ def load_config() -> bool:
         # parse rules if present
         if state.custom_rules_text:
             state.custom_rules = _load_rules_from_text(state.custom_rules_text)
-        # v2.26.0 — normalize + apply loaded proxy to the shared session.
+        # v2.26.0 - normalize + apply loaded proxy to the shared session.
         try:
             state.proxy = _validate_proxy(state.proxy)
         except ValueError:
             state.proxy = None
         _apply_proxy_to_session()
-        # v2.30.9 — silently correct stale bet_value from disk. Was the top
+        # v2.30.9 - silently correct stale bet_value from disk. Was the top
         # cause of HTTP 422 on /auto/start when a previously-saved config
         # had `bet_value` from an older `multiplier` and `wolfctl config-set
-        # multiplier=…` never recomputed. CHANGELOG v1262 promised this fix
+        # multiplier=...` never recomputed. CHANGELOG v1262 promised this fix
         # but only the wizard + /bet-self-correct path actually derived it;
         # auto games never hit /bet so no self-correction ever ran. The
         # warning is silent-by-default but logged so we can spot recurrences.
@@ -1077,7 +1139,7 @@ def load_config() -> bool:
             if abs(state.bet_value - derived_bv) > 0.01:
                 logger.warning(
                     "bet_value from disk (%.2f) mismatched derived value "
-                    "for multiplier=%.2f rule=%s (%.2f) — corrected.",
+                    "for multiplier=%.2f rule=%s (%.2f) - corrected.",
                     state.bet_value, state.multiplier, state.rule, derived_bv)
                 state.bet_value = derived_bv
         return True
@@ -1093,19 +1155,20 @@ _PRESET_KEYS = [
     "bet_delay", "max_profit", "max_loss", "max_bets", "max_wins",
     "stop_on_balance", "custom_rules_text", "delay_martin_threshold",
     "profit_increment", "profit_threshold", "profit_increment_scope",
-    # Phase 4a additions — JSON-native Phase 2 fields:
+    # Phase 4a additions - JSON-native Phase 2 fields:
     "recurring", "basebet_pct",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
-    # Phase 5b — pipeline depth persists per preset:
+    # Phase 5b - pipeline depth persists per preset:
     "pipeline_depth",
-    # v2.25.3 — pause between recurring cycles (TG↔CLI parity):
+    # v2.25.3 - pause between recurring cycles (TG↔CLI parity):
     "recurring_delay",
-    # v2.26.0 — proxy + retention (TG↔CLI parity):
+    # v2.26.0 - proxy + retention (TG↔CLI parity):
     "proxy", "purge_days",
-    # v2.27.0 — async bet writer mode:
+    # v2.27.0 - async bet writer mode:
     "db_write_mode",
-    # v2.32.0 — loss-streak reset restart:
+    # v2.32.0 - loss-streak reset restart:
     "streak_reset_losses", "streak_reset_delay",
+    *_SESSION_RULE_KEYS,
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -1115,7 +1178,7 @@ _STREAK_TUPLE_KEYS = [
     "streakbet_loss",
 ]
 
-# v2.28.3 — fields that can safely be re-read from disk into a running daemon
+# v2.28.3 - fields that can safely be re-read from disk into a running daemon
 # on SIGHUP without corrupting the active session identity or the Martingale
 # ladder. Everything NOT in this set requires `wolfctl restart`.
 _LIVE_RELOAD_KEYS = {
@@ -1169,12 +1232,12 @@ def _reload_live_config() -> dict:
                     setattr(state, k, new_val)
                     applied[k] = (old_val, new_val)
             elif k in config_keys_set or k in streak_keys_set:
-                # Present but not live-safe — warn if it actually changed.
+                # Present but not live-safe - warn if it actually changed.
                 if getattr(state, k, None) != v:
                     skipped_unsafe.append(k)
 
     # Side effects for keys that need them.
-    # v2.37.0 — increment turned off (none / 0) ends the run; turned on with
+    # v2.37.0 - increment turned off (none / 0) ends the run; turned on with
     # no run starts one at the current session.
     if state.profit_increment_scope == "run" and (
             "profit_increment" in applied or "profit_threshold" in applied):
@@ -1194,14 +1257,14 @@ def _reload_live_config() -> dict:
             logger.warning("live reload: rule reparse failed: %s", e)
     if skipped_unsafe:
         logger.warning(
-            "live reload: skipped %d unsafe field(s) — restart daemon to apply: %s",
+            "live reload: skipped %d unsafe field(s) - restart daemon to apply: %s",
             len(skipped_unsafe), ", ".join(sorted(skipped_unsafe)),
         )
     return applied
 
 
 def _sig_reload(sig, frame):
-    """SIGHUP handler — re-read config file for live-safe fields.
+    """SIGHUP handler - re-read config file for live-safe fields.
 
     Signal handlers must be short and never raise. Any error is logged
     and swallowed.
@@ -1272,7 +1335,7 @@ def list_presets() -> dict:
     return _load_all_presets()
 
 # ══════════════════════════════════════════════════════════
-#  RULE-BASED STRATEGY ENGINE  (v2 — DarkDice-inspired)
+#  RULE-BASED STRATEGY ENGINE  (v2 - DarkDice-inspired)
 # ══════════════════════════════════════════════════════════
 
 # ── Condition types ──
@@ -1335,7 +1398,7 @@ def apply_rules(bet_state: str):
 
 
 # ══════════════════════════════════════════════════════════
-#  BOT STATE — single shared object
+#  BOT STATE - single shared object
 # ══════════════════════════════════════════════════════════
 class BotState:
     def __init__(self):
@@ -1372,21 +1435,35 @@ class BotState:
         self.max_wins        : Optional[int]   = None
         self.stop_on_balance : Optional[float] = None
 
+        # ── session rules: pre-bet cap, loss restart, balance goal, phases ──
+        self.hard_cap           : bool = False
+        self.restart_after_loss : bool = False
+        self.balance_goal       : Optional[float] = None
+        self.hybrid_recover_at       : Optional[float] = None
+        self.hybrid_recover_strategy : str = "2"
+        self.hybrid_recover_bet      : float = 1.0
+        self.hybrid_press_at         : Optional[float] = None
+        self.hybrid_press_floor      : float = 0.0
+        self.hybrid_press_strategy   : str = "5"
+        self.hybrid_press_bet        : float = 1.0
+        self.hybrid_phase            : str = PHASE_BASE
+        self.hybrid_switches         : int = 0
+
         # ── session info ──
         self.session_id     = None
         self.session_start  = time.time()
-        # v2.34.0 — bot start; never reset by recurring / streak-reset cycles
+        # v2.34.0 - bot start; never reset by recurring / streak-reset cycles
         self.run_started_at = time.time()
-        # v2.35.0 — parallel lanes (see _apply_lane). lane_share None = no split.
+        # v2.35.0 - parallel lanes (see _apply_lane). lane_share None = no split.
         self.lane            = 1
         self.lanes_count     = 1
         self.lane_share      : Optional[float] = None
-        self.lane_split      = "none"     # v2.36.0 — see LANE_SPLIT_MODES
+        self.lane_split      = "none"     # v2.36.0 - see LANE_SPLIT_MODES
         self.base_bet_disk   = None       # base_bet as saved (before the bet split)
         self.base_bet_split  = None       # split base_bet applied at load, else None
         self.lane_run_profit = 0.0
         self.soft_pace_delay = 0.0
-        # v2.28.4 — when a session enters `_reset_session_for_recurring`, this
+        # v2.28.4 - when a session enters `_reset_session_for_recurring`, this
         # is set to time.time() BEFORE the sleep so uptime + ended_at freeze
         # at the real bet-end. Cleared right before the new session's
         # session_start is set. None during active betting.
@@ -1402,7 +1479,7 @@ class BotState:
         self.current_balance= 0.0
 
         # ── streaks ──
-        self.current_streak  = 0   # + = win streak, – = loss streak
+        self.current_streak  = 0   # + = win streak, - = loss streak
         self.max_win_streak  = 0
         self.max_loss_streak = 0
 
@@ -1440,10 +1517,10 @@ class BotState:
         self.peak_api_ms    : float = 0.0
         self._api_samples   : deque = deque(maxlen=500)
         self._on_target_count: int   = 0
-        self._cycle_ms      : float = 0.0            # v2.30.4 — aliased to cycle_p50 for state-file compat
+        self._cycle_ms      : float = 0.0            # v2.30.4 - aliased to cycle_p50 for state-file compat
         self._cycle_overhead_ms: float = 0.0         # cycle − api − delay*1000
         self._last_cycle_start: float = 0.0
-        # v2.30.4 — rolling per-iteration cycle window (mirrors _api_samples).
+        # v2.30.4 - rolling per-iteration cycle window (mirrors _api_samples).
         # Replaces α=0.1 EMA which held onto outliers for 5-10 samples.
         self._cycle_samples : deque = deque(maxlen=500)
 
@@ -1468,14 +1545,14 @@ class BotState:
         self.recent_bets = deque(maxlen=10)
 
         # ── status messages ──
-        self.status     = "Initializing…"
+        self.status     = "Initializing..."
         self.last_error = ""
 
         # ── profit-based base bet increment ──
         self.profit_increment    : Optional[float] = None   # amount to add to base_bet each milestone
         self.profit_threshold    : Optional[float] = None   # profit interval that triggers increment
         self.next_profit_milestone: float = 0.0              # next profit level to trigger bump
-        # v2.37.0 — run-wide increment: profit summed across sessions since
+        # v2.37.0 - run-wide increment: profit summed across sessions since
         # the run started (persisted in RUN_PATH until `wolfctl run-reset`).
         self.profit_increment_scope = "session"
         self.run_first_session: Optional[int] = None
@@ -1490,15 +1567,15 @@ class BotState:
         self.delay_martin_threshold = 3   # Delay Martingale: flat for this many consecutive losses
 
         # ── Phase 2 session robustness ──
-        # Format: "N:seconds" — after every N consecutive losses/wins/bets, pause X seconds
+        # Format: "N:seconds" - after every N consecutive losses/wins/bets, pause X seconds
         self.streak_delay_loss: tuple = (0, 0.0)
         self.streak_delay_win : tuple = (0, 0.0)
         self.streak_delay_bets: tuple = (0, 0.0)
-        # Format: "N:multiplier" — after every N consecutive losses, multiply current_bet by X (0<X<1 reduces)
+        # Format: "N:multiplier" - after every N consecutive losses, multiply current_bet by X (0<X<1 reduces)
         self.streakbet_loss   : tuple = (0, 1.0)
         # Base bet as % of balance (0 disables); recomputed periodically from live balance
         self.basebet_pct      : float = 0.0
-        # Milestone thresholds — 0 disables each
+        # Milestone thresholds - 0 disables each
         self.milestone_bets   : int = 100
         self.milestone_wins   : int = 0
         self.milestone_losses : int = 0
@@ -1507,7 +1584,7 @@ class BotState:
         # Recurring: restart session after non-loss, non-insufficient-balance stop with profit≥0
         self.recurring        : bool = False
         # Seconds to pause between one recurring cycle ending and the next starting.
-        # v2.30.6 — default 60, floor 0, cap 86400 (24 h). Was 3600 (arbitrary
+        # v2.30.6 - default 60, floor 0, cap 86400 (24 h). Was 3600 (arbitrary
         # TG-mirror cap that silently swallowed longer recurring pauses).
         self.recurring_delay  : float = 60.0
         # Streak reset: end + restart the session on the first win after this
@@ -1519,29 +1596,29 @@ class BotState:
         # Pause length of the current recurring gap (for monitor countdown).
         self.session_pause_total : float = 0.0
 
-        # ── v2.26.0 — proxy + retention (TG↔CLI parity) ──
+        # ── v2.26.0 - proxy + retention (TG↔CLI parity) ──
         # HTTP/HTTPS/SOCKS5 proxy URL, or None for direct connection.
         # Credentials in the URL are masked in show + logs via _mask_proxy.
         self.proxy            : Optional[str] = None
         # Bet-row retention window in days (used by hourly cleanup thread + --cleanup).
         self.purge_days       : int = 3
 
-        # ── v2.27.0 — bet DB write mode ──
-        # "async" (default): bet rows batched via background writer thread —
+        # ── v2.27.0 - bet DB write mode ──
+        # "async" (default): bet rows batched via background writer thread -
         # 30-40 ms per-bet overhead savings via persistent connection +
         # PRAGMA synchronous=NORMAL + batched INSERTs.
-        # "sync": legacy path — fresh connection + fsync per bet (safe but slow).
+        # "sync": legacy path - fresh connection + fsync per bet (safe but slow).
         # Fallback to sync on queue overflow preserves nothing-lost semantics.
         self.db_write_mode    : str = "async"
 
-        # ── Phase 5c — auto-bet recovery (max nonce / session expired) ──
+        # ── Phase 5c - auto-bet recovery (max nonce / session expired) ──
         # Tag from _classify_auto_stop_reason: "max_nonce", "expired", or "".
         # Signals the loop to call _recover_expired_session (seed rotation)
         # instead of a bare api_auto_start.
         self.last_stop_reason           : str = ""
         self.consecutive_recovery_fails : int = 0
 
-        # ── Phase 5b — pipelined betting (Flat-only) ──
+        # ── Phase 5b - pipelined betting (Flat-only) ──
         # Requested depth (config/preset/CLI); 1 = serial (default, unchanged behavior).
         self.pipeline_depth      : int = 1
         # Effective depth after Flat-only + auto-game guardrail. Set by dispatcher.
@@ -1557,16 +1634,16 @@ state   = BotState()
 console = Console()
 
 # ══════════════════════════════════════════════════════════
-#  v2.26.0 — Shared HTTP session (proxy-aware)
+#  v2.26.0 - Shared HTTP session (proxy-aware)
 # ══════════════════════════════════════════════════════════
 # All wolfbet.com API calls go through _http_session so proxy config lives in
-# ONE place. Mirrors tg/engine.py:_recreate_http (httpx.AsyncClient(proxy=…))
+# ONE place. Mirrors tg/engine.py:_recreate_http (httpx.AsyncClient(proxy=...))
 # but stays on `requests` for CLI's synchronous / threaded model.
 _http_session = requests.Session()
 _http_session.headers.update({"User-Agent": f"wolfbet-cli/{VERSION}"})
 
 
-# _validate_proxy / _mask_proxy — extracted to core.net_helpers in v2.28.0.
+# _validate_proxy / _mask_proxy - extracted to core.net_helpers in v2.28.0.
 # Aliases kept so every call-site (and every v2.26.0+ test) keeps working
 # without edits. TG bot's tg/handlers.py imports the same functions.
 _validate_proxy = validate_proxy
@@ -1574,7 +1651,7 @@ _mask_proxy     = mask_proxy
 
 
 def _apply_proxy_to_session() -> None:
-    """Update _http_session.proxies from state.proxy — single point of change."""
+    """Update _http_session.proxies from state.proxy - single point of change."""
     if state.proxy:
         _http_session.proxies = {"http": state.proxy, "https": state.proxy}
     else:
@@ -1617,7 +1694,7 @@ SOFT_PACE_MAX_DELAY = 0.25   # seconds per bet when the quota is nearly gone
 
 
 def soft_pace_delay(remaining: int, limit: int) -> float:
-    """v2.35.0 — per-bet delay that rises smoothly as the shared quota runs out.
+    """v2.35.0 - per-bet delay that rises smoothly as the shared quota runs out.
 
     The rate-limit headers are account-wide, so every lane sees the same
     `remaining`. Above the low-water mark this is 0, so a single lane never
@@ -1636,7 +1713,7 @@ def soft_pace_delay(remaining: int, limit: int) -> float:
 
 
 def _autostart_global_pace() -> None:
-    """v2.35.0 — space /auto/start calls across ALL lane processes.
+    """v2.35.0 - space /auto/start calls across ALL lane processes.
 
     Each lane restarts its auto-cycle every session. A shared lock file holds
     the last start time so lanes never fire /auto/start in the same instant
@@ -1646,7 +1723,7 @@ def _autostart_global_pace() -> None:
         return
     try:
         import fcntl
-    except ImportError:          # pragma: no cover — non-POSIX
+    except ImportError:          # pragma: no cover - non-POSIX
         return
     try:
         fd = os.open(AUTOSTART_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
@@ -1720,10 +1797,9 @@ def _build_bet_payload(amount: float) -> dict:
 def _build_auto_config() -> list:
     """Adapter: state.* → shared build_auto_config()."""
     return build_auto_config(
-        state.strategy_key, state.loss_mult, state.win_mult, state.base_bet,
+        _active_strategy_key(), state.loss_mult, state.win_mult, _active_base_bet(),
         state.game, state.custom_rules,
-        {"max_profit": state.max_profit, "max_loss": state.max_loss,
-         "max_bets": state.max_bets, "stop_on_balance": state.stop_on_balance},
+        _auto_stop_conditions(),
         state.delay_martin_threshold, logger,
     )
 
@@ -1731,7 +1807,7 @@ def _build_auto_config() -> list:
 def _build_auto_start_payload() -> dict:
     """Adapter: state.* → shared build_auto_start_payload()."""
     return build_auto_start_payload(
-        state.game, state.currency, state.base_bet, state.multiplier,
+        state.game, state.currency, _active_base_bet(), state.multiplier,
         state.rule, state.bet_value, _build_auto_config(),
     )
 
@@ -1822,16 +1898,16 @@ def api_auto_start() -> bool:
                     state._insufficient_balance = True
                 return False
             classified = _classify_auto_stop_reason(body)
-            # v2.30.9 — include a short body snippet in state.last_error so
+            # v2.30.9 - include a short body snippet in state.last_error so
             # operators self-diagnose from `wolfctl status` instead of
-            # trawling logs. Was: bare "HTTP 422" — actual reason was hidden.
+            # trawling logs. Was: bare "HTTP 422" - actual reason was hidden.
             body_snip = body.strip().replace("\n", " ")[:120]
             with state.lock:
                 if classified:
                     state.last_stop_reason = classified
                 state.last_error = (
                     f"Auto-bet start failed: HTTP {r.status_code}"
-                    + (f" — {body_snip}" if body_snip else "")
+                    + (f": {body_snip}" if body_snip else "")
                 )
             logger.error("auto/start HTTP %d (classified=%s): %s",
                          r.status_code, classified or "none", body)
@@ -1882,7 +1958,7 @@ def _fmt_auto_stop_reason(sr) -> str:
     return str(sr)
 
 
-# _classify_auto_stop_reason — extracted to core.net_helpers in v2.28.0.
+# _classify_auto_stop_reason - extracted to core.net_helpers in v2.28.0.
 # TG bot now imports the same helper, closing its max-nonce blind spot.
 _classify_auto_stop_reason = classify_auto_stop_reason
 
@@ -1897,7 +1973,7 @@ def _midchain_loss_reason() -> str:
 
     A fresh /auto/start resets the server-side progression to base_bet. Mid loss
     streak or with the session in the red, that loss can never be recovered and
-    the streak-reset (profit >= 0) trigger can never fire — stop instead.
+    the streak-reset (profit >= 0) trigger can never fire - stop instead.
     """
     if state.current_streak < 0 or state.profit < 0:
         return (f"Auto-cycle lost mid-chain (streak {state.current_streak}, "
@@ -1926,13 +2002,13 @@ def _recover_expired_session() -> bool:
 
     Rotates the server seed, best-effort stops the dead UUID, respects the
     current rate-limit backoff, then starts a fresh auto-bet cycle. Does
-    NOT touch state.session_id or DB rows — the CLI session identity is
+    NOT touch state.session_id or DB rows - the CLI session identity is
     preserved across many WolfBet server-side auto-cycles.
     """
     reason = state.last_stop_reason or "expired"
-    logger.warning("Auto-bet recovery: %s — rotating seed + restarting", reason)
+    logger.warning("Auto-bet recovery: %s - rotating seed + restarting", reason)
     with state.lock:
-        state.status = f"Recovering from {reason} — rotating server seed…"
+        state.status = f"Recovering from {reason} - rotating server seed..."
     _rotate_server_seed()
     api_auto_stop()
     settle = max(2.0, state.rate_backoff)
@@ -1942,7 +2018,7 @@ def _recover_expired_session() -> bool:
         with state.lock:
             state.last_stop_reason = ""
             state.consecutive_recovery_fails = 0
-            state.status = "Seed rotated — auto-cycle restarted"
+            state.status = "Seed rotated - auto-cycle restarted"
     else:
         with state.lock:
             state.consecutive_recovery_fails += 1
@@ -1973,7 +2049,7 @@ def api_place_bet(amount: float) -> Optional[dict]:
                         state.last_error = "Insufficient balance"
                         state._insufficient_balance = True
                     return None
-                # Auto-bet UUID expired / server-seed exhausted — clear UUID so
+                # Auto-bet UUID expired / server-seed exhausted - clear UUID so
                 # next loop iteration recovers (seed rotation if last_stop_reason set).
                 if is_auto_game(state.game):
                     classified = _classify_auto_stop_reason(err_msg)
@@ -1983,9 +2059,9 @@ def api_place_bet(amount: float) -> Optional[dict]:
                             state._auto_uuid = None
                             state.last_stop_reason = classified
                             state.last_error = (
-                                "Max nonce achieved — rotating server seed…"
+                                "Max nonce achieved - rotating server seed..."
                                 if classified == "max_nonce"
-                                else "Auto-bet session expired — restarting…"
+                                else "Auto-bet session expired - restarting..."
                             )
                         return None
                 with state.lock:
@@ -2017,15 +2093,15 @@ def api_place_bet(amount: float) -> Optional[dict]:
                 delay = float(retry_after) if retry_after else 2.0
             except (TypeError, ValueError):
                 delay = 2.0
-            logger.warning("RATE LIMIT 429 — backoff %.1fs (Retry-After=%s)", delay, retry_after)
+            logger.warning("RATE LIMIT 429 - backoff %.1fs (Retry-After=%s)", delay, retry_after)
             with state.lock:
                 state.rate_wait    = True
                 state.rate_backoff = max(2.0, delay)
-                state.last_error   = f"Rate limit 429 — retrying in {delay:.0f}s…"
+                state.last_error   = f"Rate limit 429 - retrying in {delay:.0f}s..."
         elif r.status_code == 400 and is_auto_game(state.game):
-            # UUID expired / seed exhausted — classify body so loop recovers correctly.
+            # UUID expired / seed exhausted - classify body so loop recovers correctly.
             body = r.text[:200]
-            # v2.32.1 — insufficient balance is terminal. It used to fall through
+            # v2.32.1 - insufficient balance is terminal. It used to fall through
             # to the "expired" default, so the loop restarted a fresh auto-cycle
             # at base bet with the session deep in the red.
             if _is_insufficient_balance(body):
@@ -2041,9 +2117,9 @@ def api_place_bet(amount: float) -> Optional[dict]:
                 state._auto_uuid = None
                 state.last_stop_reason = classified
                 state.last_error = (
-                    "Max nonce achieved — rotating server seed…"
+                    "Max nonce achieved - rotating server seed..."
                     if classified == "max_nonce"
-                    else "Auto-bet session expired — restarting…"
+                    else "Auto-bet session expired - restarting..."
                 )
         else:
             body = r.text[:500]
@@ -2054,7 +2130,7 @@ def api_place_bet(amount: float) -> Optional[dict]:
     except requests.exceptions.Timeout:
         logger.warning("REQUEST TIMEOUT on bet #%d", state.total_bets + 1)
         with state.lock:
-            state.last_error = "Request timeout — retrying…"
+            state.last_error = "Request timeout - retrying..."
     except Exception as e:
         err_str = str(e).lower()
         if "insufficient" in err_str or "balance" in err_str:
@@ -2069,12 +2145,123 @@ def api_place_bet(amount: float) -> Optional[dict]:
     return None
 
 # ══════════════════════════════════════════════════════════
+#  SESSION RULES: pre-bet cap, loss restart, balance goal, phases
+# ══════════════════════════════════════════════════════════
+def _hybrid_on() -> bool:
+    """True when a phase threshold is set."""
+    return state.hybrid_recover_at is not None or state.hybrid_press_at is not None
+
+
+def _hard_cap_on() -> bool:
+    """True when a bet is checked against the loss cap before it is placed. Phases always do."""
+    return bool(state.hard_cap) or _hybrid_on()
+
+
+def _active_strategy_key() -> str:
+    """Strategy that sizes the next bet: the current phase's, else the configured one."""
+    if _hybrid_on():
+        if state.hybrid_phase == PHASE_RECOVER:
+            return str(state.hybrid_recover_strategy)
+        if state.hybrid_phase == PHASE_PRESS:
+            return str(state.hybrid_press_strategy)
+    return state.strategy_key
+
+
+def _active_base_bet() -> float:
+    """First bet of the current phase: base_bet times the phase's multiple."""
+    if _hybrid_on():
+        if state.hybrid_phase == PHASE_RECOVER:
+            return state.base_bet * state.hybrid_recover_bet
+        if state.hybrid_phase == PHASE_PRESS:
+            return state.base_bet * state.hybrid_press_bet
+    return state.base_bet
+
+
+def _strategy_label() -> str:
+    """Strategy name for the session row; marks sessions that ran with phases."""
+    return f"Hybrid: {state.strategy}" if _hybrid_on() else state.strategy
+
+
+def _with_phase(strategy: str, phase) -> str:
+    """Strategy text for the live screens, with the current phase when phases are on."""
+    return f"{strategy}  phase {phase}" if phase else strategy
+
+
+def _auto_stop_conditions() -> dict:
+    """Stop rules sent with a server auto-bet cycle.
+
+    With phases on a cycle starts mid-session, so the profit and loss limits
+    are the distances left from the session profit so far.
+    """
+    max_profit, max_loss = state.max_profit, state.max_loss
+    if _hybrid_on():
+        if max_profit is not None:
+            max_profit = max(max_profit - state.profit, 0.0)
+        if max_loss is not None:
+            max_loss = max(abs(max_loss) + state.profit, 0.0)
+    return {"max_profit": max_profit, "max_loss": max_loss,
+            "max_bets": state.max_bets, "stop_on_balance": state.stop_on_balance}
+
+
+def _session_rule_errors() -> list:
+    """Reasons the configured session rules cannot work (empty when usable or all off)."""
+    cfg = {key: getattr(state, key) for key in _SESSION_RULE_KEYS}
+    for key in ("base_bet", "loss_mult", "win_mult", "max_profit", "max_loss",
+                "stop_on_balance", "recurring"):
+        cfg[key] = getattr(state, key)
+    return config_errors(cfg)
+
+
+def _exit_on_session_rule_errors(exit_code: int = 2) -> None:
+    """Refuse to start betting with session rules that cannot work, naming each setting.
+
+    The service start passes exit_code 0. Its unit restarts the bot after a
+    failure code, which would retry every few seconds and then start betting by
+    itself the moment the config is fixed.
+    """
+    problems = _session_rule_errors()
+    if not problems:
+        return
+    console.print("[red]Cannot start: fix these settings first.[/]")
+    for problem in problems:
+        console.print(f"  [yellow]{escape(problem)}[/]")
+    logger.error("START REFUSED: %s", "; ".join(problems))
+    sys.exit(exit_code)
+
+
+def _hybrid_step() -> bool:
+    """Move to the phase the session profit calls for. Returns True on a switch.
+
+    A switch starts the phase's strategy from its first bet. On an auto game it
+    also ends the server cycle, so the next tick starts one with that strategy.
+    """
+    target = PHASE_BASE
+    if _hybrid_on():
+        target = next_phase(state.hybrid_phase, state.profit, state.hybrid_recover_at,
+                            state.hybrid_press_at, state.hybrid_press_floor)
+    if target == state.hybrid_phase:
+        return False
+    previous = state.hybrid_phase
+    with state.lock:
+        state.hybrid_phase = target
+        state.hybrid_switches += 1
+        state.current_bet = _active_base_bet()
+        state.dalembert_unit = 0
+        state.paroli_count = 0
+    logger.info("PHASE %s -> %s at profit %+.8f, next bet %.8f",
+                previous, target, state.profit, state.current_bet)
+    if is_auto_game(state.game):
+        api_auto_stop()
+    return True
+
+
+# ══════════════════════════════════════════════════════════
 #  STRATEGY ENGINE
 # ══════════════════════════════════════════════════════════
 def compute_next_bet(last_result: str) -> float:
     """Compute next bet amount (delegates to core.engine)."""
     nxt, state.dalembert_unit, state.paroli_count = _core_compute_next_bet(
-        state.strategy_key, state.base_bet, state.current_bet,
+        _active_strategy_key(), _active_base_bet(), state.current_bet,
         state.loss_mult, state.win_mult, last_result,
         state.current_streak, state.delay_martin_threshold,
         state.dalembert_unit, state.paroli_count,
@@ -2089,12 +2276,43 @@ def wolfrider_switch():
         state.bet_value = new_bv
         logger.debug("WOLFRIDER SWITCH → %s  bet_value=%s  (bet #%d)", new_rule, new_bv, state.total_bets)
 
+def _bet_fit_stop(profit: float, balance: float) -> str:
+    """Stop reason when the next bet would pass the loss cap or the balance floor, else ''.
+
+    Compares the amount as it is sent (8 decimals), so the cap is exact wherever
+    the bot sizes the bet itself.
+    """
+    bet = round(state.current_bet, 8)
+    room = loss_room(profit, state.max_loss)
+    if bet > room + HALF_SAT:
+        if state.max_loss is None:
+            return f"{LOSS_CAP_REASON}: hard_cap needs max_loss"
+        return f"{LOSS_CAP_REASON}: next bet {bet:.8f} does not fit (left {room:.8f})"
+    if bet > floor_room(balance, state.stop_on_balance) + HALF_SAT:
+        return (f"Balance floor: next bet {bet:.8f} does not fit above "
+                f"{state.stop_on_balance:.8f}")
+    return ""
+
+
+def _reached(value: float, target: float) -> bool:
+    """True when value has reached target, to the nearest satoshi.
+
+    Session profit is a sum of bet results and carries float dust, while real
+    amounts are whole satoshis, so a value less than half a satoshi short counts
+    as reached. The slack shrinks for a target under one satoshi, so zero profit
+    never counts.
+    """
+    return value > target - min(HALF_SAT, abs(target) / 2)
+
+
 def should_stop() -> tuple:
     p = state.profit
     b = state.current_balance
-    if state.max_profit is not None and p >= state.max_profit:
+    if state.balance_goal is not None and b >= state.balance_goal:
+        return True, f"{BALANCE_GOAL_REASON}: {b:.8f}"
+    if state.max_profit is not None and _reached(p, state.max_profit):
         return True, f"Profit target reached: {p:+.8f}"
-    if state.max_loss is not None and p <= -abs(state.max_loss):
+    if state.max_loss is not None and _reached(-p, abs(state.max_loss)):
         return True, f"Max loss hit: {p:+.8f}"
     if state.max_bets is not None and state.total_bets >= state.max_bets:
         return True, f"Max bets reached: {state.total_bets}"
@@ -2102,17 +2320,21 @@ def should_stop() -> tuple:
         return True, f"Max wins reached: {state.wins}"
     if state.stop_on_balance is not None and b <= state.stop_on_balance:
         return True, f"Balance floor hit: {b:.8f}"
-    # Streak reset — fires only on the win that broke an N+ loss streak
+    # Streak reset - fires only on the win that broke an N+ loss streak
     # (current_streak == 1) and only while the session is not in the red.
     n = state.streak_reset_losses
     if (n and state.current_streak == 1
             and state.last_broken_loss_streak >= n and p >= 0):
         return True, f"{STREAK_RESET_REASON}: {state.last_broken_loss_streak} losses then win"
-    # v2.35.0 — split budget: a lane may only risk its share of the balance.
+    # v2.35.0 - split budget: a lane may only risk its share of the balance.
     eq = lane_equity()
     if eq is not None and state.current_bet > eq:
         return True, (f"{LANE_BUDGET_REASON} (next bet {state.current_bet:.8f}, "
                       f"lane equity {eq:.8f})")
+    if _hard_cap_on():
+        reason = _bet_fit_stop(p, b)
+        if reason:
+            return True, reason
     return False, ""
 
 
@@ -2121,7 +2343,7 @@ PROFIT_INCREMENT_SCOPES = ("session", "run")
 
 
 def _increment_on() -> bool:
-    """v2.37.0 — increment active only with both values set and > 0."""
+    """v2.37.0 - increment active only with both values set and > 0."""
     return bool(state.profit_increment) and bool(state.profit_threshold) \
         and state.profit_increment > 0 and state.profit_threshold > 0
 
@@ -2129,7 +2351,7 @@ def _increment_on() -> bool:
 def _check_profit_increment() -> None:
     """Bump base_bet when profit reaches the next milestone.
 
-    v2.37.0 — scope "session" measures this session's profit (milestone resets
+    v2.37.0 - scope "session" measures this session's profit (milestone resets
     each recurring cycle); scope "run" measures the total since the run
     started and persists each bump in the run file. Caller holds state.lock.
     """
@@ -2160,7 +2382,7 @@ def _check_profit_increment() -> None:
                     tag, state.base_bet, state.next_profit_milestone)
 
 
-# ── v2.37.0 — run-wide profit increment ───────────────────
+# ── v2.37.0 - run-wide profit increment ───────────────────
 def _run_path(lane: int = None) -> str:
     return _lane_path(RUN_PATH, getattr(state, "lane", 1) if lane is None else lane)
 
@@ -2241,7 +2463,7 @@ def _init_run() -> None:
         return
     run = _load_run()
     if run and run["first_session"] > _db_max_session_id() + 1:
-        logger.warning("RUN file points past the stats DB (reset?) — starting a new run")
+        logger.warning("RUN file points past the stats DB (reset?) - starting a new run")
         run = None
     if run:
         state.run_first_session = run["first_session"]
@@ -2307,7 +2529,7 @@ def _end_run(reason: str) -> None:
     state.run_profit_done = 0.0
     state.run_base_origin = None
     if had:
-        logger.warning("RUN ended (%s) — the next run starts fresh", reason)
+        logger.warning("RUN ended (%s) - the next run starts fresh", reason)
 
 
 def _attach_run(session_id: int) -> None:
@@ -2329,7 +2551,7 @@ def cmd_run_reset(lane: int = None) -> int:
             n += 1
         except OSError:
             continue
-    console.print(f"[green]Run reset[/] — {n} run file(s) removed. "
+    console.print(f"[green]Run reset[/] - {n} run file(s) removed. "
                   "The next start begins a new run total.")
     return n
 
@@ -2342,7 +2564,7 @@ def lane_equity():
 
 
 def _init_lane_budget() -> None:
-    """v2.35.0 — fix this lane's share of the balance at bot start."""
+    """v2.35.0 - fix this lane's share of the balance at bot start."""
     if _split_budget_on() and state.current_balance > 0:
         state.lane_share = state.current_balance / state.lanes_count
         logger.warning("LANE %d/%d  share=%.8f of balance %.8f",
@@ -2361,14 +2583,14 @@ def betting_loop():
         loop_start = time.monotonic()
         # ── paused ──────────────────────────────────────
         if state.paused:
-            state.status = "PAUSED — press [R] to resume"
+            state.status = "PAUSED - press [R] to resume"
             time.sleep(0.4)
             continue
 
-        # ── rate-limit cooldown — wait then resume ──
+        # ── rate-limit cooldown - wait then resume ──
         if state.rate_wait:
             backoff = state.rate_backoff
-            state.status = f"Rate limit — resuming in {backoff:.0f}s…"
+            state.status = f"Rate limit - resuming in {backoff:.0f}s..."
             time.sleep(backoff)
             with state.lock:
                 state.rate_wait      = False
@@ -2376,6 +2598,9 @@ def betting_loop():
                 state.rate_remaining = 50  # assume recovered; bet response will update
             logger.info("Rate limit cooldown done, resuming betting")
             continue
+
+        # The phase step runs first so the stop check sees the new phase's bet.
+        _hybrid_step()
 
         # ── stop-condition check ─────────────────────────
         stop, reason = should_stop()
@@ -2409,20 +2634,21 @@ def betting_loop():
         # ── auto-bet: ensure we have a live UUID (with max-nonce recovery) ──
         _maybe_apply_pending_auto_restart()
         if is_auto_game(state.game) and not state._auto_uuid:
-            # v2.32.1 — a new server cycle restarts the progression at base_bet.
+            # v2.32.1 - a new server cycle restarts the progression at base_bet.
             # Mid loss chain / in the red that abandons the loss with no way out.
-            midchain = _midchain_loss_reason()
+            # With phases on the phase owns recovery and the loss cap bounds it.
+            midchain = "" if _hybrid_on() else _midchain_loss_reason()
             if state._insufficient_balance or midchain:
                 reason = "Insufficient balance" if state._insufficient_balance else midchain
-                logger.warning("AUTO-CYCLE not restarted — %s", reason)
+                logger.warning("AUTO-CYCLE not restarted - %s", reason)
                 state.running = False
                 state.status = f"STOPPED: {reason}"
                 _db_save_session()
                 break
             needs_recovery = state.last_stop_reason in ("max_nonce", "expired")
             state.status = (
-                f"Recovering from {state.last_stop_reason} — rotating seed…"
-                if needs_recovery else "Starting auto-bet session…"
+                f"Recovering from {state.last_stop_reason} - rotating seed..."
+                if needs_recovery else "Starting auto-bet session..."
             )
             ok = _recover_expired_session() if needs_recovery else api_auto_start()
             if not ok:
@@ -2434,7 +2660,7 @@ def betting_loop():
                 # Circuit breaker: 3 consecutive recovery failures → hard stop.
                 if state.consecutive_recovery_fails >= 3:
                     reason = state.last_stop_reason or "unknown"
-                    logger.error("Recovery failed 3× — hard stop (reason=%s)", reason)
+                    logger.error("Recovery failed 3× - hard stop (reason=%s)", reason)
                     with state.lock:
                         state.running = False
                         state.status  = f"STOPPED: Recovery failed after 3 attempts ({reason})"
@@ -2449,16 +2675,21 @@ def betting_loop():
             with state.lock:
                 state.consecutive_errors = 0
                 state.backoff_delay = 1.0
+                if _hybrid_on():
+                    # A fresh server cycle sizes its first bet from the phase's base.
+                    state.current_bet = _active_base_bet()
+                    state.dalembert_unit = 0
+                    state.paroli_count = 0
 
         # ── bet pacing delay ───────────────────────────────
         if state.bet_delay > 0:
             time.sleep(state.bet_delay)
-        # v2.35.0 — ease off as the shared rate-limit quota runs out
+        # v2.35.0 - ease off as the shared rate-limit quota runs out
         if state.soft_pace_delay > 0:
             time.sleep(state.soft_pace_delay)
 
         # ── place bet ────────────────────────────────────
-        state.status = f"Placing bet #{state.total_bets + 1}…"
+        state.status = f"Placing bet #{state.total_bets + 1}..."
         result = api_place_bet(state.current_bet)
 
         if result is None:
@@ -2484,7 +2715,7 @@ def betting_loop():
         amount_used  = float(bet_data.get("amount", state.current_bet))
         new_balance  = float(balance_data.get("amount", state.current_balance))
 
-        # Use API's profit directly — it's positive on win, negative on loss
+        # Use API's profit directly - it's positive on win, negative on loss
         raw_profit = float(bet_data.get("profit", 0))
 
         with state.lock:
@@ -2548,7 +2779,7 @@ def betting_loop():
             sec_key = int(now)
             min_key = int(now) // 60
             if sec_key != state._current_sec:
-                # new second — record the old second's count
+                # new second - record the old second's count
                 if state._current_sec > 0 and state._bets_this_sec > 0:
                     if state._bets_this_sec > state.peak_bps:
                         state.peak_bps = state._bets_this_sec
@@ -2560,7 +2791,7 @@ def betting_loop():
                 state._bets_this_sec += 1
 
             if min_key != state._current_min:
-                # new minute — record the old minute's count
+                # new minute - record the old minute's count
                 if state._current_min > 0 and state._bets_this_min > 0:
                     if state._bets_this_min > state.peak_bpm:
                         state.peak_bpm = state._bets_this_min
@@ -2586,11 +2817,12 @@ def betting_loop():
         _db_save_bet_dispatch(bet_data, raw_profit, new_balance)
 
         # ── WolfRider: switch over/under after bet ──
-        if state.strategy_key == "6":
+        active_key = _active_strategy_key()
+        if active_key == "6":
             wolfrider_switch()
 
         # ── Rule-Based: apply custom rules after bet ──
-        if state.strategy_key == "8" and state.custom_rules:
+        if active_key == "8" and state.custom_rules:
             apply_rules(bet_state)
 
         # ── milestone check (bets/wins/losses/profit) ──
@@ -2601,13 +2833,14 @@ def betting_loop():
             with state.lock:
                 state.status = f"Milestone: {ms_reason}"
 
-        # calculate next bet — no cap, API rejects if insufficient balance
+        # calculate next bet - no cap, API rejects if insufficient balance
         raw_next  = compute_next_bet(bet_state)
-        next_bet  = max(state.base_bet, raw_next)
+        floor_bet = _active_base_bet()
+        next_bet  = max(floor_bet, raw_next)
         # ── streakbet_loss: reduce bet after N consecutive losses ──
         sb_factor = _get_streakbet_loss_factor()
         if sb_factor != 1.0:
-            next_bet = max(state.base_bet, next_bet * sb_factor)
+            next_bet = max(floor_bet, next_bet * sb_factor)
             logger.info("STREAKBET_LOSS: current_bet ×%.2f → %.8f (loss streak %d)",
                         sb_factor, next_bet, state.current_streak)
         state.current_bet = next_bet
@@ -2617,12 +2850,12 @@ def betting_loop():
         _record_cycle_ms((time.monotonic() - loop_start) * 1000)
 
 # ══════════════════════════════════════════════════════════
-#  PHASE 5b — PIPELINED BETTING (Flat-only)
+#  PHASE 5b - PIPELINED BETTING (Flat-only)
 # ══════════════════════════════════════════════════════════
 #
 # Mirrors tg/engine.py:_pipelined_betting_loop but sync + threaded to fit the
 # CLI's existing model (requests + threading, no asyncio). Guardrail forces
-# depth=1 for anything other than Flat on a non-auto game — sequential
+# depth=1 for anything other than Flat on a non-auto game - sequential
 # strategies (Martingale, D'Alembert, Paroli, WolfRider, Delay-M, Rule-Based)
 # depend on outcome ordering, and auto-bet is server-side single-flight.
 _PIPELINE_MAX = 8
@@ -2638,17 +2871,20 @@ def _effective_pipeline_depth() -> int:
         state.pipeline_reason = ""
         return 1
     if is_auto_game(state.game):
-        state.pipeline_reason = f"forced to 1 — auto-bet game ({state.game}) is server-side single-flight"
+        state.pipeline_reason = f"forced to 1 - auto-bet game ({state.game}) is server-side single-flight"
         return 1
     if state.strategy_key != "1":
-        state.pipeline_reason = f"forced to 1 — {state.strategy} needs outcome-ordered bets (Flat-only)"
+        state.pipeline_reason = f"forced to 1 - {state.strategy} needs outcome-ordered bets (Flat-only)"
+        return 1
+    if _hard_cap_on():
+        state.pipeline_reason = "forced to 1: the pre-bet loss cap checks one bet at a time"
         return 1
     state.pipeline_reason = ""
     return min(requested, _PIPELINE_MAX)
 
 
 def _run_betting_loop():
-    """Dispatcher — selects serial or pipelined loop based on effective depth."""
+    """Dispatcher - selects serial or pipelined loop based on effective depth."""
     depth = _effective_pipeline_depth()
     state.pipeline_effective = depth
     if depth <= 1:
@@ -2662,7 +2898,7 @@ def _run_betting_loop():
 def _prepare_next_bet_flat() -> dict:
     """Snapshot the exact payload for a single Flat bet under state.lock.
 
-    Returns {"amount": float, "bet_no": int} — bet_no is monotonic dispatch order.
+    Returns {"amount": float, "bet_no": int} - bet_no is monotonic dispatch order.
     Never mutates strategy state (Flat has none). Records the streak_delay if any.
     """
     with state.lock:
@@ -2674,14 +2910,14 @@ def _prepare_next_bet_flat() -> dict:
 
 
 def _one_bet_worker(payload: dict) -> dict:
-    """Worker thread body — places a single bet via existing api_place_bet.
+    """Worker thread body - places a single bet via existing api_place_bet.
 
     Returns a result envelope; api errors surface as {"result": None}. Never
-    raises — the outcome handler decides how to react.
+    raises - the outcome handler decides how to react.
     """
     try:
         result = api_place_bet(payload["amount"])
-    except Exception as e:                                # pragma: no cover — defensive
+    except Exception as e:                                # pragma: no cover - defensive
         logger.exception("PIPELINE worker crashed: %s", e)
         result = None
     return {"payload": payload, "result": result}
@@ -2813,7 +3049,7 @@ def pipelined_betting_loop(depth: int):
 
     Concurrency: `depth` in-flight bets via ThreadPoolExecutor + Semaphore.
     Ordering: outcomes apply in COMPLETION order (Flat's strategy state
-    doesn't depend on ordering — every bet is base_bet).
+    doesn't depend on ordering - every bet is base_bet).
     """
     executor = ThreadPoolExecutor(max_workers=depth, thread_name_prefix="wb-pipe")
     sem = threading.Semaphore(depth)
@@ -2835,7 +3071,7 @@ def pipelined_betting_loop(depth: int):
             loop_start = time.monotonic()
 
             if state.paused:
-                state.status = "PAUSED — press [R] to resume"
+                state.status = "PAUSED - press [R] to resume"
                 time.sleep(0.4)
                 continue
 
@@ -2843,7 +3079,7 @@ def pipelined_betting_loop(depth: int):
                 # Drain in-flight before honoring the probe so no worker
                 # dispatches into the cooldown window.
                 backoff = state.rate_backoff
-                state.status = f"Rate limit — draining pipeline, resuming in {backoff:.0f}s…"
+                state.status = f"Rate limit - draining pipeline, resuming in {backoff:.0f}s..."
                 while state.pipeline_in_flight > 0:
                     time.sleep(0.05)
                 time.sleep(backoff)
@@ -2895,7 +3131,7 @@ def pipelined_betting_loop(depth: int):
             payload = _prepare_next_bet_flat()
 
             if not sem.acquire(timeout=1.0):
-                # No slot free within 1s — loop back to re-check stop/pause/rate.
+                # No slot free within 1s - loop back to re-check stop/pause/rate.
                 with state.lock:
                     state.pipeline_dispatched -= 1  # payload never dispatched
                 continue
@@ -2921,7 +3157,7 @@ def _db_conn():
     return db_connect(DB_PATH)
 
 
-# ── Phase 5a — session read + export helpers ───────────────────────
+# ── Phase 5a - session read + export helpers ───────────────────────
 def _read_session(session_id: int) -> dict:
     """Return the sessions row as a dict, or {} if not found."""
     conn = _db_conn()
@@ -2956,7 +3192,7 @@ def _latest_session_id() -> int:
     return int(row[0]) if row and row[0] else 0
 
 
-# ── Phase 5c — backtest / replay data sources ─────────────────────
+# ── Phase 5c - backtest / replay data sources ─────────────────────
 def _simulate_bet_outcome(multiplier: float, rule: str, bet_amount: float,
                           current_balance: float, rng) -> dict:
     """Generate a synthetic bet result from a WolfBet-style RTP.
@@ -3055,36 +3291,42 @@ def _apply_backtest_result(result: dict) -> str:
     return bet_state
 
 
-def backtest_loop(source, progress_every: int = 100):
+def backtest_loop(source, progress_every: int = 100) -> str:
     """Run the strategy over `source` (iterator of bet-result dicts) with no API calls.
 
-    Honours should_stop() and state.running so both stop-condition config and the
-    q hotkey work. Prints progress every `progress_every` bets so long simulations
-    show heartbeat instead of feeling frozen.
+    Honours should_stop() and state.running. Stops are checked before a roll is
+    drawn, so sessions can run back to back on one source without losing a roll.
+    Returns the stop reason, or "" when the rolls ran out or the run was halted.
+    Prints progress every `progress_every` bets (0 disables).
     """
-    for result in source:
-        if not state.running:
-            break
+    rolls = iter(source)
+    while state.running:
+        _hybrid_step()
         stop, reason = should_stop()
         if stop:
             state.status = f"[BACKTEST] STOPPED: {reason}"
+            return reason
+        result = next(rolls, None)
+        if result is None:
             break
 
         bet_state = _apply_backtest_result(result)
 
-        # Strategy hooks — reuse from betting_loop path
+        # Strategy hooks - reuse from betting_loop path
         _check_milestone(bet_state)
-        if state.strategy_key == "6":
+        active_key = _active_strategy_key()
+        if active_key == "6":
             wolfrider_switch()
-        if state.strategy_key == "8" and state.custom_rules:
+        if active_key == "8" and state.custom_rules:
             apply_rules(bet_state)
 
         # Next-bet computation with Phase 2 streakbet reduction
         raw_next = compute_next_bet(bet_state)
-        next_bet = max(state.base_bet, raw_next)
+        floor_bet = _active_base_bet()
+        next_bet = max(floor_bet, raw_next)
         sb_factor = _get_streakbet_loss_factor()
         if sb_factor != 1.0:
-            next_bet = max(state.base_bet, next_bet * sb_factor)
+            next_bet = max(floor_bet, next_bet * sb_factor)
         state.current_bet = next_bet
 
         state.status = f"[BACKTEST] bet {state.total_bets}: {bet_state}  bal {state.current_balance:.8f}  p/l {state.profit:+.8f}"
@@ -3094,6 +3336,153 @@ def backtest_loop(source, progress_every: int = 100):
                           f"P/L: [{'green' if state.profit >= 0 else 'red'}]"
                           f"{'+' if state.profit >= 0 else ''}{state.profit:.8f}[/]  "
                           f"bal: {state.current_balance:.8f}")
+    return ""
+
+
+_BACKTEST_ROLL_BUDGET = 5_000_000
+_BACKTEST_SESSION_ENDS = ("Profit target", "Max bets", "Max wins", "Max loss hit",
+                          LOSS_CAP_REASON, STREAK_RESET_REASON)
+_RUN_ROLLS_OUT = "the rolls ran out"
+_RUN_RULE_STOP = "a strategy rule stopped it"
+# The game pays 99% back at every multiplier (see _derive_bet_value).
+_HOUSE_EDGE = 0.01
+
+
+def _backtest_new_session(balance: Optional[float] = None) -> None:
+    """Zero the in-memory session counters for a backtest session.
+
+    With `balance` the session starts from that balance; without it the balance
+    carries over from the session before, as it does between live sessions.
+    """
+    if balance is not None:
+        state.current_balance = balance
+    state.session_start    = time.time()
+    state.total_bets       = 0
+    state.wins             = 0
+    state.losses           = 0
+    state.profit           = 0.0
+    state.wagered          = 0.0
+    state.current_streak   = 0
+    state.max_win_streak   = 0
+    state.max_loss_streak  = 0
+    state.last_broken_loss_streak = 0
+    state.highest_bet      = 0.0
+    state.highest_win      = 0.0
+    state.biggest_loss     = 0.0
+    state.start_balance    = state.current_balance
+    state.highest_balance  = state.current_balance
+    state.lowest_balance   = state.current_balance
+    state.current_bet      = state.base_bet
+    state.hybrid_phase     = PHASE_BASE
+    state.hybrid_switches  = 0
+    state.dalembert_unit   = 0
+    state.paroli_count     = 0
+
+
+def _can_pay_next_bet() -> bool:
+    """True while the balance covers the next bet; the casino refuses a larger one."""
+    return round(state.current_bet, 8) <= state.current_balance + HALF_SAT
+
+
+def _affordable_rolls(rolls):
+    """Pass rolls through for as long as the balance can pay the next bet."""
+    while _can_pay_next_bet():
+        roll = next(rolls, None)
+        if roll is None:
+            return
+        yield roll
+
+
+def _run_backtest_sessions(source, sessions: Optional[int], runs: int, balance: float) -> dict:
+    """Play sessions back to back on one roll source and total the results.
+
+    A session that ends on its own stop (cash-out, loss cap, bet or win count)
+    is followed by a new one, whatever the live restart settings say. A run
+    ends at the balance goal, at the balance floor, when the next bet cannot
+    be paid, after `sessions` sessions, or when the rolls run out.
+    """
+    totals = {"sessions": 0, "green": 0, "won": 0.0, "lost": 0.0, "worst": 0.0,
+              "net": 0.0, "wagered": 0.0, "bets": 0, "switches": 0,
+              "runs": {}, "finals": []}
+    for _ in range(runs):
+        outcome = None
+        rolls = _affordable_rolls(source)
+        _backtest_new_session(balance)
+        played = 0
+        while outcome is None:
+            reason = backtest_loop(rolls, progress_every=0)
+            totals["net"] += state.profit
+            totals["wagered"] += state.wagered
+            totals["bets"] += state.total_bets
+            totals["switches"] += state.hybrid_switches
+            if reason.startswith(_BACKTEST_SESSION_ENDS) and state.total_bets > 0:
+                totals["sessions"] += 1
+                played += 1
+                if state.profit > 0:
+                    totals["green"] += 1
+                    totals["won"] += state.profit
+                else:
+                    totals["lost"] += state.profit
+                totals["worst"] = min(totals["worst"], state.profit)
+                if sessions is not None and played >= sessions:
+                    outcome = "played every session"
+                else:
+                    _backtest_new_session()
+            elif not reason and not state.running:
+                outcome = _RUN_RULE_STOP
+            elif not reason and not _can_pay_next_bet():
+                outcome = "balance too low for the next bet"
+            elif not reason:
+                outcome = _RUN_ROLLS_OUT
+            elif reason.startswith(BALANCE_GOAL_REASON):
+                outcome = "reached the balance goal"
+            elif reason.startswith("Balance floor"):
+                outcome = "at the balance floor"
+            else:
+                outcome = reason
+        totals["runs"][outcome] = totals["runs"].get(outcome, 0) + 1
+        totals["finals"].append(state.current_balance)
+        if outcome in (_RUN_ROLLS_OUT, _RUN_RULE_STOP):
+            break
+    return totals
+
+
+def _print_backtest_table(totals: dict, balance: float) -> None:
+    """Print the multi-session backtest result: session odds, cost and how the runs ended."""
+    n, green = totals["sessions"], totals["green"]
+    red = n - green
+    wagered = totals["wagered"]
+    finals = sorted(totals["finals"])
+    tbl = Table(title="Backtest result", title_style="bold cyan", show_header=False)
+    tbl.add_column(style="bold yellow", no_wrap=True)
+    tbl.add_column(style="cyan")
+    tbl.add_row("Sessions finished", f"{n:,} in {len(finals):,} run(s)")
+    tbl.add_row("Green sessions", f"{green / n * 100:.2f}%  ({green:,} of {n:,})" if n else "none")
+    tbl.add_row("Average win", f"{totals['won'] / green:+.8f}" if green else "none")
+    tbl.add_row("Average loss", f"{totals['lost'] / red:+.8f}" if red else "none")
+    tbl.add_row("Worst session", f"{totals['worst']:+.8f}")
+    tbl.add_row("Bets per session", f"{totals['bets'] / n:.1f}" if n else str(totals["bets"]))
+    tbl.add_row("Phase switches per session", f"{totals['switches'] / n:.1f}" if n else str(totals["switches"]))
+    tbl.add_row("Wagered", f"{wagered:.8f}")
+    tbl.add_row("Net result", f"{totals['net']:+.8f}"
+                + (f"  ({totals['net'] / wagered * 100:+.2f} per 100 wagered)" if wagered else ""))
+    tbl.add_row("Long-run cost of that wagering", f"{-_HOUSE_EDGE * wagered:+.8f}  (-1.00 per 100 wagered)")
+    if len(finals) == 1:
+        tbl.add_row("Balance", f"{balance:.8f} to {finals[0]:.8f}")
+    elif finals:
+        tbl.add_row("Final balance", f"typical {finals[len(finals) // 2]:.8f}, "
+                                     f"unlucky 1 in 20 {finals[len(finals) // 20]:.8f}, "
+                                     f"lucky 1 in 20 {finals[-1 - len(finals) // 20]:.8f}")
+    for outcome, count in sorted(totals["runs"].items(), key=lambda item: -item[1]):
+        tbl.add_row(f"Runs ended: {escape(outcome)}", f"{count:,}")
+    console.print(tbl)
+    if not state.recurring:
+        console.print("[dim]  Live, recurring is off: the bot stops after its first session.[/]")
+    elif not state.restart_after_loss:
+        console.print("[dim]  Live, the bot stops after its first losing session "
+                      "(restart_after_loss is off).[/]")
+    console.print("[dim]  The net result of a short run is partly luck. The long-run cost is 1% of "
+                  "the amount wagered, whatever the settings.[/]")
 
 
 def _run_backtest(args) -> None:
@@ -3101,11 +3490,12 @@ def _run_backtest(args) -> None:
 
     Config source is (in order): explicit --preset NAME, else the wizard's
     saved ~/.wolfbet_autobot.json, else sensible defaults. Never touches the
-    DB except to read historical bets in replay mode. Prints progress + final
-    summary via format_session_summary from v2.20.0.
+    DB except to read historical bets in replay mode. With --sessions or --runs
+    it plays sessions back to back and prints the result table; otherwise one
+    session and the session summary.
     """
     console.clear()
-    console.print("[bold cyan]🧪 BACKTEST MODE[/]  [dim]— no API calls, no real balance risk[/]\n")
+    console.print("[bold cyan]🧪 BACKTEST MODE[/]  [dim]- no API calls, no real balance risk[/]\n")
     init_db()  # needed for _read_bets in replay; harmless otherwise
 
     # 1. Load config
@@ -3129,28 +3519,20 @@ def _run_backtest(args) -> None:
         state.currency       = "usdt"
         state.game           = "dice"
 
+    _exit_on_session_rule_errors()
+    multi = args.sessions is not None or args.runs is not None
+    balance = 1.0 if args.balance is None else args.balance     # $1 sandbox default
+    if not (math.isfinite(balance) and balance > 0) \
+            or (args.sessions is not None and args.sessions < 1) \
+            or (args.runs is not None and args.runs < 1):
+        console.print("[red]--balance must be above 0; --sessions and --runs must be 1 or more.[/]")
+        sys.exit(2)
+
     # 2. Initialise virtual session state (in-memory only)
     state.session_id       = -1
-    state.session_start    = time.time()
     state.running          = True
     state.paused           = False
-    state.total_bets       = 0
-    state.wins             = 0
-    state.losses           = 0
-    state.profit           = 0.0
-    state.wagered          = 0.0
-    state.current_streak   = 0
-    state.max_win_streak   = 0
-    state.max_loss_streak  = 0
-    state.last_broken_loss_streak = 0
-    state.highest_bet      = 0.0
-    state.highest_win      = 0.0
-    state.biggest_loss     = 0.0
-    state.start_balance    = 1.0     # $1 sandbox default
-    state.current_balance  = 1.0
-    state.highest_balance  = 1.0
-    state.lowest_balance   = 1.0
-    state.current_bet      = state.base_bet
+    _backtest_new_session(balance)
     if state.custom_rules_text:
         state.custom_rules = _load_rules_from_text(state.custom_rules_text)
 
@@ -3163,10 +3545,11 @@ def _run_backtest(args) -> None:
             console.print(f"[red]✗ {e}[/]")
             sys.exit(1)
     else:
-        n = args.simulate or 1000
+        n = args.simulate or (_BACKTEST_ROLL_BUDGET if multi else 1000)
         rng = random.Random(args.seed) if args.seed is not None else random.Random()
         seed_str = f"seed={args.seed}" if args.seed is not None else "seed=system-entropy"
-        console.print(f"  [dim]Simulating[/] [cyan]{n}[/] [dim]bets with[/] [cyan]{seed_str}[/]\n")
+        console.print(f"  [dim]Simulating{' up to' if multi else ''}[/] [cyan]{n}[/] "
+                      f"[dim]bets with[/] [cyan]{seed_str}[/]\n")
 
         def _gen():
             for _ in range(n):
@@ -3176,11 +3559,25 @@ def _run_backtest(args) -> None:
                 )
         source = _gen()
 
-    # 4. Run the loop (synchronous — fast enough for CLI, no thread noise)
+    # 4. Run the loop (synchronous - fast enough for CLI, no thread noise)
     console.print(f"  [dim]Strategy:[/] [bold]{state.strategy}[/]  "
                   f"[dim]base_bet:[/] {state.base_bet:.8f}  "
                   f"[dim]multiplier:[/] {state.multiplier}x  "
                   f"[dim]rule:[/] {state.rule}\n")
+    if multi:
+        runs = args.runs or 1
+        if args.replay_session and runs > 1:
+            console.print("  [dim]A replay has one set of rolls: running it once.[/]")
+            runs = 1
+        try:
+            totals = _run_backtest_sessions(source, args.sessions, runs, balance)
+        except Exception as e:
+            detail = f": {e}" if APP_ENV != "production" else ""
+            console.print(f"[red]Backtest failed{detail}. Check the log and try again.[/]")
+            logger.exception("BACKTEST error")
+            sys.exit(1)
+        _print_backtest_table(totals, balance)
+        return
     try:
         backtest_loop(source, progress_every=max(100, (args.simulate or 1000) // 20))
     except Exception as e:
@@ -3229,7 +3626,7 @@ def _db_start_session() -> int:
         VALUES (?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
-        state.currency, state.game, state.strategy,
+        state.currency, state.game, _strategy_label(),
         state.base_bet, state.multiplier, state.start_balance,
         getattr(state, "lane", 1),
     ))
@@ -3265,7 +3662,7 @@ def _db_save_bet(bet_data: dict, profit: float, balance: float):
 
 
 # ══════════════════════════════════════════════════════════
-#  v2.27.0 — Async bet writer (kill the per-bet CLI overhead)
+#  v2.27.0 - Async bet writer (kill the per-bet CLI overhead)
 # ══════════════════════════════════════════════════════════
 # Bounded queue prevents unbounded memory growth if writer stalls.
 _bet_write_queue: queue.Queue = queue.Queue(maxsize=1000)
@@ -3293,7 +3690,7 @@ _BET_WRITER_INSERT_SQL   = (
 def _open_bet_writer_conn():
     """Persistent, tuned SQLite connection for the async writer thread.
 
-    Applied PRAGMAs (writer-only — never touches read connections):
+    Applied PRAGMAs (writer-only - never touches read connections):
     - synchronous=NORMAL: safe under WAL; skips per-commit fsync (30-40 ms saved).
     - busy_timeout=5000: WAL + concurrent readers can race; be patient.
     - cache_size=-32000: 32 MB in-memory cache.
@@ -3313,7 +3710,7 @@ def _bet_writer_worker():
     try:
         _bet_writer_conn = _open_bet_writer_conn()
     except Exception as e:
-        logger.error("bet writer failed to open DB (%s) — falling back to sync mode", e)
+        logger.error("bet writer failed to open DB (%s) - falling back to sync mode", e)
         return
     while not (_bet_writer_stop.is_set() and _bet_write_queue.empty()):
         batch = []
@@ -3345,7 +3742,7 @@ def _bet_writer_worker():
             try:
                 _bet_writer_conn = _open_bet_writer_conn()
             except Exception as reopen_err:
-                logger.error("bet writer reopen failed: %s — exiting worker",
+                logger.error("bet writer reopen failed: %s - exiting worker",
                              reopen_err)
                 return
     # Final close on exit.
@@ -3403,7 +3800,7 @@ def _db_save_bet_async(bet_data: dict, profit: float, balance: float):
     """Non-blocking bet-row enqueue for the writer thread.
 
     Overflow safety: if the bounded queue is full, fall back to the sync
-    path so no bet is lost — the writer is stalled but data still lands.
+    path so no bet is lost - the writer is stalled but data still lands.
     """
     row = _make_bet_row(bet_data, profit, balance)
     try:
@@ -3434,7 +3831,7 @@ def _db_save_session():
     try:
         conn = _db_conn()
         lo_bal = state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance
-        # v2.28.4 — when a session is in the recurring pause, freeze ended_at
+        # v2.28.4 - when a session is in the recurring pause, freeze ended_at
         # at bet-end time (session_bet_ended_at) so the DB reflects the real
         # betting window instead of tracking the sleep.
         _ended_at_ts = state.session_bet_ended_at or time.time()
@@ -3535,7 +3932,7 @@ def _save_state_file():
             "milestone_losses":  state.milestone_losses or None,
             "milestone_profit":  state.milestone_profit or None,
             "last_profit_milestone": state._last_profit_milestone,
-            # v2.30.1 — actionable profit-increment target (distinct from
+            # v2.30.1 - actionable profit-increment target (distinct from
             # last_profit_milestone which is the notification tracker).
             "next_profit_milestone": state.next_profit_milestone,
             # Phase 3 observability metrics
@@ -3547,12 +3944,12 @@ def _save_state_file():
             "on_target_pct":       _compute_on_target_pct(),
             "cycle_ms":            state._cycle_ms,
             "overhead_ms":         state._cycle_overhead_ms,
-            # v2.30.4 — windowed cycle metrics + recent BPS for consistent
+            # v2.30.4 - windowed cycle metrics + recent BPS for consistent
             # efficiency computation. cycle_ms above is aliased to cycle_p50
             # for backwards-compat readers.
             "cycle_p50_ms":        _compute_cycle_p50(),
             "cycle_p99_ms":        _compute_cycle_p99(),
-            # v2.30.5 — mean cycle drives Recent BPS + efficiency (was p50).
+            # v2.30.5 - mean cycle drives Recent BPS + efficiency (was p50).
             # Same statistic on both sides of the ratio; no more >100% edge.
             "cycle_mean_ms":       _compute_cycle_mean(),
             "cycle_sample_count":  len(state._cycle_samples),
@@ -3561,7 +3958,7 @@ def _save_state_file():
             "theoretical_max_bps": _compute_theoretical_max_bps(),
             "pipeline_effective":  state.pipeline_effective,
             "pipeline_dispatched": state.pipeline_dispatched,
-            # v2.27.0 — async bet-writer visibility (surfaced by --diagnose)
+            # v2.27.0 - async bet-writer visibility (surfaced by --diagnose)
             "db_write_mode":       state.db_write_mode,
             "db_writer_stats":     dict(_bet_writer_stats),
             "db_writer_queue":     _bet_write_queue.qsize(),
@@ -3577,25 +3974,26 @@ def _save_state_file():
             "max_bets": state.max_bets,
             "max_wins": state.max_wins,
             "stop_on_balance": state.stop_on_balance,
+            "hybrid_phase": state.hybrid_phase if _hybrid_on() else None,
             "profit_increment": state.profit_increment,
             "profit_threshold": state.profit_threshold,
             # rule-based info
             "rule_count": len(state.custom_rules) if state.strategy_key == "8" else 0,
             "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "8" else [],
-            # v2.28.4 — uptime freezes at bet-end when session is in recurring
+            # v2.28.4 - uptime freezes at bet-end when session is in recurring
             # pause, so "5 min bet + 1 h pause" no longer displays as "1 h 5 min
             # session". Pause remaining is surfaced separately for the monitor.
             "uptime_sec": int(
                 (state.session_bet_ended_at or time.time()) - state.session_start
             ),
-            # v2.34.0 — wall-clock time since bot start (pauses included)
+            # v2.34.0 - wall-clock time since bot start (pauses included)
             "run_uptime_sec": int(time.time() - state.run_started_at),
-            # v2.35.0 — parallel lanes + shared throttle state
+            # v2.35.0 - parallel lanes + shared throttle state
             "lane": state.lane,
             "lanes_count": state.lanes_count,
             "lane_share": state.lane_share,
             "lane_split": state.lane_split,
-            # v2.37.0 — run-wide profit increment
+            # v2.37.0 - run-wide profit increment
             "profit_increment_scope": state.profit_increment_scope,
             "run_profit_total": run_profit_total(),
             "run_first_session": state.run_first_session,
@@ -3629,13 +4027,13 @@ def _cleanup_state_file():
             pass
 
 # ══════════════════════════════════════════════════════════
-#  TUI — BORDERLESS ULTRA-COMPACT DASHBOARD
+#  TUI - BORDERLESS ULTRA-COMPACT DASHBOARD
 # ══════════════════════════════════════════════════════════
 SPARKLINE = "▁▂▃▄▅▆▇█"
 
 def _sparkline(values) -> str:
     if not values or len(values) < 2:
-        return "—"
+        return "-"
     mn, mx = min(values), max(values)
     span   = mx - mn or 1
     return "".join(SPARKLINE[int((v - mn) / span * 7)] for v in values)
@@ -3681,7 +4079,7 @@ def build_dashboard_screen() -> str:
       Row 6:       Sparkline (P/L graph)
       Row 7:       Separator ───
       Row 8:       Bets table header
-      Row 9..N-2:  Recent bets (flex — fills remaining, padded with blanks)
+      Row 9..N-2:  Recent bets (flex - fills remaining, padded with blanks)
       Row N-1:     Separator ───
       Row N:       Status + controls
     """
@@ -3725,7 +4123,7 @@ def build_dashboard_screen() -> str:
     pc = "bold_green" if p >= 0 else "bold_red"
     wr = (state.wins / state.total_bets * 100) if state.total_bets else 0
     wr_c = "bold_green" if wr >= 50 else "bold_red"
-    # ROI % — profit / wagered × 100 (edge indicator).
+    # ROI % - profit / wagered × 100 (edge indicator).
     roi = (state.profit / state.wagered * 100) if state.wagered > 0 else 0.0
     roi_c = "dim" if state.wagered == 0 else ("bold_green" if roi >= 0 else "bold_red")
 
@@ -3743,7 +4141,7 @@ def build_dashboard_screen() -> str:
     elif cs < 0:
         sk = _a("red", f"L{cs}")
     else:
-        sk = _a("dim", "—")
+        sk = _a("dim", "-")
 
     add(f" {_a('dim', 'Bets')} {_a('bold_white', str(state.total_bets))}"
         f"  {_a('green', 'W')} {_a('bold_green', str(state.wins))}"
@@ -3759,7 +4157,7 @@ def build_dashboard_screen() -> str:
     if state.profit_increment is not None and state.profit_threshold:
         s4 += f"  {_a('dim', 'Base')} {_a('bold_green', f'{state.base_bet:.8f}')}"
     s4 += (f"  {_a('dim', 'Hi')} {_a('white', f'{state.highest_bet:.8f}')}"
-           f"  {_a('cyan', state.strategy)}"
+           f"  {_a('cyan', _with_phase(state.strategy, state.hybrid_phase if _hybrid_on() else None))}"
            f"  {_a('dim', f'{state.multiplier}x')}"
            f"  {_a('dim', state.rule)}"
            f"  {_a('dim', 'BPS')} {_a('magenta', f'{state.bets_per_second:.1f}')}"
@@ -3821,7 +4219,7 @@ def build_dashboard_screen() -> str:
             f"  (raw throughput, no delay)")
 
     cycle_ms = state._cycle_ms
-    # v2.30.3 — use the unified theoretical ceiling instead of `1000/cycle_ms`
+    # v2.30.3 - use the unified theoretical ceiling instead of `1000/cycle_ms`
     # (misleading for auto-games where cycle_ms is per outer iteration, not
     # per bet). Matches cmd_status + cmd_diagnose.
     bps_ceiling = _compute_theoretical_max_bps()
@@ -3917,17 +4315,17 @@ def show_history():
         t.add_row(
             str(sid),
             (started or "").replace("T", " "),
-            (ended   or "—").replace("T", " "),
+            (ended   or "-").replace("T", " "),
             (cur or "").upper(),
-            strat or "—",
+            strat or "-",
             str(bets or 0),
             Text(f"{ps}{profit:.8f}" if profit else "0.00000000", style=pc),
-            f"{wagered:.8f}" if wagered else "—",
+            f"{wagered:.8f}" if wagered else "-",
             f"W{mws or 0}/L{mls or 0}",
         )
 
     console.print(t)
-    console.print("\n[dim]  Press any key to return…[/]")
+    console.print("\n[dim]  Press any key to return...[/]")
     _getch()
     state.paused = was_paused
 
@@ -3965,7 +4363,7 @@ def format_session_summary(reason: str = "") -> Group:
 
     Mirrors tg/formatter.format_stop content shape but rendered as terminal-native
     Rich (Panel/Table.grid) rather than Markdown. Green/red border on the balance
-    panel from the profit sign — matches the ✅/🛑 emoji policy from v2.16.9.
+    panel from the profit sign - matches the ✅/🛑 emoji policy from v2.16.9.
     """
     p = state.profit
     ps = "+" if p >= 0 else ""
@@ -3976,7 +4374,7 @@ def format_session_summary(reason: str = "") -> Group:
     avg_s = "+" if avg_pnl >= 0 else ""
     wr = (state.wins / state.total_bets * 100) if state.total_bets > 0 else 0.0
 
-    header = Rule(f"[bold]{pe} Session #{state.session_id} ended[/]  [dim]— {reason or 'Session ended'}[/]")
+    header = Rule(f"[bold]{pe} Session #{state.session_id} ended[/]  [dim]- {reason or 'Session ended'}[/]")
 
     bal_c  = "green" if p >= 0 else "red"
     bc_c   = "green" if bal_change >= 0 else "red"
@@ -4060,14 +4458,14 @@ def show_export():
     except Exception as e:
         console.print(f"  [red]✗ {e}[/]")
         logger.warning("EXPORT FAILED: session=%d path=%s: %s", state.session_id, path, e)
-    console.print("\n[dim]  Press any key to return…[/]")
+    console.print("\n[dim]  Press any key to return...[/]")
     _getch()
     console.clear()
     state.paused = was_paused
 
 
 def show_tweak():
-    """Modal runtime tweak surface — parity with tg/handlers.cmd_tweak.
+    """Modal runtime tweak surface - parity with tg/handlers.cmd_tweak.
 
     Enters paused state, prompts for `param value`, applies via _apply_mutation,
     resumes. 'back' / empty / q cancels."""
@@ -4136,15 +4534,15 @@ def input_handler():
         if ch in ("q", "\x03", "\x1c"):  # Q, Ctrl+C, Ctrl+backslash
             state.running  = False
             state.paused   = False
-            state.status   = "Stopping — saving session…"
+            state.status   = "Stopping - saving session..."
             logger.warning("SESSION END (user quit)  bets=%d  profit=%+.8f  balance=%.8f",
                         state.total_bets, state.profit, state.current_balance)
             _db_save_session()
-            # Phase 5a — session summary before exit
+            # Phase 5a - session summary before exit
             try:
                 console.clear()
                 console.print(format_session_summary("Stopped by user"))
-                console.print("\n[dim]  Press any key to close…[/]")
+                console.print("\n[dim]  Press any key to close...[/]")
                 _getch()
             except Exception as e:
                 logger.warning("Could not render session summary: %s", e)
@@ -4418,7 +4816,7 @@ def _edit_one_rule(old: StrategyRule):
             return r
 
         if pick == replace_n:
-            console.print("    [dim]Building replacement rule…[/]")
+            console.print("    [dim]Building replacement rule...[/]")
             replacement = _build_one_rule()
             if replacement is _BACK:
                 continue
@@ -4439,7 +4837,7 @@ def _edit_one_rule(old: StrategyRule):
                 continue
             new_type = COND_TYPES[ct]
             if new_type != r.cond_type:
-                # Type changed — reset related fields to defaults
+                # Type changed - reset related fields to defaults
                 r.cond_type = new_type
                 if new_type == "sequence":
                     r.cond_field = ""
@@ -4572,15 +4970,15 @@ def setup_wizard():
         console.print(f"    [dim]Strategy:[/]   [yellow]{state.strategy}[/]")
         console.print(f"    [dim]Multiplier:[/] [yellow]{state.multiplier}x[/]")
         console.print(f"    [dim]Base bet:[/]   [yellow]{state.base_bet:.8f}[/]")
-        console.print(f"    [dim]API key:[/]    [yellow]{saved_key[:8]}…{saved_key[-4:]}[/]")
+        console.print(f"    [dim]API key:[/]    [yellow]{saved_key[:8]}...{saved_key[-4:]}[/]")
         console.print()
 
     # ── Step functions ────────────────────────────────────
     def step_api_key():
         nonlocal balances, saved_key
-        console.print(Rule("[bold cyan]Step 1 / 7 — API Authentication[/]"))
+        console.print(Rule("[bold cyan]Step 1 / 7 - API Authentication[/]"))
         if saved_key:
-            console.print(f"  Saved key: [yellow]{saved_key[:8]}…{saved_key[-4:]}[/]")
+            console.print(f"  Saved key: [yellow]{saved_key[:8]}...{saved_key[-4:]}[/]")
             v = _ask("Use saved API key? (y/n)", default="y", choices=["y", "n"])
             if v is _BACK:
                 return False
@@ -4601,7 +4999,7 @@ def setup_wizard():
             state.api_key = v
             saved_key = v
 
-        console.print("  [dim]Testing connection…[/]")
+        console.print("  [dim]Testing connection...[/]")
         try:
             balances = api_get_balances()
             console.print("[green]  Connected![/]\n")
@@ -4616,7 +5014,7 @@ def setup_wizard():
 
     def step_currency():
         nonlocal available_bal
-        console.print(Rule("[bold cyan]Step 2 / 7 — Currency[/]"))
+        console.print(Rule("[bold cyan]Step 2 / 7 - Currency[/]"))
         if balances:
             console.print("  [dim]Your balances:[/]")
             for b in balances:
@@ -4639,11 +5037,11 @@ def setup_wizard():
         return True
 
     def step_bet_config():
-        console.print(Rule("[bold cyan]Step 3 / 7 — Bet Configuration[/]"))
+        console.print(Rule("[bold cyan]Step 3 / 7 - Bet Configuration[/]"))
         console.print("  [dim]Available games:[/]")
         for gk, label in GAME_LABELS.items():
             ep = GAME_ENDPOINTS[gk]
-            console.print(f"    [yellow]{gk:14s}[/] — {label}  (rate limit: {ep[2]}/min)")
+            console.print(f"    [yellow]{gk:14s}[/] - {label}  (rate limit: {ep[2]}/min)")
         console.print()
 
         v = _ask("Select game", default=state.game, choices=list(GAME_LABELS.keys()))
@@ -4682,7 +5080,7 @@ def setup_wizard():
             break
         win_chance = 99.0 / state.multiplier
         if state.game in ("dice", "dice-manual"):
-            # v2.30.9 — derivation now lives in _derive_bet_value (single
+            # v2.30.9 - derivation now lives in _derive_bet_value (single
             # source of truth shared with load_config + _apply_mutation).
             state.bet_value = _derive_bet_value(state.multiplier, state.rule)
             console.print(f"    [dim]→ Bet value:[/] [yellow]{state.bet_value}[/]  [dim]Win chance:[/] [yellow]{win_chance:.2f}%[/]\n")
@@ -4697,7 +5095,7 @@ def setup_wizard():
         return True
 
     def step_strategy():
-        console.print(Rule("[bold cyan]Step 4 / 7 — Betting Strategy[/]"))
+        console.print(Rule("[bold cyan]Step 4 / 7 - Betting Strategy[/]"))
         for k, (name, desc) in STRATEGIES.items():
             console.print(f"    [bold yellow][{k}][/] [cyan]{name:20s}[/]  [dim]{desc}[/]")
         console.print()
@@ -4733,7 +5131,7 @@ def setup_wizard():
             console.print()
 
         if v == "6":
-            console.print("  [bold cyan]WolfRider[/] — your dedicated strategy:")
+            console.print("  [bold cyan]WolfRider[/] - your dedicated strategy:")
             console.print(f"    [green]• On win:[/]  reset to base bet")
             console.print(f"    [green]• On loss:[/] multiply by {state.loss_mult}x")
             console.print("    [green]• Switch over/under[/] on every 2nd, 6th, and 9th bet")
@@ -4741,7 +5139,7 @@ def setup_wizard():
 
         elif v == "7":
             console.print()
-            console.print("  [bold cyan]Delay Martingale[/] — flat bet through the first N")
+            console.print("  [bold cyan]Delay Martingale[/] - flat bet through the first N")
             console.print("  consecutive losses, then start doubling.")
             console.print()
             d = _ask("  Losses before doubling starts", default=str(state.delay_martin_threshold))
@@ -4752,7 +5150,7 @@ def setup_wizard():
 
         elif v == "8":
             console.print()
-            console.print("  [bold cyan]Rule-Based Strategy[/] — build custom conditions & actions")
+            console.print("  [bold cyan]Rule-Based Strategy[/] - build custom conditions & actions")
             console.print("  [dim]Each rule: IF <condition> THEN <action>[/]")
             console.print()
 
@@ -4826,7 +5224,7 @@ def setup_wizard():
                         console.print("    [yellow]All rules cleared.[/]\n")
 
                 else:
-                    # No existing rules — go straight to builder
+                    # No existing rules - go straight to builder
                     console.print("  [dim]No rules yet. Let's build some.[/]\n")
                     rule = _build_one_rule()
                     if rule is _BACK:
@@ -4841,13 +5239,13 @@ def setup_wizard():
                 state.custom_rules_text = json.dumps([r.to_dict() for r in state.custom_rules])
                 console.print(f"  [bold green]→ {len(state.custom_rules)} rule(s) configured[/]\n")
             else:
-                console.print("  [yellow]No rules configured — will use Flat bet.[/]\n")
+                console.print("  [yellow]No rules configured - will use Flat bet.[/]\n")
 
         console.print()
         return True
 
     def step_stop_conditions():
-        console.print(Rule("[bold cyan]Step 5 / 7 — Stop Conditions[/]"))
+        console.print(Rule("[bold cyan]Step 5 / 7 - Stop Conditions[/]"))
         console.print("  [dim]Enter to keep current  |  'none' to clear  |  'back' for previous step[/]\n")
 
         v = _ask_optional(f"Stop when profit reaches ({state.currency.upper()})", state.max_profit)
@@ -4875,7 +5273,7 @@ def setup_wizard():
             return False
         state.stop_on_balance = float(v) if v else None
 
-        console.print("\n  [bold]Profit-based bet increment[/] [dim]— auto-raise base bet as profit grows[/]")
+        console.print("\n  [bold]Profit-based bet increment[/] [dim]- auto-raise base bet as profit grows[/]")
         v = _ask_optional(f"Profit threshold to trigger increment ({state.currency.upper()})", state.profit_threshold)
         if v is _BACK:
             return False
@@ -4903,7 +5301,7 @@ def setup_wizard():
 
     def step_advanced_tuning():
         """Optional Phase 2 session tuning: recurring, streak delays, basebet_pct, milestones."""
-        console.print(Rule("[bold cyan]Step 5b / 7 — Advanced session tuning (optional)[/]"))
+        console.print(Rule("[bold cyan]Step 5b / 7 - Advanced session tuning (optional)[/]"))
         gate = _ask("Configure advanced tuning? (y/N)",
                     default="y" if (state.recurring or state.streak_reset_losses or state.basebet_pct or state.streak_delay_loss[0] or
                                     state.streak_delay_win[0] or state.streak_delay_bets[0] or
@@ -4915,23 +5313,23 @@ def setup_wizard():
 
         console.print("  [dim]Enter to keep current  |  'none' to clear  |  'back' for previous step[/]\n")
 
-        # Recurring — boolean gate; whitelisted stop-reasons drive the restart.
+        # Recurring - boolean gate; whitelisted stop-reasons drive the restart.
         rec = _ask("Recurring restart on non-loss stop? (y/N)",
                    default="y" if state.recurring else "n", choices=["y", "n"])
         state.recurring = (rec.lower() == "y")
 
-        # Recurring delay — seconds to pause between cycles (TG parity, default 60).
+        # Recurring delay - seconds to pause between cycles (TG parity, default 60).
         v = _ask_optional("Pause between recurring cycles in seconds (0 = back-to-back)",
                           state.recurring_delay if state.recurring_delay > 0 else None)
         if v is _BACK:
             return False
         try:
-            # v2.30.6 — cap raised 3600 → 86400 (24 h); no downstream break.
+            # v2.30.6 - cap raised 3600 → 86400 (24 h); no downstream break.
             state.recurring_delay = max(0.0, min(86400.0, float(v))) if v else 0.0
         except ValueError:
             state.recurring_delay = 60.0
 
-        # Streak reset — restart on the first win after N+ losses in a row.
+        # Streak reset - restart on the first win after N+ losses in a row.
         v = _ask_optional("Restart session on first win after N losses in a row (blank/none = off)",
                           state.streak_reset_losses)
         if v is _BACK:
@@ -4950,7 +5348,7 @@ def setup_wizard():
             except ValueError:
                 state.streak_reset_delay = 600.0
 
-        # basebet_pct — dynamic base bet as % of balance.
+        # basebet_pct - dynamic base bet as % of balance.
         v = _ask_optional("Base bet as % of balance (0-1, blank/none to disable)",
                           state.basebet_pct or None)
         if v is _BACK:
@@ -4960,7 +5358,7 @@ def setup_wizard():
         except ValueError:
             state.basebet_pct = 0.0
 
-        # Four streak-format fields — all use "N:X" grammar via _parse_streak_delay.
+        # Four streak-format fields - all use "N:X" grammar via _parse_streak_delay.
         def _ask_streak(prompt, current_tuple):
             current_str = f"{current_tuple[0]}:{current_tuple[1]}" if current_tuple[0] > 0 else None
             raw = _ask_optional(prompt, current_str)
@@ -5009,8 +5407,8 @@ def setup_wizard():
         except ValueError:
             state.milestone_profit = 0.0
 
-        # Phase 5b — pipeline depth (Flat-only, coerced at runtime for other strategies).
-        v = _ask_optional("Pipeline depth (1 = serial / off, up to 8 — Flat only)",
+        # Phase 5b - pipeline depth (Flat-only, coerced at runtime for other strategies).
+        v = _ask_optional("Pipeline depth (1 = serial / off, up to 8 - Flat only)",
                           state.pipeline_depth if state.pipeline_depth > 1 else None)
         if v is _BACK:
             return False
@@ -5023,7 +5421,7 @@ def setup_wizard():
         return True
 
     def step_preset():
-        console.print(Rule("[bold cyan]Step 6 / 7 — Presets[/]"))
+        console.print(Rule("[bold cyan]Step 6 / 7 - Presets[/]"))
         presets = list_presets()
         if presets:
             console.print("  [dim]Saved presets:[/]")
@@ -5042,7 +5440,7 @@ def setup_wizard():
         return True
 
     def step_confirm():
-        console.print(Rule("[bold green]Step 7 / 7 — Review & Confirm[/]"))
+        console.print(Rule("[bold green]Step 7 / 7 - Review & Confirm[/]"))
         rows = [
             ("Currency",        f"{state.currency.upper()}"),
             ("Balance",         f"{state.start_balance:.8f}"),
@@ -5059,13 +5457,13 @@ def setup_wizard():
         if state.strategy_key == "8" and state.custom_rules:
             rows.append(("Rules",       f"{len(state.custom_rules)} custom rule(s)"))
         rows += [
-            ("Max profit",      str(state.max_profit) if state.max_profit else "—"),
-            ("Max loss",        str(state.max_loss)   if state.max_loss   else "—"),
+            ("Max profit",      str(state.max_profit) if state.max_profit else "-"),
+            ("Max loss",        str(state.max_loss)   if state.max_loss   else "-"),
             ("Max bets",        str(state.max_bets)   if state.max_bets   else "Unlimited"),
             ("Max wins",        str(state.max_wins)   if state.max_wins   else "Unlimited"),
-            ("Min balance",     str(state.stop_on_balance) if state.stop_on_balance else "—"),
+            ("Min balance",     str(state.stop_on_balance) if state.stop_on_balance else "-"),
             ("Profit increment", f"+{state.profit_increment:.8f} every {state.profit_threshold} profit"
-                if state.profit_increment is not None and state.profit_threshold else "—"),
+                if state.profit_increment is not None and state.profit_threshold else "-"),
         ]
         for k, val in rows:
             console.print(f"  [dim]{k:18s}[/] [yellow]{val}[/]")
@@ -5083,7 +5481,7 @@ def setup_wizard():
             body_lines = [Text.from_markup(f"[yellow]•[/] {w}") for w in risk_warnings]
             console.print(Panel(
                 Group(*body_lines),
-                title="[bold yellow]⚠️  Heads-up — review before starting[/]",
+                title="[bold yellow]⚠️  Heads-up - review before starting[/]",
                 border_style="yellow",
             ))
             console.print("[dim]  These are safety hints, not blockers. Press y to proceed anyway.[/]")
@@ -5141,7 +5539,7 @@ def _print_summary():
         ("Stop reason",     escape(state.status) if state.status else "-"),
         ("Total Bets",      str(state.total_bets)),
         ("Wins / Losses",   f"{state.wins} / {state.losses}"),
-        ("Win Rate",        f"{state.wins/state.total_bets*100:.1f}%" if state.total_bets else "—"),
+        ("Win Rate",        f"{state.wins/state.total_bets*100:.1f}%" if state.total_bets else "-"),
         ("Profit",          f"{state.profit:+.8f} {state.currency.upper()}"),
         ("Start Balance",   f"{state.start_balance:.8f} {state.currency.upper()}"),
         ("Final Balance",   f"{state.current_balance:.8f} {state.currency.upper()}"),
@@ -5207,7 +5605,7 @@ def _monitor_get_recent_bets(session_id: int, limit: int) -> list:
 
 # ── Monitor layout budget ────────────────────────────
 # Fixed rows produced by _build_monitor_screen (must match add() calls):
-#   Row 1: session-title header (WolfBet v… #N uptime ● LIVE)
+#   Row 1: session-title header (WolfBet v... #N uptime ● LIVE)
 #   Row 2: BAL / PnL / WAG / WR
 #   Row 3: Stats line 1 (Bets / W / L / Str / Best)
 #   Row 4: Stats line 2 (Bet / Base / Hi / Strategy / mult / BPS / BPM / RL / Speed)
@@ -5232,23 +5630,23 @@ def _pct_color(pct: float) -> str:
 
 
 def _build_config_progress_row(d: dict) -> str:
-    """Row 6 — live config-progress summary. One line, elides unset fields."""
+    """Row 6 - live config-progress summary. One line, elides unset fields."""
     segments = []
 
     profit_threshold  = d.get("profit_threshold")
     profit_increment  = d.get("profit_increment")
     if profit_threshold and profit_increment is not None:
-        # v2.30.1 — use the actionable target the bump code writes, not the
+        # v2.30.1 - use the actionable target the bump code writes, not the
         # notification-milestone tracker. Fall back to profit_threshold for
         # pre-v2.30.1 state files that never persisted next_profit_milestone.
         next_ms = float(d.get("next_profit_milestone")
                         or profit_threshold or 0.0)
         profit  = float(d.get("profit", 0.0) or 0.0)
-        # v2.37.0 — run scope measures the total since the run started.
+        # v2.37.0 - run scope measures the total since the run started.
         _run_scope = d.get("profit_increment_scope") == "run"
         if _run_scope:
             profit = float(d.get("run_profit_total", profit) or 0.0)
-        # v2.30.7 — display window-relative progress ("how close to the NEXT
+        # v2.30.7 - display window-relative progress ("how close to the NEXT
         # bump?") not cumulative profit-vs-next-ms. Denominator is one
         # threshold unit; numerator resets after every bump. Matches operator
         # expectation: "Ms 39%" means the current window is 39% done,
@@ -5342,7 +5740,7 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     sid       = d.get("session_id", "?")
     uptime    = str(timedelta(seconds=d.get("uptime_sec", 0)))
     currency  = d.get("currency", "?").upper()
-    strategy  = d.get("strategy", "?")
+    strategy  = _with_phase(d.get("strategy", "?"), d.get("hybrid_phase"))
     mult      = d.get("multiplier", 0)
     rule      = d.get("rule", "over")
     base_bet  = d.get("base_bet", 0)
@@ -5374,7 +5772,7 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     status    = d.get("status", "")
 
     # ── Row 1: Header ─────────────────────────────────
-    # v2.28.4 — surface recurring-pause countdown right in the LIVE indicator
+    # v2.28.4 - surface recurring-pause countdown right in the LIVE indicator
     # so the user can see "sleeping 45m/60m of the recurring_delay" at a glance.
     _pause_left = int(d.get("pause_remaining_sec", 0) or 0)
     _pause_total = int(d.get("pause_total_sec") or d.get("recurring_delay_sec", 0) or 0)
@@ -5416,7 +5814,7 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     elif cs < 0:
         sk = _a("red", f"L{cs}")
     else:
-        sk = _a("dim", "—")
+        sk = _a("dim", "-")
     add(f" {_a('dim', 'Bets')} {_a('bold_white', str(total))}"
         f"  {_a('green', 'W')} {_a('bold_green', str(wins))}"
         f"  {_a('red', 'L')} {_a('bold_red', str(losses))}"
@@ -5491,10 +5889,10 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     add(_a("dim_blue", "─" * term_w))
 
     # ── Row N: Status + controls ──────────────────────
-    status_txt = status[:60] if status else "Monitoring…"
+    status_txt = status[:60] if status else "Monitoring..."
     keys = "[P]ause [R]esume [Q]uit/Detach [S]top daemon"
     add(f" {_a('bold_white', 'MONITOR')} {_a('white', status_txt)}  {_a('dim', keys)}")
-    # v2.28.1 — advertise the config-change path since T/E/H are foreground-TUI only.
+    # v2.28.1 - advertise the config-change path since T/E/H are foreground-TUI only.
     add(f" {_a('dim', 'Tweak config:')} {_a('cyan', 'wolfctl config-set KEY=VALUE')}   "
         f"{_a('dim', '· Export/history:')} {_a('cyan', 'wolfctl export / stats / analytics')}")
 
@@ -5529,7 +5927,7 @@ def cmd_monitor():
         return
 
     sid = d.get("session_id", 0)
-    console.print(f"[dim]Attaching to session #{sid} (PID {pid})… "
+    console.print(f"[dim]Attaching to session #{sid} (PID {pid})... "
                   f"Keys: P/R/S/Q · Tweak: [cyan]wolfctl config-set KEY=VALUE[/][/]")
     time.sleep(0.5)
 
@@ -5608,7 +6006,7 @@ def cmd_monitor():
             sys.stdout.flush()
             time.sleep(0.5)
 
-        # Handle stop action — go through systemctl when systemd manages the
+        # Handle stop action - go through systemctl when systemd manages the
         # daemon so the unit's Restart= policy doesn't respawn on a clean exit.
         # Fall back to SIGTERM for non-systemd installs.
         stopped = False
@@ -5657,7 +6055,7 @@ def cmd_monitor():
 #  --status COMMAND
 # ══════════════════════════════════════════════════════════
 def _read_lane_states() -> list:
-    """v2.35.0 — [(lane, state-dict | None, alive)] for lanes 1..LANES_MAX that have a state file."""
+    """v2.35.0 - [(lane, state-dict | None, alive)] for lanes 1..LANES_MAX that have a state file."""
     out = []
     for k in range(1, LANES_MAX + 1):
         path = _lane_path(_BASE_STATE_PATH, k)
@@ -5681,7 +6079,7 @@ def _read_lane_states() -> list:
 
 
 def cmd_lanes_status():
-    """v2.35.0 — one row per lane + totals (wolfctl status when lanes > 1)."""
+    """v2.35.0 - one row per lane + totals (wolfctl status when lanes > 1)."""
     rows = _read_lane_states()
     if not rows:
         console.print("[yellow]No lane state files found.[/]")
@@ -5692,7 +6090,7 @@ def cmd_lanes_status():
     tot_bps = tot_profit = 0.0
     for k, d, alive in rows:
         if d is None:
-            t.add_row(str(k), "[red]unreadable[/]", *["—"] * 7)
+            t.add_row(str(k), "[red]unreadable[/]", *["-"] * 7)
             continue
         p = float(d.get("profit", 0) or 0)
         bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
@@ -5704,9 +6102,9 @@ def cmd_lanes_status():
             st = "[cyan]PAUSED[/]"
         t.add_row(str(k), st, f"#{d.get('session_id', '?')}",
                   str(timedelta(seconds=int(d.get("uptime_sec", 0) or 0))),
-                  _fmt_duration(d.get("run_uptime_sec")) if d.get("run_uptime_sec") is not None else "—",
+                  _fmt_duration(d.get("run_uptime_sec")) if d.get("run_uptime_sec") is not None else "-",
                   f"[{'green' if p >= 0 else 'red'}]{p:+.8f}[/]",
-                  f"{eq:.8f}" if isinstance(eq, (int, float)) else "—",
+                  f"{eq:.8f}" if isinstance(eq, (int, float)) else "-",
                   f"{bps:.1f}",
                   f"{float(d.get('soft_pace_delay', 0) or 0) * 1000:.0f}ms")
     console.print(t)
@@ -5741,7 +6139,7 @@ def cmd_status():
     pc = "green" if p >= 0 else "red"
     wr = (d["wins"] / d["total_bets"] * 100) if d.get("total_bets") else 0
     uptime = str(timedelta(seconds=d.get("uptime_sec", 0)))
-    # v2.28.4 — recurring-pause countdown: uptime freezes at bet-end; this
+    # v2.28.4 - recurring-pause countdown: uptime freezes at bet-end; this
     # line surfaces "Xm remaining / Ym total" so users know why the session
     # isn't placing bets.
     _pause_left = int(d.get("pause_remaining_sec", 0) or 0)
@@ -5774,12 +6172,13 @@ def cmd_status():
     elif cs < 0:
         sk_now = f"L{cs}"
     else:
-        sk_now = "—"
+        sk_now = "-"
 
     console.print(Rule(f"[bold cyan]WolfBet Session #{d.get('session_id', '?')}  {status}[/]"))
 
     # ── Session Info ──
-    strat_str = f"{d.get('strategy', '?')}  {d.get('multiplier', '?')}x  {d.get('rule', '?')}"
+    strat_str = (f"{_with_phase(d.get('strategy', '?'), d.get('hybrid_phase'))}  "
+                 f"{d.get('multiplier', '?')}x  {d.get('rule', '?')}")
     sk = d.get("strategy_key", "")
     if sk in ("2", "6", "7"):
         strat_str += f"  [dim](loss mult: {d.get('loss_mult', '?')}x)[/]"
@@ -5855,7 +6254,7 @@ def cmd_status():
         else:
             rows.append(("Profit Bump",   f"+{pi:.8f} every {pt} profit"))
 
-    # ── Observability (v2.26.1 — from state file) ──
+    # ── Observability (v2.26.1 - from state file) ──
     api_p50 = d.get("api_p50_ms")
     api_p99 = d.get("api_p99_ms")
     api_peak = d.get("api_peak_ms")
@@ -5867,13 +6266,13 @@ def cmd_status():
     cycle_ms = d.get("cycle_ms")
     overhead_ms = d.get("overhead_ms")
     if cycle_ms:
-        # v2.30.3 — was `1000/cycle_ms` (misleading for auto-games where the
+        # v2.30.3 - was `1000/cycle_ms` (misleading for auto-games where the
         # server batches multiple bets per outer-iteration cycle). Use the
         # same theoretical_max_bps cmd_diagnose displays so status + diagnose
         # agree. Auto-game users get a batching footnote.
         tmax = float(d.get("theoretical_max_bps") or 0)
         auto = is_auto_game(d.get("game", ""))
-        note = "  [dim](batched — cycle is per outer iteration)[/]" if auto else ""
+        note = "  [dim](batched - cycle is per outer iteration)[/]" if auto else ""
         rows.append(("Cycle",
                      f"[magenta]{cycle_ms:.0f}ms[/]/bet "
                      f"(overhead [cyan]{overhead_ms or 0:.0f}ms[/])"
@@ -5951,11 +6350,11 @@ def cmd_list_presets():
 
 
 # ══════════════════════════════════════════════════════════
-#  CONFIG CLI COMMANDS  (v2.25.0 — non-interactive config surface)
+#  CONFIG CLI COMMANDS  (v2.25.0 - non-interactive config surface)
 # ══════════════════════════════════════════════════════════
 _CONFIG_SHOW_FIELDS = [
     ("currency",              "Betting currency"),
-    ("game",                  "Game (dice / limbo / dice-auto / limbo-auto / …)"),
+    ("game",                  "Game (dice / limbo / dice-auto / limbo-auto / ...)"),
     ("rule",                  "Dice rule (over / under)"),
     ("multiplier",            "Payout multiplier"),
     ("bet_value",             "Threshold value on the dice roll"),
@@ -5971,6 +6370,16 @@ _CONFIG_SHOW_FIELDS = [
     ("max_bets",              "Stop after this many bets"),
     ("max_wins",              "Stop after this many wins"),
     ("stop_on_balance",       "Stop when balance floor reached"),
+    ("balance_goal",          "Stop the bot when the balance reaches this"),
+    ("hard_cap",              "Never place a bet that would pass max_loss or the balance floor"),
+    ("restart_after_loss",    "New session after a capped loss (needs recurring, hard_cap, max_loss, stop_on_balance)"),
+    ("hybrid_recover_at",     "Session loss that switches to the recovery strategy"),
+    ("hybrid_recover_strategy", "Recovery strategy key (1-7)"),
+    ("hybrid_recover_bet",    "First recovery bet, as a multiple of base_bet"),
+    ("hybrid_press_at",       "Session profit that switches to the press strategy"),
+    ("hybrid_press_floor",    "Profit at which press hands back to the opening strategy"),
+    ("hybrid_press_strategy", "Press strategy key (1-7)"),
+    ("hybrid_press_bet",      "First press bet, as a multiple of base_bet"),
     ("profit_increment",      "Bump base_bet by this at every profit milestone"),
     ("profit_threshold",      "Profit interval between increments"),
     ("profit_increment_scope", "session = each session's profit · run = total since run start (wolfctl run-reset)"),
@@ -5999,7 +6408,7 @@ def _fmt_config_value(field: str, val) -> str:
     """Render a config value for the --config-show table.
 
     Streak tuples → "N:X"; None → "off"; long strings truncated.
-    Proxy is credential-masked via _mask_proxy — NEVER leak userinfo.
+    Proxy is credential-masked via _mask_proxy - NEVER leak userinfo.
     """
     if field == "proxy":
         return f"[cyan]{_mask_proxy(val)}[/]" if val else "[dim]direct[/]"
@@ -6013,22 +6422,23 @@ def _fmt_config_value(field: str, val) -> str:
     if isinstance(val, float):
         if field in ("base_bet", "bet_value", "max_profit", "max_loss",
                      "stop_on_balance", "profit_increment", "profit_threshold",
-                     "milestone_profit"):
+                     "milestone_profit", "balance_goal", "hybrid_recover_at",
+                     "hybrid_press_at", "hybrid_press_floor"):
             return f"{val:.8f}"
         return f"{val:.4f}".rstrip("0").rstrip(".") or "0"
     if isinstance(val, str) and len(val) > 60:
-        return val[:57] + "…"
+        return val[:57] + "..."
     return str(val)
 
 
 def cmd_config_show():
     """Render the current saved config as a Rich table. No wizard, no side effects."""
-    from rich.table import Table   # local import — avoids top-level cost when unused
+    from rich.table import Table   # local import - avoids top-level cost when unused
     if not load_config():
-        console.print("[yellow]No config saved yet — run the wizard first.[/]")
+        console.print("[yellow]No config saved yet - run the wizard first.[/]")
         console.print("[dim]  Try: python3 wolfbet.py --setup-only[/]")
         sys.exit(1)
-    tbl = Table(title="WolfBet AutoBot — Current Config",
+    tbl = Table(title="WolfBet AutoBot - Current Config",
                 title_style="bold cyan", show_lines=False)
     tbl.add_column("Field",       style="bold yellow", no_wrap=True)
     tbl.add_column("Value",       style="cyan")
@@ -6053,7 +6463,7 @@ def cmd_config_show():
                          f"+{int(live.get('run_bumps') or 0)} bumps)[/]")
         tbl.add_row(field, shown, desc)
     console.print(tbl)
-    # v2.35.0 — parallel lanes: count + per-lane overrides
+    # v2.35.0 - parallel lanes: count + per-lane overrides
     try:
         with open(CONFIG_PATH) as f:
             _raw = json.load(f)
@@ -6077,11 +6487,11 @@ def cmd_config_show():
     except OSError:
         pass
     console.print(f"[dim]Tweak with:[/] "
-                  f"[cyan]python3 wolfbet.py --config-set KEY=VALUE …[/]")
+                  f"[cyan]python3 wolfbet.py --config-set KEY=VALUE ...[/]")
 
 
 def _parse_config_set_pairs(pairs: list) -> dict:
-    """Parse ['max_profit=0.005', 'base_bet=0.0001'] → {'max_profit': '0.005', …}.
+    """Parse ['max_profit=0.005', 'base_bet=0.0001'] → {'max_profit': '0.005', ...}.
 
     Applies _TWEAK_ALIAS. Raises ValueError on malformed input.
     """
@@ -6175,7 +6585,7 @@ def _lane_override_changes(lane: int, lane_pairs: list):
         if k in _LANE_FORBIDDEN_KEYS:
             raise ValueError(f"{k} can't differ per lane (shared by all lanes)")
     if not load_config():
-        raise ValueError("No config saved yet — run the wizard first.")
+        raise ValueError("No config saved yet - run the wizard first.")
     keys = list(_CONFIG_KEYS) + list(_STREAK_TUPLE_KEYS)
     before = {k: getattr(state, k, None) for k in keys}
     _apply_mutation(parsed)
@@ -6204,7 +6614,7 @@ def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> None:
         with open(CONFIG_PATH) as f:
             raw = json.load(f)
     except (OSError, ValueError):
-        console.print("[yellow]No config saved yet — run the wizard first.[/]")
+        console.print("[yellow]No config saved yet - run the wizard first.[/]")
         sys.exit(1)
     lanes = raw.setdefault("lanes", {})
     overrides = lanes.setdefault("overrides", {})
@@ -6244,13 +6654,13 @@ def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> None:
         console.print(f"[dim]Run [cyan]wolfctl lanes {count}[/] to start/stop lane processes "
                       "(restart running lanes so each recomputes its budget share).[/]")
     elif split is not None:
-        console.print("[dim]lane_split applies on the next lane start — run "
+        console.print("[dim]lane_split applies on the next lane start - run "
                       "[cyan]wolfctl restart[/].[/]")
 
 
 def cmd_config_set(pairs: list):
     """Apply KEY=VALUE mutations to the saved config, then persist. No wizard."""
-    # Security: reject api_key — credentials belong in env vars, not shell history.
+    # Security: reject api_key - credentials belong in env vars, not shell history.
     for p in pairs:
         if p.lower().startswith("api_key="):
             console.print("[red]Refusing to write api_key via --config-set.[/]")
@@ -6258,7 +6668,7 @@ def cmd_config_set(pairs: list):
                           "(never in shell history / process args).[/]")
             sys.exit(2)
 
-    # v2.35.0 — lanes=N and laneK.key=value write the lanes block directly.
+    # v2.35.0 - lanes=N and laneK.key=value write the lanes block directly.
     try:
         pairs, per_lane, lanes_count, lane_split = _split_lane_pairs(pairs)
     except ValueError as e:
@@ -6277,7 +6687,7 @@ def cmd_config_set(pairs: list):
         sys.exit(2)
 
     if not load_config():
-        console.print("[yellow]No config saved yet — run the wizard first.[/]")
+        console.print("[yellow]No config saved yet - run the wizard first.[/]")
         console.print("[dim]  Try: python3 wolfbet.py --setup-only[/]")
         sys.exit(1)
 
@@ -6290,7 +6700,7 @@ def cmd_config_set(pairs: list):
             old[canonical] = None
 
     try:
-        # v2.30.6 — capture msgs to surface clamp warnings (⚠ …) beside
+        # v2.30.6 - capture msgs to surface clamp warnings (⚠ ...) beside
         # the standard "old → new" panel. Was: return value discarded and
         # silent clamps went unseen.
         mutation_msgs = _apply_mutation(parsed) or []
@@ -6307,22 +6717,22 @@ def cmd_config_set(pairs: list):
             f"[dim]{_fmt_config_value(canonical, old[canonical])}[/]"
             f"  →  [green]{_fmt_config_value(canonical, new)}[/]"
         )
-    # v2.30.6 — surface clamp warnings (and any other advisory notes) so
+    # v2.30.6 - surface clamp warnings (and any other advisory notes) so
     # silently swallowed input becomes visible to the operator.
     for m in mutation_msgs:
         if isinstance(m, str) and m.startswith("⚠"):
             console.print(f"  [yellow]{m}[/]")
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
 
-    # v2.28.3 — hot-reload the running daemon via SIGHUP so mid-session
+    # v2.28.3 - hot-reload the running daemon via SIGHUP so mid-session
     # tweaks (recurring, stop conditions, delays, milestones, proxy, etc.)
     # take effect immediately without `wolfctl restart`. Unsafe keys
-    # (game / strategy_key / base_bet / api_key / …) get a heads-up here
+    # (game / strategy_key / base_bet / api_key / ...) get a heads-up here
     # AND are logged by the daemon's SIGHUP handler.
     unsafe = [k for k in parsed if k not in _LIVE_RELOAD_KEYS]
     if unsafe:
         console.print(
-            f"[yellow]Note:[/] {len(unsafe)} field(s) need a full restart to apply — "
+            f"[yellow]Note:[/] {len(unsafe)} field(s) need a full restart to apply - "
             f"{', '.join(sorted(unsafe))}. Run [cyan]wolfctl restart[/] when ready."
         )
 
@@ -6342,7 +6752,7 @@ def cmd_config_set(pairs: list):
     except (OSError, ValueError):
         console.print("[dim]Daemon PID stale; changes apply on next "
                       "[cyan]wolfctl start[/].[/]")
-    # v2.35.0 — the base config is shared: reload lanes 2..N too.
+    # v2.35.0 - the base config is shared: reload lanes 2..N too.
     n_lanes = _signal_lane_daemons(range(2, LANES_MAX + 1))
     if n_lanes:
         console.print(f"[dim]{n_lanes} more lane(s) reloaded live config.[/]")
@@ -6354,7 +6764,7 @@ def cmd_config_set(pairs: list):
 def cmd_cleanup(days=None):
     """Purge old bet rows from the DB, preserving session aggregates.
 
-    Delegates to shared/core/database.cleanup_old_bets — session rows
+    Delegates to shared/core/database.cleanup_old_bets - session rows
     (with pre-aggregated stats) are preserved, only per-bet rows for
     sessions ended more than `days` ago are deleted.
     """
@@ -6378,15 +6788,15 @@ def cmd_cleanup(days=None):
 
 
 # ══════════════════════════════════════════════════════════
-#  BPS DIAGNOSTICS  (v2.26.1 — --benchmark, --diagnose)
+#  BPS DIAGNOSTICS  (v2.26.1 - --benchmark, --diagnose)
 # ══════════════════════════════════════════════════════════
-# _percentile — extracted to core.diagnostics in v2.28.0. TG /benchmark
+# _percentile - extracted to core.diagnostics in v2.28.0. TG /benchmark
 # will use the same helper.
 _percentile = percentile
 
 
 def _bench_lanes(n: int, lanes: int) -> dict:
-    """v2.35.0 — `lanes` concurrent clients each fire `n` read-only GETs.
+    """v2.35.0 - `lanes` concurrent clients each fire `n` read-only GETs.
 
     Each client gets its own requests.Session (like separate lane processes).
     Returns {"rps": aggregate req/s, "p50": ms, "ok": int, "total": int,
@@ -6454,7 +6864,7 @@ def cmd_benchmark_lanes(n: int, lanes: int):
     from rich.table import Table
     lanes = max(2, min(LANES_MAX, int(lanes)))
     console.print(f"[dim]Lane benchmark: 1..{lanes} concurrent clients × {n} × "
-                  f"GET /v1/user/balances (read-only, no bets) …[/]")
+                  f"GET /v1/user/balances (read-only, no bets) ...[/]")
     rows = {}
     for k in range(1, lanes + 1):
         rows[k] = _bench_lanes(n, k)
@@ -6465,7 +6875,7 @@ def cmd_benchmark_lanes(n: int, lanes: int):
     for k, r in rows.items():
         tbl.add_row(str(k), f"{r['rps']:.1f}", f"{r['rps'] / base:.2f}×", f"{r['p50']:.0f}",
                     f"{r['ok']}/{r['total']}", str(r["s429"]),
-                    str(r["limit"] or "—"), str(r["remaining_min"] if r["remaining_min"] is not None else "—"))
+                    str(r["limit"] or "-"), str(r["remaining_min"] if r["remaining_min"] is not None else "-"))
     console.print(tbl)
     rec = recommend_lanes(rows[1]["rps"], {k: v for k, v in rows.items() if k > 1})
     console.print(f"\n[bold]Recommended lanes:[/] [bold magenta]{rec}[/]  "
@@ -6477,7 +6887,7 @@ def cmd_benchmark_lanes(n: int, lanes: int):
 def cmd_benchmark(n=None, lanes=None):
     """Fire N read-only API requests and report latency distribution.
 
-    Uses GET /v1/user/balances via the same _http_session as production —
+    Uses GET /v1/user/balances via the same _http_session as production -
     so proxy, User-Agent, and connection pooling all match the live path.
     No bets placed, no DB write, no session started.
     """
@@ -6485,14 +6895,14 @@ def cmd_benchmark(n=None, lanes=None):
     n = 20 if n is None else int(n)
     n = max(3, min(200, n))
     if not load_config():
-        console.print("[red]No config saved yet — run the wizard first.[/]")
+        console.print("[red]No config saved yet - run the wizard first.[/]")
         sys.exit(1)
     if lanes and int(lanes) > 1:
         return cmd_benchmark_lanes(n, lanes)
     url = f"{API_BASE}/v1/user/balances"
     console.print(
         f"[dim]Benchmarking {n} × GET /v1/user/balances "
-        f"(proxy={_mask_proxy(state.proxy)}) …[/]"
+        f"(proxy={_mask_proxy(state.proxy)}) ...[/]"
     )
     samples = []
     statuses = []
@@ -6528,7 +6938,7 @@ def cmd_benchmark(n=None, lanes=None):
     max_bps = 1000.0 / p50 if p50 > 0 else 0.0
     console.print(f"\n[dim]Theoretical max BPS from p50:[/] "
                   f"[bold magenta]{max_bps:.1f}[/] bps")
-    # Verdict — shared with TG /benchmark (extracted to core.diagnostics in v2.28.0).
+    # Verdict - shared with TG /benchmark (extracted to core.diagnostics in v2.28.0).
     colour, msg = benchmark_verdict(p50=p50, p99=p99, statuses=statuses, sample_count=n)
     console.print(f"[bold {colour}]{msg}[/]")
     if failures:
@@ -6561,7 +6971,7 @@ def cmd_diagnose():
     api_p99   = float(d.get("api_p99_ms") or 0)
     overhead  = float(d.get("overhead_ms") or 0)
     cycle_ms  = float(d.get("cycle_ms") or 0)
-    # v2.30.4 — windowed cycle metrics + windowed recent BPS.
+    # v2.30.4 - windowed cycle metrics + windowed recent BPS.
     cycle_p50 = float(d.get("cycle_p50_ms") or cycle_ms)
     cycle_p99 = float(d.get("cycle_p99_ms") or 0)
     cycle_n   = int(d.get("cycle_sample_count") or 0)
@@ -6577,7 +6987,7 @@ def cmd_diagnose():
     pipe_eff  = d.get("pipeline_effective") or 1
     delay_ms  = bet_delay * 1000
 
-    # v2.30.4 — Recent BPS + Efficiency use the same window as Theoretical,
+    # v2.30.4 - Recent BPS + Efficiency use the same window as Theoretical,
     # so the ratio is algebraically consistent. Session-wide Actual stays
     # visible for context. `>` prefix flags the (rare) case where the
     # windowed actual exceeds theoretical (api_avg drift within the window).
@@ -6586,7 +6996,7 @@ def cmd_diagnose():
         _eff_raw = _eff_ref / tmax * 100.0
         eff_display = ">100%" if _eff_raw > 100.0 else f"{_eff_raw:.0f}%"
     else:
-        eff_display = "—"
+        eff_display = "-"
 
     lines = [
         f"[dim]Game:[/] [cyan]{game}[/]  ·  "
@@ -6600,7 +7010,7 @@ def cmd_diagnose():
         (f"[dim]Cycle:[/] median [cyan]{cycle_p50:.0f}ms[/]  "
          f"p99 [cyan]{cycle_p99:.0f}ms[/]  "
          f"[dim](n={cycle_n} samples)[/]"),
-        # v2.30.3 — the three components come from different windows/formulas,
+        # v2.30.3 - the three components come from different windows/formulas,
         # so their sum is a decomposition, not a real equality. Show the
         # measured cycle separately so a divergence is a real signal.
         f"[dim]Cycle breakdown:[/] api_p50=[cyan]{api_p50:.0f}ms[/] "
@@ -6617,7 +7027,7 @@ def cmd_diagnose():
         c = "yellow" if int(auto_rem) <= 3 else "cyan"
         lines.append(f"[dim]/auto/start quota:[/] [{c}]{auto_rem}/20[/]")
 
-    # v2.27.0 — DB writer visibility
+    # v2.27.0 - DB writer visibility
     db_mode = d.get("db_write_mode") or "sync"
     dbw = d.get("db_writer_stats") or {}
     dbw_q  = int(d.get("db_writer_queue") or 0)
@@ -6632,7 +7042,7 @@ def cmd_diagnose():
             f"fallback_sync=[{'red' if dbw_fb else 'cyan'}]{dbw_fb}[/]  hwm=[cyan]{dbw_hwm}[/]"
         )
     else:
-        lines.append(f"[dim]DB writer:[/] mode=[yellow]sync[/] (legacy — per-bet fsync)")
+        lines.append(f"[dim]DB writer:[/] mode=[yellow]sync[/] (legacy - per-bet fsync)")
 
     # Deterministic top blocker
     blockers = [
@@ -6652,15 +7062,15 @@ def cmd_diagnose():
                       "[cyan]wolfctl config-set delay=0[/] for max throughput.")
     elif top_name == "CLI overhead" and overhead > 30:
         if db_mode == "sync":
-            advice.append("• CLI overhead high AND db_write_mode=sync — flip to async: "
+            advice.append("• CLI overhead high AND db_write_mode=sync - flip to async: "
                           "[cyan]wolfctl config-set dbmode=async && wolfctl restart[/]")
         elif dbw_fb == 0 and dbw_hwm < 100 and int(rate_rem or 999) > 200:
-            # v2.30.4 — DB writer + rate limits are all healthy, so overhead
+            # v2.30.4 - DB writer + rate limits are all healthy, so overhead
             # is almost certainly shared-tenancy CPU/disk jitter (VPS silicon),
             # not a fixable code issue. Prior investigation confirmed this
             # pattern on the older-EPYC VPS: 14% slower CPU + 40% slower disk.
             advice.append("• CLI overhead is high on this host.")
-            advice.append("  DB writer + rate limits are healthy — overhead is likely "
+            advice.append("  DB writer + rate limits are healthy - overhead is likely "
                           "shared-tenancy CPU/disk jitter (VPS silicon), not a fixable "
                           "code issue. Consider redeploying on a fresh VPS instance "
                           "(silicon lottery) or a higher-tier plan.")
@@ -6669,11 +7079,11 @@ def cmd_diagnose():
                           "and CPU load on the daemon host.")
     if dbw_fb > 0:
         advice.append(f"• DB writer queue overflowed {dbw_fb} times "
-                      "(async writer is saturating — check disk perf).")
+                      "(async writer is saturating - check disk perf).")
     elif int(rate_rem or 999) <= 3:
         advice.append("• Rate-limit headroom is low. WolfBet may throttle soon.")
     if pipe_eff == 1 and strategy in ("Flat Bet",) and delay_ms == 0:
-        advice.append("• Strategy is Flat with no delay — try "
+        advice.append("• Strategy is Flat with no delay - try "
                       "[cyan]wolfctl pipeline 3[/] for concurrent bets.")
     if not advice:
         advice.append("• Nothing obvious. Session is running near its natural ceiling.")
@@ -6691,7 +7101,7 @@ def cmd_diagnose():
 
 
 def _retention_worker():
-    """Hourly bet-row purge — mirrors tg/engine.py:747-758.
+    """Hourly bet-row purge - mirrors tg/engine.py:747-758.
 
     Runs on the CLI daemon; exits when the session ends.
     """
@@ -6712,7 +7122,7 @@ def _retention_worker():
 #  DATABASE QUERY COMMANDS
 # ══════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════
-#  ANALYTICS — lifetime aggregates (v2.23.0)
+#  ANALYTICS - lifetime aggregates (v2.23.0)
 # ══════════════════════════════════════════════════════════
 def _analytics_lifetime(where: str = "", params=()) -> dict:
     """Top-line aggregates (optionally date-windowed via `where` from
@@ -6767,7 +7177,7 @@ def _analytics_by_game(where: str = "", params=()) -> list:
 
 
 def _analytics_by_lane(where: str = "", params=()) -> list:
-    """v2.35.0 — aggregate sessions grouped by parallel lane."""
+    """v2.35.0 - aggregate sessions grouped by parallel lane."""
     conn = _db_conn()
     try:
         rows = conn.execute(f"""
@@ -6847,7 +7257,7 @@ def _print_analytics_table(title: str, rows: list, key_attr: str, key_label: str
     t.add_column("P/L",      justify="right")
     t.add_column("Wagered",  justify="right")
     for r in rows:
-        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "—"
+        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "-"
         pc = 'green' if r['profit'] >= 0 else 'red'
         ps = '+' if r['profit'] >= 0 else ''
         t.add_row(str(r[key_attr]), f"{r['sessions']:,}", f"{r['bets']:,}",
@@ -6868,7 +7278,7 @@ def _print_top_sessions_table(title: str, rows: list):
     t.add_column("Wagered",  justify="right")
     t.add_column("Started",  style="dim")
     for r in rows:
-        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "—"
+        wr = f"{r['wins']/r['bets']*100:.1f}%" if r['bets'] > 0 else "-"
         pc = 'green' if r['profit'] >= 0 else 'red'
         ps = '+' if r['profit'] >= 0 else ''
         started_short = (r['started_at'] or "").replace("T", " ")[:19]
@@ -6879,12 +7289,12 @@ def _print_top_sessions_table(title: str, rows: list):
 
 
 def cmd_analytics(since: str = None, until: str = None, lane: int = None):
-    """Analytics report — aggregates over all saved sessions, optionally
+    """Analytics report - aggregates over all saved sessions, optionally
     restricted to a started_at date window (v2.31.0)."""
     if not os.path.exists(DB_PATH):
-        console.print("[yellow]No database found — run a session first.[/]")
+        console.print("[yellow]No database found - run a session first.[/]")
         return
-    migrate_db(DB_PATH)  # v2.35.0 — lane column on DBs the bot hasn't opened yet
+    migrate_db(DB_PATH)  # v2.35.0 - lane column on DBs the bot hasn't opened yet
     try:
         where, wparams, wlabel = _stats_date_window(since, until, lane)
     except ValueError as e:
@@ -6892,11 +7302,11 @@ def cmd_analytics(since: str = None, until: str = None, lane: int = None):
         return
     lifetime = _analytics_lifetime(where, wparams)
     if lifetime["sessions_total"] == 0:
-        console.print("[yellow]No sessions in the DB yet — run a session first.[/]")
+        console.print("[yellow]No sessions in the DB yet - run a session first.[/]")
         return
 
     console.print(Rule(
-        f"[bold cyan]{'Range' if (since or until) else 'Lifetime'} analytics[/] — "
+        f"[bold cyan]{'Range' if (since or until) else 'Lifetime'} analytics[/] - "
         f"{lifetime['sessions_total']:,} sessions, "
         f"{lifetime['bets_total']:,} bets, {lifetime['wagered_total']:.8f} wagered"
         f"{wlabel}"))
@@ -6943,7 +7353,7 @@ def cmd_analytics(since: str = None, until: str = None, lane: int = None):
 
 
 def _fmt_duration(sec) -> str:
-    """v2.34.0 — '1mo 20d 2h 3m 2s' (30-day months). Leading zero units are
+    """v2.34.0 - '1mo 20d 2h 3m 2s' (30-day months). Leading zero units are
     dropped; seconds are always shown."""
     sec = max(0, int(sec or 0))
     parts = []
@@ -6956,7 +7366,7 @@ def _fmt_duration(sec) -> str:
 
 
 def _sessions_time_span(conn, where: str = "", params=()):
-    """v2.34.0 — (first_start, last_end, span_sec, bet_sec) for sessions in the window.
+    """v2.34.0 - (first_start, last_end, span_sec, bet_sec) for sessions in the window.
 
     span = first started_at → last ended_at (a running session ends "now").
     bet  = Σ per-session (ended_at − started_at): pauses between sessions excluded.
@@ -6987,12 +7397,12 @@ def _sessions_time_span(conn, where: str = "", params=()):
 
 
 def _stats_date_window(since: str = None, until: str = None, lane: int = None):
-    """v2.30.9 — build an optional date-window clause for the sessions table.
+    """v2.30.9 - build an optional date-window clause for the sessions table.
 
     `since`/`until` accept bare dates (YYYY-MM-DD) or full ISO timestamps.
     A bare `until` date is extended to end-of-day so the day is inclusive.
     ISO strings compare correctly lexically in SQLite. Returns
-    (clause, params, label) where clause is "" or " WHERE …" and label
+    (clause, params, label) where clause is "" or " WHERE ..." and label
     describes the window for headers.
     """
     since = _normalize_window_bound(since)
@@ -7006,7 +7416,7 @@ def _stats_date_window(since: str = None, until: str = None, lane: int = None):
         conds.append("started_at <= ?")
         params.append(u)
     if lane:
-        # v2.35.0 — rows from before lanes existed count as lane 1
+        # v2.35.0 - rows from before lanes existed count as lane 1
         conds.append("COALESCE(lane, 1) = ?")
         params.append(int(lane))
     if not conds:
@@ -7014,15 +7424,15 @@ def _stats_date_window(since: str = None, until: str = None, lane: int = None):
     clause = " WHERE " + " AND ".join(conds)
     label = ""
     if since or until:
-        label = (f"  [{(since or '…').replace('T', ' ')} → "
-                 f"{(until or '…').replace('T', ' ')}]")
+        label = (f"  [{(since or '...').replace('T', ' ')} → "
+                 f"{(until or '...').replace('T', ' ')}]")
     if lane:
         label += f"  \\[lane {int(lane)}]"   # escaped: Rich would eat [lane N] as a tag
     return clause, params, label
 
 
 def _normalize_window_bound(value):
-    """v2.33.0 — turn a --since/--until value into the stored ISO form.
+    """v2.33.0 - turn a --since/--until value into the stored ISO form.
 
     started_at is stored as `datetime.isoformat()` (`2026-11-13T11:35:20.75`).
     A bound typed with a space (`2026-11-13 14:00`) compared wrong as a string
@@ -7045,17 +7455,17 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
     if not os.path.exists(DB_PATH):
         console.print("[yellow]No database found.[/]")
         return
-    migrate_db(DB_PATH)  # v2.35.0 — lane column on DBs the bot hasn't opened yet
+    migrate_db(DB_PATH)  # v2.35.0 - lane column on DBs the bot hasn't opened yet
     try:
         where, params, window_label = _stats_date_window(since, until, lane)
     except ValueError as e:
         console.print(f"[red]{e}[/]")
         return
     conn = _db_conn()
-    # v2.30.9 — range reviews want more rows than the default 20.
+    # v2.30.9 - range reviews want more rows than the default 20.
     limit = 50 if (since or until) else 20
 
-    # session list — fetch all columns
+    # session list - fetch all columns
     rows = conn.execute(f"""
         SELECT id, started_at AS started, ended_at AS ended,
                UPPER(currency) AS cur, strategy, multiplier, base_bet,
@@ -7103,7 +7513,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         s_low_bpm = int(s_low_bpm or 0)
         pc = "green" if profit >= 0 else "red"
         ps = "+" if profit >= 0 else ""
-        wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+        wr = f"{wins/bets*100:.1f}%" if bets > 0 else "-"
         avg_pnl = profit / bets if bets > 0 else 0
         avg_c = "green" if avg_pnl >= 0 else "red"
         avg_s = "+" if avg_pnl >= 0 else ""
@@ -7130,7 +7540,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         console.print(f"    [dim]Streaks:[/] W+{mws}  L-{mls}")
         console.print()
 
-    # totals — v2.30.9: honor the same date window as the listing.
+    # totals - v2.30.9: honor the same date window as the listing.
     span_first, span_last, span_sec, bet_sec = _sessions_time_span(conn, where, params)
     totals = conn.execute(f"""
         SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
@@ -7155,7 +7565,7 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         max_wins_s, avg_wins_s, max_losses_s, avg_losses_s = totals
     pc = "green" if tot_profit >= 0 else "red"
     ps = "+" if tot_profit >= 0 else ""
-    wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "—"
+    wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "-"
     bp_c = "green" if best_profit >= 0 else "red"
     wp_c = "green" if worst_profit >= 0 else "red"
     avg_pnl = tot_profit / tot_bets if tot_bets > 0 else 0
@@ -7260,7 +7670,7 @@ def cmd_session_bets(session_id: int):
         return
     conn = _db_conn()
 
-    # session info — fetch all columns
+    # session info - fetch all columns
     sess = conn.execute("""
         SELECT id, started_at, ended_at,
                UPPER(currency), strategy, base_bet, multiplier,
@@ -7298,13 +7708,13 @@ def cmd_session_bets(session_id: int):
 
     pc = "green" if profit >= 0 else "red"
     ps = "+" if profit >= 0 else ""
-    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "—"
+    wr = f"{wins/bets*100:.1f}%" if bets > 0 else "-"
     avg_pnl = profit / bets if bets > 0 else 0
     avg_c = "green" if avg_pnl >= 0 else "red"
     avg_s = "+" if avg_pnl >= 0 else ""
 
     # compute uptime
-    uptime_str = "—"
+    uptime_str = "-"
     try:
         t0 = datetime.fromisoformat(started) if started else None
         t1 = datetime.fromisoformat(ended) if ended else datetime.now()
@@ -7316,7 +7726,7 @@ def cmd_session_bets(session_id: int):
     except Exception:
         pass
 
-    console.print(Rule(f"[bold cyan]Session #{sid} — Full Stats[/]"))
+    console.print(Rule(f"[bold cyan]Session #{sid} - Full Stats[/]"))
     console.print(f"  [dim]Started:[/]       {(started or '?').replace('T', ' ')}")
     console.print(f"  [dim]Ended:[/]         {(ended or 'running').replace('T', ' ')}")
     console.print(f"  [dim]Uptime:[/]        {uptime_str}")
@@ -7413,12 +7823,13 @@ def cmd_session_bets(session_id: int):
 # ══════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════
-def _load_and_connect():
+def _load_and_connect(daemon: bool = False):
     """Load saved config and fetch fresh balance. Used by --resume and --daemon."""
     if not load_config():
         console.print("[red]No saved config found. Run without --resume first.[/]")
         sys.exit(1)
-    console.print("[dim]Loading saved config…[/]")
+    _exit_on_session_rule_errors(exit_code=0 if daemon else 2)
+    console.print("[dim]Loading saved config...[/]")
     try:
         balances = api_get_balances()
         for b in balances:
@@ -7429,7 +7840,7 @@ def _load_and_connect():
                 state.highest_balance = bal
                 state.lowest_balance  = bal
                 break
-        console.print(f"[green]Resumed — {state.strategy} on {state.currency.upper()} "
+        console.print(f"[green]Resumed - {state.strategy} on {state.currency.upper()} "
                       f"@ {state.base_bet:.8f} base bet[/]")
     except Exception as e:
         detail = f": {e}" if APP_ENV != "production" else ""
@@ -7437,7 +7848,7 @@ def _load_and_connect():
         sys.exit(1)
 
 _HELP_DESCRIPTION = """\
-WolfBet AutoBot — high-speed auto-betting engine.
+WolfBet AutoBot - high-speed auto-betting engine.
 
 Runs a betting strategy against WolfBet, either as an interactive TUI
 dashboard or as an unattended daemon. Ships with a rich strategy engine,
@@ -7486,7 +7897,7 @@ Examples:
   Concurrency
     wolfbet.py --resume --pipeline 3  # 3 in-flight bets (Flat strategies only)
 
-Env vars: see README §Environment Variables (`WOLFBET_API_KEY`, `WOLFBET_DB_PATH`, …)
+Env vars: see README §Environment Variables (`WOLFBET_API_KEY`, `WOLFBET_DB_PATH`, ...)
 Tweak grammar: see README §Runtime tweak grammar (22 params, same on `T` hotkey / TG /tweak / --config-set)
 """
 
@@ -7514,7 +7925,7 @@ def main():
                             "(all lanes, or --lane K)")
     group.add_argument("--list-presets", action="store_true", help="List saved presets")
     group.add_argument("--stats",   action="store_true", help="Show recent 20 sessions in detail")
-    # v2.30.9 fix — modifiers, not commands: must combine WITH --stats, so they
+    # v2.30.9 fix - modifiers, not commands: must combine WITH --stats, so they
     # live on the standalone parser, NOT the mutually-exclusive command group.
     parser.add_argument("--since", metavar="DATE", help="With --stats/--analytics: window start, server-local time "
                              "(YYYY-MM-DD, 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD HH:MM:SS')")
@@ -7530,7 +7941,7 @@ def main():
                        help="Dump the currently saved config as a table (no wizard, no side effects)")
     group.add_argument("--config-set", nargs="+", metavar="KEY=VALUE",
                        help="Non-interactive config mutation. Aliases match the T-hotkey grammar "
-                            "(delay=0.35, maxprofit=0.005, pipeline=3, …). api_key is refused — "
+                            "(delay=0.35, maxprofit=0.005, pipeline=3, ...). api_key is refused - "
                             "use the WOLFBET_API_KEY env var.")
     group.add_argument("--cleanup", nargs="?", type=int, metavar="DAYS", const=-1,
                        help="Purge old bet rows from the DB (default: state.purge_days, "
@@ -7559,6 +7970,13 @@ def main():
                         help="Backtest data source: simulate N synthetic bets (default 1000)")
     parser.add_argument("--seed", type=int, metavar="N",
                         help="RNG seed for --simulate (deterministic reproducibility)")
+    parser.add_argument("--sessions", type=int, metavar="N",
+                        help="Backtest: play N sessions back to back and print session odds and cost")
+    parser.add_argument("--runs", type=int, metavar="R",
+                        help="Backtest: repeat from a fresh balance R times and report how the runs ended "
+                             "(balance goal, balance floor, played out)")
+    parser.add_argument("--balance", type=float, metavar="X",
+                        help="Backtest: starting balance (default 1.0)")
     parser.add_argument("--lane", type=int, metavar="K", default=None,
                         help=f"Parallel lane to run / inspect (1-{LANES_MAX}; default 1). "
                              "With --stats/--analytics: only that lane's sessions")
@@ -7572,7 +7990,7 @@ def main():
 
     args = parser.parse_args()
 
-    # v2.35.0 — lane identity first: every command below (status, monitor,
+    # v2.35.0 - lane identity first: every command below (status, monitor,
     # stop, the daemon itself) then reads/writes this lane's state + pid files.
     try:
         _apply_lane(args.lane)
@@ -7580,7 +7998,7 @@ def main():
         console.print(f"[red]{e}[/]")
         sys.exit(2)
 
-    # Pipeline depth CLI override — applies after config/preset load below.
+    # Pipeline depth CLI override - applies after config/preset load below.
     if args.pipeline is not None:
         args.pipeline = max(1, min(8, args.pipeline))
 
@@ -7677,6 +8095,7 @@ def main():
             console.print(f"[red]Preset '{args.preset}' not found.[/]")
             cmd_list_presets()
             sys.exit(1)
+        _exit_on_session_rule_errors()
         # need API key from main config
         if not state.api_key:
             saved = {}
@@ -7688,7 +8107,7 @@ def main():
             else:
                 console.print("[red]No API key found. Run wizard first.[/]")
                 sys.exit(1)
-        console.print(f"[green]Loaded preset '{args.preset}' — {state.strategy} on "
+        console.print(f"[green]Loaded preset '{args.preset}' - {state.strategy} on "
                       f"{state.currency.upper()} @ {state.base_bet:.8f}[/]")
         # fetch fresh balance
         try:
@@ -7707,20 +8126,21 @@ def main():
             sys.exit(1)
 
     elif args.resume or args.daemon:
-        _load_and_connect()
+        _load_and_connect(daemon=args.daemon)
     else:
         setup_wizard()
+        _exit_on_session_rule_errors()
 
     # Apply CLI --pipeline override AFTER config/preset load so it wins.
     if args.pipeline is not None:
         state.pipeline_depth = args.pipeline
 
-    # v2.35.0 — split budget. Lane K>1 also staggers its first /auto/start.
+    # v2.35.0 - split budget. Lane K>1 also staggers its first /auto/start.
     _init_lane_budget()
     if state.lane > 1:
         time.sleep((state.lane - 1) * 2.0)
 
-    _init_run()           # v2.37.0 — restore run-wide increment (scope run)
+    _init_run()           # v2.37.0 - restore run-wide increment (scope run)
     state.session_id    = _db_start_session()
     _attach_run(state.session_id)
     state.session_start = time.time()
@@ -7743,7 +8163,7 @@ def main():
     # ── Signal handlers ───────────────────────────────────
     def _shutdown(sig, frame):
         state.running = False
-        state.status  = "Interrupted — saving session…"
+        state.status  = "Interrupted - saving session..."
         logger.warning("SESSION END (signal)  bets=%d  profit=%+.8f  balance=%.8f",
                     state.total_bets, state.profit, state.current_balance)
         # Best-effort auto-bet cleanup so the server drops the UUID.
@@ -7752,16 +8172,16 @@ def main():
                 api_auto_stop()
             except Exception:
                 pass
-        # v2.27.0 — drain the async bet-writer so no queued rows are lost.
+        # v2.27.0 - drain the async bet-writer so no queued rows are lost.
         _stop_bet_writer(timeout=5.0)
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
-        # Phase 5a — session summary before exit (best-effort; never blocks save path)
+        # Phase 5a - session summary before exit (best-effort; never blocks save path)
         try:
             console.clear()
             console.print(format_session_summary("Interrupted"))
-            console.print("\n[dim]  Press any key to close…[/]")
+            console.print("\n[dim]  Press any key to close...[/]")
             _getch()
         except Exception as e:
             logger.warning("Could not render session summary on shutdown: %s", e)
@@ -7781,12 +8201,12 @@ def main():
         signal.signal(signal.SIGUSR1, _sig_pause)
     if hasattr(signal, "SIGUSR2"):
         signal.signal(signal.SIGUSR2, _sig_resume)
-    # v2.28.3 — SIGHUP triggers live config reload from disk (used by
+    # v2.28.3 - SIGHUP triggers live config reload from disk (used by
     # `wolfctl config-set` after save to hot-apply mid-session tweaks).
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _sig_reload)
 
-    # ── Startup retention purge — matches TG's tg/engine.py:979 pattern.
+    # ── Startup retention purge - matches TG's tg/engine.py:979 pattern.
     try:
         _startup_deleted = cleanup_old_bets(DB_PATH, bet_age_days=state.purge_days)
         if _startup_deleted:
@@ -7795,7 +8215,7 @@ def main():
     except Exception as _e:
         logger.warning("startup retention purge failed: %s", _e)
 
-    # ── Async bet-writer thread (v2.27.0 — off the hot path) ──
+    # ── Async bet-writer thread (v2.27.0 - off the hot path) ──
     if state.db_write_mode == "async":
         _start_bet_writer()
         logger.info("BET WRITER started (async, batch=%d)", _BET_WRITER_BATCH_SIZE)
@@ -7818,7 +8238,7 @@ def main():
     t_save.start()
 
     # ══════════════════════════════════════════════════════
-    #  DAEMON MODE — no TUI, just bet in background
+    #  DAEMON MODE - no TUI, just bet in background
     # ══════════════════════════════════════════════════════
     if args.daemon:
         console.print(f"[bold green]Daemon started[/]  PID={os.getpid()}  Session #{state.session_id}")
@@ -7832,7 +8252,7 @@ def main():
         except KeyboardInterrupt:
             pass
         state.running = False
-        _stop_bet_writer(timeout=5.0)   # v2.27.0 — drain async writer
+        _stop_bet_writer(timeout=5.0)   # v2.27.0 - drain async writer
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -7842,7 +8262,7 @@ def main():
         return
 
     # ══════════════════════════════════════════════════════
-    #  TUI MODE — interactive dashboard (direct ANSI rendering)
+    #  TUI MODE - interactive dashboard (direct ANSI rendering)
     # ══════════════════════════════════════════════════════
     t_input = threading.Thread(target=input_handler, daemon=True, name="InputHandler")
     t_input.start()
@@ -7872,7 +8292,7 @@ def main():
         sys.stdout.flush()
         time.sleep(1.0)
     finally:
-        # Restore terminal — order matters
+        # Restore terminal - order matters
         sys.stdout.write("\033[?25h")    # show cursor
         sys.stdout.write("\033[?1049l")  # leave alt screen
         sys.stdout.write("\033[0m")      # reset colors/attrs
@@ -7893,7 +8313,7 @@ def main():
         sys.stdout.write("\033c")  # full terminal reset (RIS)
         sys.stdout.flush()
 
-    _stop_bet_writer(timeout=5.0)   # v2.27.0 — drain async writer
+    _stop_bet_writer(timeout=5.0)   # v2.27.0 - drain async writer
     _db_save_session()
     _cleanup_state_file()
     _print_summary()

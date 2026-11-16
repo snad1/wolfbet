@@ -1,7 +1,7 @@
-"""Phase 5v — wolfctl v3.7 self-heal + CLI restart + wizard banner (v2.30.2).
+"""Phase 5v - wolfctl v3.7 self-heal + CLI restart + wizard banner (v2.30.2).
 
 Three defects (v2.30.1 era):
-  A) `wolfctl update` couldn't self-upgrade old (v3.1) installs — no drift
+  A) `wolfctl update` couldn't self-upgrade old (v3.1) installs - no drift
      warning surfaced so operators saw "Already up to date" while their
      installed dispatcher was stale.
   B) `wolfctl update` refreshed wolfbet.py on disk but never restarted the
@@ -37,7 +37,7 @@ def _wolfctl_src() -> str:
 
 # ── Version bumps ────────────────────────────────────────
 def test_wolfbet_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.38.0"
 
 
 def test_wolfctl_version_constant_current():
@@ -74,7 +74,7 @@ def test_wolfctl_update_reads_repo_version_from_script():
 # ── Defect B: CLI restart on update ──────────────────────
 def test_wolfctl_update_restarts_cli_daemon():
     src = _wolfctl_src()
-    # Two systemctl restart blocks now — one for $TG_SERVICE, one for $SERVICE.
+    # Two systemctl restart blocks now - one for $TG_SERVICE, one for $SERVICE.
     assert 'systemctl --user restart "$SERVICE"' in src, \
         "CLI daemon restart block missing"
     assert src.count('systemctl --user is-active --quiet "$SERVICE"') >= 1
@@ -103,7 +103,7 @@ def test_wolfctl_help_subcommands_all_dispatch():
     """Regression lock: prevent a v3.1-style shipping-old-dispatcher recurrence.
     Every command advertised in `usage()` must have a matching case branch."""
     src = _wolfctl_src()
-    # Grab advertised subcommand names from `wolfctl X …` lines in usage.
+    # Grab advertised subcommand names from `wolfctl X ...` lines in usage.
     advertised = set()
     for m in re.finditer(r"^\s*echo\s+\"    wolfctl\s+([a-z][a-z0-9-]*)",
                          src, re.MULTILINE):

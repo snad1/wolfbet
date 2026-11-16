@@ -1,6 +1,6 @@
-"""Phase 5z — Recent + Theoretical use the same statistic (v2.30.5).
+"""Phase 5z - Recent + Theoretical use the same statistic (v2.30.5).
 
-v2.30.4's Efficiency ratio was `Recent (cycle_p50) / Theoretical (api_mean)` —
+v2.30.4's Efficiency ratio was `Recent (cycle_p50) / Theoretical (api_mean)` -
 median vs mean from different distributions. On right-skewed traffic (a few
 slow API requests) median < mean, so Recent > Theoretical fired ">100%" as
 the default reading. v2.30.5 switches Recent to cycle_mean so both sides
@@ -36,7 +36,7 @@ def _reset():
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.38.0"
 
 
 # ── cycle_mean helper ────────────────────────────────────
@@ -55,7 +55,7 @@ def test_cycle_mean_matches_python_mean():
 
 # ── Recent BPS now derives from cycle_mean ───────────────
 def test_recent_bps_uses_cycle_mean_not_p50():
-    """The whole v2.30.5 point — Recent must use the same statistic as
+    """The whole v2.30.5 point - Recent must use the same statistic as
     Theoretical. Feed a right-skewed cycle distribution and check that
     Recent = 1000/mean, NOT 1000/median (would give a much higher BPS)."""
     _reset()

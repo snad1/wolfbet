@@ -1,4 +1,4 @@
-"""Phase 6d — `wolfctl reset` (archive + fresh stats) + date-range `--stats` (v2.30.9 / wolfctl v3.9).
+"""Phase 6d - `wolfctl reset` (archive + fresh stats) + date-range `--stats` (v2.30.9 / wolfctl v3.9).
 
 User asked for a hard statistics reset: clear all sessions/bets, keep config,
 archive old data, and/or evaluate history by date range.
@@ -32,7 +32,7 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.37.2"
+    assert wb.VERSION == "2.38.0"
 
 
 def test_wolfctl_version_constant_3_9():
@@ -164,7 +164,7 @@ def test_stats_since_filters_listing_and_totals(monkeypatch, tmp_path, capsys):
 
 
 def test_stats_until_bare_date_inclusive_end_of_day(monkeypatch, tmp_path, capsys):
-    """Session 3 started 2026-08-15T20:00 — a bare --until 2026-08-15 must
+    """Session 3 started 2026-08-15T20:00 - a bare --until 2026-08-15 must
     still include it (end-of-day extension)."""
     db = _seed_db(monkeypatch, tmp_path)
     try:
@@ -212,7 +212,7 @@ def test_argparse_has_since_until():
 
 
 def test_since_until_are_modifiers_not_commands():
-    """v2.30.9 hotfix — `--stats --since DATE` was rejected because --since
+    """v2.30.9 hotfix - `--stats --since DATE` was rejected because --since
     sat inside the mutually-exclusive command group. Modifiers must be added
     via parser.add_argument, not group.add_argument."""
     import re as _re
@@ -227,7 +227,7 @@ def test_since_until_are_modifiers_not_commands():
 def test_stats_with_since_parses_functional():
     """Subprocess smoke: the real CLI accepts --stats + --since together.
     (Parser is inline in main(); run the module with a stub HOME so it can
-    never touch a real DB — we only care that argparse doesn't reject.)"""
+    never touch a real DB - we only care that argparse doesn't reject.)"""
     import subprocess
     env = dict(os.environ, APP_ENV="testing")
     env["HOME"] = tempfile.mkdtemp(prefix="wb_argparse_")
