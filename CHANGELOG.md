@@ -1,5 +1,20 @@
 # Changelog
 
+## CLI v2.38.1 - config-set can change the game (2026-11-16)
+
+`wolfctl config-set game=dice` answered `Unknown config field: 'game'`. The game was saved, shown by `config-show` and refused per lane, but it was missing from the list of fields `config-set` and the `T` hotkey accept, so the only ways to change it were the wizard or hand-editing the config file.
+
+- `game` joins that list. The value is checked against the games the bot knows, and an unknown one is refused with the valid values named: `game must be one of dice, dice-auto, dice-manual, limbo, limbo-auto, got 'slots'`.
+- Changing the game clears a live auto-bet cycle, so no server cycle keeps running under the old game.
+- The change needs a full restart; `config-set` already names it in the restart note, and the setting is not live-reloadable.
+- Per-lane overrides still refuse it, because every lane must bet the same game.
+
+`rule`, `currency` and `strategy_key` remain wizard-only; adding `rule` also means re-deriving `bet_value`, which is a separate change.
+
+**Tests**: seven cases added to `tests/test_phase5d_config_cli.py` (parse, every known game, unknown game refused with the state unchanged, the stale cycle cleared, no change no clear, restart-only, lane refusal). Version assertions bumped. **991 total passing.**
+
+`VERSION` `2.38.0` -> `2.38.1`.
+
 ## CLI v2.38.0 - session box: pre-bet loss cap, phases, loss restart, balance goal (2026-11-16)
 
 A session can now run inside a box: a loss cap checked before every bet, a cash-out, and an optional change of strategy by session profit. The bot can start a new session after a capped loss and stop for good at a balance goal or at the balance floor. A multi-session backtest shows what a setup does before it bets real money.

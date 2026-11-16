@@ -138,12 +138,13 @@ Inspect or mutate the saved config without walking the wizard:
 python3 wolfbet.py --config-show                        # dump current config as a table
 python3 wolfbet.py --config-set maxprofit=0.005 delay=0.35
 python3 wolfbet.py --config-set pipeline=3 recurring=on
+python3 wolfbet.py --config-set game=dice            # dice / dice-manual / limbo / dice-auto / limbo-auto
 ```
 
 - `--config-show` reads `~/.wolfbet_autobot.json`, renders a Rich table (Field / Value / Description), and prints file path + mode. API key is masked.
 - `--config-set KEY=VALUE [KEY=VALUE …]` mutates one or more fields, then persists via `save_config()`. Aliases are the same as the `T` hotkey grammar (`delay` → `bet_delay`, `maxprofit` → `max_profit`, `pipeline` → `pipeline_depth`, …).
 - **`api_key=…` is refused.** Credentials belong in the `WOLFBET_API_KEY` env var, not shell history.
-- Unknown fields and malformed pairs exit non-zero with a clear error.
+- Unknown fields and malformed pairs exit non-zero with a clear error. `game` is checked against the games the bot supports, and changing it clears a live auto-bet cycle.
 - **Live reload** (v2.28.3): if the daemon is running, `wolfctl config-set` sends `SIGHUP` after saving, and the daemon hot-applies safe fields (recurring, stop conditions, delays, milestones, pipeline depth, proxy, retention, …) in place. Unsafe fields (`game`, `strategy_key`, `base_bet`, `api_key`, …) print a heads-up that a full `wolfctl restart` is required. Nothing to remember — the command tells you which path it took.
 
 ### First real run

@@ -398,6 +398,7 @@ _TWEAK_PARAMS = {
     "recurring", "recurring_delay",
     "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
+    "game",
     "pipeline_depth",
     "proxy", "purge_days",
     "db_write_mode",
@@ -642,6 +643,17 @@ def _apply_mutation(changes: dict) -> list:
 
     # ── Strategy-config changes - auto games clear UUID for fresh restart ──
     strategy_touched = False
+    if "game" in changes:
+        game = str(changes["game"]).strip().lower()
+        if game not in GAME_ENDPOINTS:
+            raise ValueError(f"game must be one of {', '.join(sorted(GAME_ENDPOINTS))}, "
+                             f"got {game!r}")
+        if is_auto_game(state.game) and state._auto_uuid:
+            with state.lock:
+                state._auto_uuid = None
+            msgs.append("Auto-bet UUID cleared - restarts on next bet")
+        state.game = game
+        msgs.append(f"Game: {GAME_LABELS.get(game, game)} (restart to apply)")
     if "base_bet" in changes:
         state.base_bet = float(changes["base_bet"])
         state.current_bet = state.base_bet
@@ -884,7 +896,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 - lane 1 path
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.38.0"
+VERSION      = "2.38.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──

@@ -1133,4 +1133,4 @@ def test_backtest_command_refuses_rules_that_cannot_work(monkeypatch, tmp_path, 
 
 
 def test_version():
-    assert wb.VERSION == "2.38.0"
+    assert wb.VERSION == "2.38.1"
