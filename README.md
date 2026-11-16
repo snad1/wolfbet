@@ -550,8 +550,27 @@ wolfctl config-set restart_after_loss=on stop_on_balance=FLOOR balance_goal=GOAL
 Check a setup before it bets real money:
 
 ```bash
-wolfctl backtest --sessions 200000 --seed 1
+wolfctl backtest --sessions 200000 --seed 1   # same rolls every time: compare setups
+wolfctl backtest --sessions 2000              # new rolls every run: see the spread
 ```
+
+### Watch the switching live
+
+Flat 1 sat; at -100 sats switch to Martingale from 25; at +20 sats switch to Paroli from 10; cash out at +50; cap 1,000:
+
+```bash
+wolfctl config-set game=dice strategy_key=1 base_bet=0.00000001 loss_mult=2 win_mult=2 \
+  max_profit=0.0000005 max_loss=0.00001 \
+  hybrid_recover_at=0.000001 hybrid_recover_strategy=2 hybrid_recover_bet=25 \
+  hybrid_press_at=0.0000002 hybrid_press_strategy=5 hybrid_press_bet=10 \
+  recurring=on recurring_delay=2 restart_after_loss=on \
+  stop_on_balance=FLOOR balance_goal=GOAL
+wolfctl restart
+wolfctl monitor                                                    # phase beside the strategy
+tail -f ~/.wolfbet_logs/wolfbet.log | grep -E "PHASE|SESSION END"   # one line per switch / session
+```
+
+Measured with the bot's code: about 6.7 switches and 9,000 bets per session (about 5 minutes), 82% of sessions in profit, about -839 sats when one fails, about -1,085 sats an hour overall.
 
 ### Limits
 

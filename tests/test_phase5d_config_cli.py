@@ -280,3 +280,46 @@ def test_game_cannot_differ_per_lane():
         assert "can't differ per lane" in str(e)
     else:
         raise AssertionError("expected ValueError for a per-lane game override")
+
+
+# ── the opening strategy is settable from config-set ──────
+def test_mutation_sets_the_opening_strategy():
+    _reset_mutated_state()
+    wb.state.strategy_key = "2"
+    wb.state.strategy = "Martingale"
+    wb.state.dalembert_unit = 3
+    wb.state.paroli_count = 2
+    msgs = wb._apply_mutation({"strategy_key": "1"})
+    assert (wb.state.strategy_key, wb.state.strategy) == ("1", "Flat Bet")
+    assert (wb.state.dalembert_unit, wb.state.paroli_count) == (0, 0)
+    assert any("restart to apply" in m for m in msgs)
+
+
+def test_strategy_alias_resolves_to_the_key():
+    assert wb._parse_config_set_pairs(["strategy=4"]) == {"strategy_key": "4"}
+    _reset_mutated_state()
+    wb._apply_mutation({"strategy_key": "4"})
+    assert wb.state.strategy == "D'Alembert"
+
+
+def test_mutation_refuses_an_unknown_strategy():
+    _reset_mutated_state()
+    wb.state.strategy_key = "2"
+    try:
+        wb._apply_mutation({"strategy_key": "9"})
+    except ValueError as e:
+        assert "strategy_key must be one of" in str(e)
+    else:
+        raise AssertionError("expected ValueError for strategy_key 9")
+    assert wb.state.strategy_key == "2"
+
+
+def test_strategy_change_clears_a_live_auto_bet_cycle():
+    _reset_mutated_state()
+    wb.state._auto_uuid = "live"
+    wb._apply_mutation({"strategy_key": "1"})
+    assert wb.state._auto_uuid is None
+
+
+def test_strategy_needs_a_restart_to_apply():
+    assert "strategy_key" not in wb._LIVE_RELOAD_KEYS

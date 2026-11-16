@@ -328,6 +328,7 @@ def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
         state.lowest_balance  = state.current_balance
         state.current_bet    = state.base_bet
         state.hybrid_phase   = PHASE_BASE
+        state.hybrid_switches = 0
         state.dalembert_unit = 0
         state.paroli_count   = 0
         # Reset auto-bet UUID so betting_loop fires a fresh /auto/start next tick.
@@ -383,6 +384,7 @@ _TWEAK_ALIAS = {
     "purgedays":   "purge_days",
     "dbmode":      "db_write_mode",
     "dbwritemode": "db_write_mode",
+    "strategy":    "strategy_key",
 }
 _SESSION_RULE_KEYS = (
     "hard_cap", "restart_after_loss", "balance_goal",
@@ -398,7 +400,7 @@ _TWEAK_PARAMS = {
     "recurring", "recurring_delay",
     "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
-    "game",
+    "game", "strategy_key",
     "pipeline_depth",
     "proxy", "purge_days",
     "db_write_mode",
@@ -654,6 +656,17 @@ def _apply_mutation(changes: dict) -> list:
             msgs.append("Auto-bet UUID cleared - restarts on next bet")
         state.game = game
         msgs.append(f"Game: {GAME_LABELS.get(game, game)} (restart to apply)")
+    if "strategy_key" in changes:
+        key = str(changes["strategy_key"]).strip()
+        if key not in STRATEGY_NAMES:
+            raise ValueError(f"strategy_key must be one of {', '.join(sorted(STRATEGY_NAMES))}, "
+                             f"got {key!r}")
+        state.strategy_key = key
+        state.strategy = STRATEGY_NAMES[key]
+        state.dalembert_unit = 0
+        state.paroli_count = 0
+        msgs.append(f"Strategy: {state.strategy} (restart to apply)")
+        strategy_touched = True
     if "base_bet" in changes:
         state.base_bet = float(changes["base_bet"])
         state.current_bet = state.base_bet
@@ -896,7 +909,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0 - lane 1 path
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.38.1"
+VERSION      = "2.38.2"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -2253,15 +2266,17 @@ def _hybrid_step() -> bool:
                             state.hybrid_press_at, state.hybrid_press_floor)
     if target == state.hybrid_phase:
         return False
-    previous = state.hybrid_phase
+    previous, previous_name = state.hybrid_phase, STRATEGY_NAMES.get(_active_strategy_key(), "?")
     with state.lock:
         state.hybrid_phase = target
         state.hybrid_switches += 1
         state.current_bet = _active_base_bet()
         state.dalembert_unit = 0
         state.paroli_count = 0
-    logger.info("PHASE %s -> %s at profit %+.8f, next bet %.8f",
-                previous, target, state.profit, state.current_bet)
+    logger.warning("PHASE session %s: %s (%s) -> %s (%s) at profit %+.8f, next bet %.8f",
+                   state.session_id, previous, previous_name, target,
+                   STRATEGY_NAMES.get(_active_strategy_key(), "?"),
+                   round(state.profit, 8) or 0.0, state.current_bet)
     if is_auto_game(state.game):
         api_auto_stop()
     return True
@@ -2617,6 +2632,9 @@ def betting_loop():
         # ── stop-condition check ─────────────────────────
         stop, reason = should_stop()
         if stop:
+            logger.warning("SESSION END %s: %s after %d bets, %d phase switches, balance %.8f",
+                           state.session_id, reason, state.total_bets,
+                           state.hybrid_switches, state.current_balance)
             if _should_recurring_restart(reason):
                 logger.info("RECURRING RESTART after: %s", reason)
                 # Best-effort: stop the old auto UUID before spinning up a new session.
@@ -3498,6 +3516,20 @@ def _print_backtest_table(totals: dict, balance: float) -> None:
 
 
 def _run_backtest(args) -> None:
+    """Run a backtest without writing to the live log.
+
+    Each simulated phase switch would otherwise log a warning, and a 200,000
+    session backtest would bury the live bot's timeline. Errors still log.
+    """
+    previous_level = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        _run_backtest_body(args)
+    finally:
+        logger.setLevel(previous_level)
+
+
+def _run_backtest_body(args) -> None:
     """Backtest entry point: load config → build source → run backtest_loop → summary.
 
     Config source is (in order): explicit --preset NAME, else the wizard's

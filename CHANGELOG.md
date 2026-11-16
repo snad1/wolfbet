@@ -1,5 +1,20 @@
 # Changelog
 
+## CLI v2.38.2 - see the strategy switching live (2026-11-16)
+
+With phases on, a strategy switch was logged at INFO while the live log level is WARNING, so nothing showed; the only sign was `phase recover` beside the strategy in the monitor. The opening strategy also could not be set from `config-set`.
+
+- Every phase switch writes one line to the live log: `PHASE session 152: base (Flat Bet) -> recover (Martingale) at profit -0.00000100, next bet 0.00000025`.
+- Every session end writes one line: `SESSION END 152: Profit target reached: +0.00000050 after 5040 bets, 7 phase switches, balance 2.21898968`.
+- `grep -E "PHASE|SESSION END" ~/.wolfbet_logs/wolfbet.log` now reads as a timeline of the run. Both lines fire per switch and per session, never per bet.
+- `config-set strategy_key=1` (alias `strategy`) sets the opening strategy, keys 1-8; an unknown key is refused with the valid keys named. It resets the D'Alembert and Paroli counters, clears a live auto-bet cycle and needs a restart.
+- A backtest no longer writes to the live log, so 200,000 simulated sessions do not bury the live timeline.
+- Fix: the switch count shown per session now starts at zero in every recurring session; it used to carry over.
+
+**Tests**: 10 new cases across `tests/test_phase14_session_box.py` and `tests/test_phase5d_config_cli.py`. Version assertions bumped. **1001 total passing.**
+
+`VERSION` `2.38.1` -> `2.38.2`.
+
 ## CLI v2.38.1 - config-set can change the game (2026-11-16)
 
 `wolfctl config-set game=dice` answered `Unknown config field: 'game'`. The game was saved, shown by `config-show` and refused per lane, but it was missing from the list of fields `config-set` and the `T` hotkey accept, so the only ways to change it were the wizard or hand-editing the config file.

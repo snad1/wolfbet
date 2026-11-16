@@ -1133,4 +1133,73 @@ def test_backtest_command_refuses_rules_that_cannot_work(monkeypatch, tmp_path, 
 
 
 def test_version():
-    assert wb.VERSION == "2.38.1"
+    assert wb.VERSION == "2.38.2"
+
+
+# ── the switching is visible in the live log ──────────────
+def test_phase_switch_is_logged_where_the_owner_can_see_it(monkeypatch, caplog):
+    s = wb.state
+    monkeypatch.setattr(wb, "api_auto_stop", lambda: None)
+    s.strategy_key = "1"
+    s.base_bet = SAT
+    s.session_id = 152
+    s.hybrid_recover_at = 100 * SAT
+    s.hybrid_recover_bet = 25.0
+    s.profit = -100 * SAT
+    with caplog.at_level("WARNING", logger="wolfbet"):
+        assert wb._hybrid_step() is True
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("PHASE")]
+    assert lines == ["PHASE session 152: base (Flat Bet) -> recover (Martingale) "
+                     "at profit -0.00000100, next bet 0.00000025"]
+
+
+def test_every_session_end_is_logged_before_the_restart(monkeypatch, caplog):
+    s = wb.state
+    _quiet_loop(monkeypatch)
+    _loss_restart_setup()
+    s.profit = 0.0
+    s.stop_on_balance = 1.0 - 5000 * SAT
+    s.balance_goal = 1.0 + 150 * SAT
+    _script_bets(monkeypatch, ["loss"] * 4 + ["win"] * 17 + ["loss"])
+    with caplog.at_level("WARNING", logger="wolfbet"):
+        wb.betting_loop()
+    ends = [r.getMessage() for r in caplog.records if r.getMessage().startswith("SESSION END")]
+    assert len(ends) == 18
+    assert ends[0].startswith("SESSION END 1: Max loss hit: -0.00001500 after 4 bets, 0 phase switches")
+    assert all(", 0 phase switches," in line for line in ends)
+    assert ends[1].startswith("SESSION END 2: Profit target reached")
+    assert ends[-1].startswith("SESSION END 18: Balance goal reached")
+
+
+def test_backtest_writes_nothing_to_the_live_log(monkeypatch, tmp_path, caplog):
+    _saved_bold_config(monkeypatch, tmp_path)
+    wb.state.hybrid_press_at = TARGET / 4
+    wb.state.base_bet = TARGET / 4
+    wb.state.max_loss = 1575 * SAT
+    wb.state.win_mult = 2.0
+    wb.state.hybrid_press_strategy = "3"
+    wb.save_config()
+    level = wb.logger.level
+    with caplog.at_level("WARNING", logger="wolfbet"):
+        wb._run_backtest(_backtest_args(sessions=200))
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert wb.logger.level == level
+
+
+def test_switch_count_starts_again_in_every_session(monkeypatch):
+    s = wb.state
+    _quiet_loop(monkeypatch)
+    s.hybrid_switches = 23
+    wb._reset_session_for_recurring(0)
+    assert s.hybrid_switches == 0
+
+
+def test_phase_line_never_prints_minus_zero(monkeypatch, caplog):
+    s = wb.state
+    monkeypatch.setattr(wb, "api_auto_stop", lambda: None)
+    s.hybrid_recover_at = 100 * SAT
+    s.hybrid_phase = "recover"
+    s.profit = -1e-17
+    with caplog.at_level("WARNING", logger="wolfbet"):
+        wb._hybrid_step()
+    assert "at profit +0.00000000" in caplog.records[-1].getMessage()
