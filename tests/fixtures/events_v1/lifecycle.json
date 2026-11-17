@@ -1,0 +1,18 @@
+{
+  "v": 1,
+  "svc": "wolfbet",
+  "lane": 2,
+  "pid": 4242,
+  "seq": 19,
+  "ts_ms": 1794945626300,
+  "type": "lifecycle",
+  "payload": {
+    "kind": "session_close",
+    "data": {
+      "session_id": 168,
+      "total_bets": 4,
+      "profit": 5e-08,
+      "reason": "Profit target reached"
+    }
+  }
+}
