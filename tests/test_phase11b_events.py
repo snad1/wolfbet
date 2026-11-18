@@ -59,6 +59,13 @@ class _FakeRedis:
         return _FakePipe(self)
 
 
+def _queued_seqs(pub):
+    seqs = []
+    while pub._queue:
+        seqs.append(pub._pop_frame()[1])
+    return seqs
+
+
 def _wait(cond, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -138,7 +145,7 @@ def test_fixture_copies_match_contract_checksums():
             assert hashlib.sha256(f.read()).hexdigest() == digest, name
 
 
-def test_full_queue_drops_oldest_and_counts(publishers):
+def test_full_queue_drops_new_events_and_counts(publishers):
     client = _FakeRedis(gate=threading.Event())
     pub = publishers(client, queue_max=10)
     pub.start()
@@ -147,8 +154,25 @@ def test_full_queue_drops_oldest_and_counts(publishers):
     for _ in range(25):
         pub.emit_bet(_BET)
     assert pub.stats()["overflow"] == 15
-    assert pub.stats()["queued"] == 26
-    assert [item[1] for item in pub._queue] == list(range(16, 26))
+    assert pub.stats()["queued"] == 11
+    assert _queued_seqs(pub) == list(range(1, 11))
+
+
+def test_reserve_skips_a_full_queue_but_still_uses_up_the_seq(publishers):
+    client = _FakeRedis(gate=threading.Event())
+    pub = publishers(client, queue_max=2)
+    assert pub.reserve() is False
+    pub.start()
+    pub.emit_bet(_BET)
+    assert client.blocked.wait(2)
+    assert pub.reserve() is True
+    pub.emit_bet(_BET)
+    pub.emit_bet(_BET)
+    assert pub.reserve() is False
+    assert pub.stats()["overflow"] == 1
+    pub.emit_bet(_BET)
+    assert _queued_seqs(pub) == [1, 2]
+    assert pub.stats()["overflow"] == 2
 
 
 def test_redis_errors_never_reach_the_caller_and_recover(publishers, caplog):

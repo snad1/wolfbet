@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI v2.41.1 - event queue that never slows the betting thread (2026-11-18)
+
+Measured with the bet-path bench at 20,000 fake bets per second, then fixed at the cause.
+
+- Queued events are now flat runs of plain values instead of tuples. Before, every queued bet kept two garbage-collected objects alive, so with Redis down or slow the 50,000-event queue made the collector run 140 to 250 times per bench run, with pauses of 3 to 7 ms on the betting thread. Now 10,000 queued bets leave no collected object behind (guard test).
+- When the queue is full, the betting thread only counts the drop and skips building the event (`EventPublisher.reserve`). The newest events are dropped instead of the oldest, and each drop still uses up its `seq`, so the dashboard sees the gap.
+- The sender gives up the interpreter lock every 32 events while it encodes, so the betting thread never waits behind a whole 500-event batch.
+
+**Tests**: `tests/test_phase11f_bench_guard.py` (3, always run); `tests/test_phase11b_events.py` updated for drop-newest; `tests/bench_bet_path.py` adds publisher off / fast / unreachable / slow variants.
+
 ## CLI v2.41.0 / wolfctl v3.13 - turn the dashboard event stream on from wolfctl (2026-11-18)
 
 Events can now be switched on and off like any other setting, live, and checked from `wolfctl status` and `wolfctl doctor`.

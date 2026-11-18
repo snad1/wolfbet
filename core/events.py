@@ -4,8 +4,15 @@ The betting thread only calls the emit_* methods, which build one tuple and
 append it to a bounded deque. A daemon thread drains the deque every 100 ms
 and sends each batch as one pipelined XADD. Redis being slow, down or missing
 never reaches the betting thread: failed batches are dropped and counted, and
-when the deque is full the oldest events are dropped and counted. Every event
-carries a per-process seq, so a consumer sees any loss as a gap.
+when the queue is full new events are dropped and counted, without building
+them (see reserve). Every event carries a per-process seq, and a dropped
+event still uses up its seq, so a consumer sees any loss as a gap.
+
+Queued events are flat frames of plain values (kind, seq, ts_ms, fields...)
+rather than tuples: a bet then leaves no garbage-collected object alive on the
+queue, so a busy queue never makes the collector pause the betting thread.
+The sender also gives up the interpreter lock every few events while it
+encodes, so a betting thread never waits behind a whole batch.
 
 Wire format (schema v1): each stream entry has one field, ``data``, holding
 compact JSON ``{"v", "svc", "lane", "pid", "seq", "ts_ms", "type", "payload"}``.
@@ -33,10 +40,12 @@ LIFECYCLE_KINDS = (
 )
 
 _STREAMS = {"bet": "bets", "state": "state", "lifecycle": "lifecycle"}
+_FRAME_WIDTH = {"bet": 3 + len(BET_FIELDS), "state": 4, "lifecycle": 5}
 _DEFAULT_MAXLEN = {"bets": 200_000, "state": 20_000, "lifecycle": 20_000}
 
 _TICK_S = 0.1
 _BATCH_MAX = 500
+_YIELD_EVERY = 32
 _BACKOFF_MIN_S = 0.5
 _BACKOFF_MAX_S = 30.0
 _LOG_EVERY_S = 60.0
@@ -59,7 +68,8 @@ class EventPublisher:
         self.pid = os.getpid()
         self._prefix = stream_prefix
         self._maxlen = dict(_DEFAULT_MAXLEN, **(maxlen or {}))
-        self._queue = collections.deque(maxlen=queue_max)
+        self._queue = collections.deque()
+        self._queue_max = queue_max * _FRAME_WIDTH["bet"]
         self._seq = itertools.count()
         self._client = client
         self._enabled = False
@@ -74,28 +84,60 @@ class EventPublisher:
         self._connected = False
         self._last_error = ""
 
+    def reserve(self):
+        """True when the next event fits in the queue. When full, count it as lost and return False.
+
+        Lets the betting thread skip building an event that would be dropped anyway.
+        """
+        if not self._enabled:
+            return False
+        if len(self._queue) < self._queue_max:
+            return True
+        next(self._seq)
+        self._overflow += 1
+        return False
+
     def emit_bet(self, fields):
         """Queue one bet; ``fields`` follows BET_FIELDS order."""
+        if len(fields) != len(BET_FIELDS):
+            if self._enabled:
+                next(self._seq)
+                self._dropped += 1
+            return
         self._emit("bet", fields)
 
     def emit_state(self, state):
         """Queue one state snapshot dict."""
-        self._emit("state", state)
+        self._emit("state", (state,))
 
     def emit_lifecycle(self, kind, data):
         """Queue one lifecycle event; ``kind`` is one of LIFECYCLE_KINDS."""
         self._emit("lifecycle", (kind, data))
 
-    def _emit(self, kind, data):
+    def _emit(self, kind, values):
         if not self._enabled:
             return
         try:
-            if len(self._queue) == self._queue.maxlen:
+            seq = next(self._seq)
+            if len(self._queue) >= self._queue_max:
                 self._overflow += 1
-            self._queue.append((kind, next(self._seq), time.time_ns() // 1_000_000, data))
+                return
+            self._queue.extend((kind, seq, time.time_ns() // 1_000_000) + values)
             self._queued += 1
         except Exception:
             pass
+
+    def _pop_frame(self):
+        """Take one queued event off the front as (kind, seq, ts_ms, data)."""
+        q = self._queue
+        kind, seq, ts_ms = q.popleft(), q.popleft(), q.popleft()
+        if kind == "bet":
+            data = tuple(q.popleft() for _ in BET_FIELDS)
+        elif kind == "lifecycle":
+            data = (q.popleft(), q.popleft())
+        else:
+            data = q.popleft()
+        return kind, seq, ts_ms, data
 
     def start(self):
         """Start the sender thread. Returns False when Redis cannot be used."""
@@ -167,11 +209,13 @@ class EventPublisher:
     def _send_batch(self):
         batch = []
         while self._queue and len(batch) < _BATCH_MAX:
-            batch.append(self._queue.popleft())
+            batch.append(self._pop_frame())
         bad = 0
         try:
             pipe = self._client.pipeline(transaction=False)
-            for item in batch:
+            for n, item in enumerate(batch, 1):
+                if n % _YIELD_EVERY == 0:
+                    time.sleep(0)
                 try:
                     stream, text = self.encode(item)
                 except (ValueError, TypeError):

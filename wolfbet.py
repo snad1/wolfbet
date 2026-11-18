@@ -938,7 +938,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.41.0"
+VERSION      = "2.41.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -3956,7 +3956,7 @@ def _db_save_bet_dispatch(bet_data: dict, profit: float, balance: float):
     else:
         _db_save_bet(bet_data, profit, balance)
     pub = _event_publisher
-    if pub is not None:
+    if pub is not None and pub.reserve():
         try:
             pub.emit_bet((
                 state.session_id,
