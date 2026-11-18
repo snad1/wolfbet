@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-progress-v1.json",
+  "title": "Progress line on stderr of a long wolfbet.py --json command",
+  "description": "One JSON object per line, at most about 2 a second, non-decreasing, the last one 1.0.",
+  "type": "object",
+  "required": [
+    "progress"
+  ],
+  "properties": {
+    "progress": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "additionalProperties": false
+}

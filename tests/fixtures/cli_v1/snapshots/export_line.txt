@@ -1,0 +1,2 @@
+✓ Exported 11 bets from session #1 → out.csv (CSV)
+[exit 0]

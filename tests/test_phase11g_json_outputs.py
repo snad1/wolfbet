@@ -389,7 +389,7 @@ def test_cli_without_json_is_unchanged(env):
 def test_schema_copies_match_checksums():
     with open(os.path.join(_FIXTURES, "SHA256SUMS")) as f:
         sums = dict(reversed(line.split()) for line in f if line.strip())
-    assert len(sums) == 9
+    assert len(sums) == 12
     for name, digest in sums.items():
         with open(os.path.join(_FIXTURES, name), "rb") as f:
             assert hashlib.sha256(f.read()).hexdigest() == digest, name

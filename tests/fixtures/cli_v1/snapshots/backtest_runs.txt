@@ -1,0 +1,25 @@
+🧪 BACKTEST MODE  - no API calls, no real balance risk
+
+  Loaded saved config from config.json
+  Simulating up to 20000 bets with seed=1
+
+  Strategy: Martingale  base_bet: 0.00000001  multiplier: 2.0x  rule: over
+
+                                                Backtest result                                                
+┌──────────────────────────────────┬──────────────────────────────────────────────────────────────────────────┐
+│ Sessions finished                │ 60 in 6 run(s)                                                           │
+│ Green sessions                   │ 95.00%  (57 of 60)                                                       │
+│ Average win                      │ +0.00000010                                                              │
+│ Average loss                     │ -0.00000250                                                              │
+│ Worst session                    │ -0.00000254                                                              │
+│ Bets per session                 │ 18.9                                                                     │
+│ Phase switches per session       │ 0.0                                                                      │
+│ Wagered                          │ 0.00004518                                                               │
+│ Net result                       │ -0.00000180  (-3.98 per 100 wagered)                                     │
+│ Long-run cost of that wagering   │ -0.00000045  (-1.00 per 100 wagered)                                     │
+│ Final balance                    │ typical 0.00001100, unlucky 1 in 20 0.00000578, lucky 1 in 20 0.00001100 │
+│ Runs ended: played every session │ 6                                                                        │
+└──────────────────────────────────┴──────────────────────────────────────────────────────────────────────────┘
+  Live, the bot stops after its first losing session (restart_after_loss is off).
+  The net result of a short run is partly luck. The long-run cost is 1% of the amount wagered, whatever the settings.
+[exit 0]

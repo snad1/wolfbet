@@ -1,5 +1,16 @@
 # Changelog
 
+## CLI v2.44.0 - export and backtest results as JSON, safer export paths (2026-11-18)
+
+- `--export PATH --json` prints `{session_id, path, format, rows, bytes, sha256}` for the file it wrote, so whoever picks the file up can check it. PATH may be an existing directory: the file is then `wolfbet-session-<id>.csv` inside it.
+- Export now refuses a path that is a symlink, a missing directory, or anything other than a regular file, and opens the file without following a link created in between. Nothing is written in those cases; the message is `Export path must be a regular file in an existing directory (not a symlink)`, exit 1.
+- `--backtest ... --json` prints one result document: for one session the figures of the session summary and the stop reason; with `--sessions` / `--runs` the figures of the result table (the table now renders from the same data, unchanged on screen). While it runs, stderr carries `{"progress": 0..1}` lines, at most about 2 a second, ending with 1.0. The console stays silent; errors are JSON documents with the usual exit codes.
+- Fix: `--backtest --replay-session ID` on a session with no bets reported "Backtest failed"; the bets are now counted first and the message is `Session #ID has no bets to replay`, exit 1.
+- With `--json`, a failed export write shows the operating-system detail only outside production.
+- Schemas: `casino-dashboard/contracts/schemas/wolfbet-cli-export-v1.json`, `wolfbet-cli-backtest-v1.json`, `wolfbet-cli-progress-v1.json`.
+
+**Tests**: `tests/test_phase11j_export_backtest_json.py` (25): snapshots of the backtest and export output taken before the change, the hash/bytes/rows against the written file, directory targets, symlink / missing directory / FIFO / directory-symlink refusals that leave every file untouched, the backtest figures against the table, identical output for a fixed seed, progress lines validated and throttled, error documents, the real CLI.
+
 ## wolfctl v3.14 - pause, resume and reload, and no command waits for a terminal (2026-11-18)
 
 - New `wolfctl pause [K|all]`, `wolfctl resume [K|all]` and `wolfctl reload [K|all]` (default: every running lane). They send SIGUSR1, SIGUSR2 or SIGHUP to the lane's daemon, which pauses betting, resumes it, or re-reads the saved config. A lane is signalled only when its pid file holds a number and that pid's command line is `wolfbet.py`, so a stale pid file never reaches another program. Exit 1 when no running lane matched, 2 for a bad K.

@@ -1,0 +1,25 @@
+🧪 BACKTEST MODE  - no API calls, no real balance risk
+
+  Loaded saved config from config.json
+  Replaying session #1
+
+  Strategy: Martingale  base_bet: 0.00000001  multiplier: 2.0x  rule: over
+
+                             Backtest result                              
+┌────────────────────────────────┬───────────────────────────────────────┐
+│ Sessions finished              │ 0 in 1 run(s)                         │
+│ Green sessions                 │ none                                  │
+│ Average win                    │ none                                  │
+│ Average loss                   │ none                                  │
+│ Worst session                  │ +0.00000000                           │
+│ Bets per session               │ 11                                    │
+│ Phase switches per session     │ 0                                     │
+│ Wagered                        │ 0.00000027                            │
+│ Net result                     │ +0.00000005  (+18.52 per 100 wagered) │
+│ Long-run cost of that wagering │ -0.00000000  (-1.00 per 100 wagered)  │
+│ Balance                        │ 1.00000000 to 1.00000005              │
+│ Runs ended: the rolls ran out  │ 1                                     │
+└────────────────────────────────┴───────────────────────────────────────┘
+  Live, the bot stops after its first losing session (restart_after_loss is off).
+  The net result of a short run is partly luck. The long-run cost is 1% of the amount wagered, whatever the settings.
+[exit 0]

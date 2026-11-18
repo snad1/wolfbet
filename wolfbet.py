@@ -942,7 +942,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.43.0"
+VERSION      = "2.44.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -2326,7 +2326,7 @@ def _session_rule_errors() -> list:
     return config_errors(cfg)
 
 
-def _exit_on_session_rule_errors(exit_code: int = 2) -> None:
+def _exit_on_session_rule_errors(exit_code: int = 2, as_json: bool = False) -> None:
     """Refuse to start betting with session rules that cannot work, naming each setting.
 
     The service start passes exit_code 0. Its unit restarts the bot after a
@@ -2336,6 +2336,11 @@ def _exit_on_session_rule_errors(exit_code: int = 2) -> None:
     problems = _session_rule_errors()
     if not problems:
         return
+    if as_json:
+        _print_json({"error": {"code": "invalid_config",
+                               "message": "Cannot start: fix these settings first: " + "; ".join(problems)}})
+        logger.error("START REFUSED: %s", "; ".join(problems))
+        sys.exit(exit_code)
     console.print("[red]Cannot start: fix these settings first.[/]")
     for problem in problems:
         console.print(f"  [yellow]{escape(problem)}[/]")
@@ -3410,13 +3415,14 @@ def _apply_backtest_result(result: dict) -> str:
     return bet_state
 
 
-def backtest_loop(source, progress_every: int = 100) -> str:
+def backtest_loop(source, progress_every: int = 100, progress=None, planned: int = 0) -> str:
     """Run the strategy over `source` (iterator of bet-result dicts) with no API calls.
 
     Honours should_stop() and state.running. Stops are checked before a roll is
     drawn, so sessions can run back to back on one source without losing a roll.
     Returns the stop reason, or "" when the rolls ran out or the run was halted.
-    Prints progress every `progress_every` bets (0 disables).
+    Prints progress every `progress_every` bets (0 disables). With `progress`
+    and `planned`, calls progress(bets / planned) every 256 bets.
     """
     rolls = iter(source)
     while state.running:
@@ -3449,6 +3455,8 @@ def backtest_loop(source, progress_every: int = 100) -> str:
         state.current_bet = next_bet
 
         state.status = f"[BACKTEST] bet {state.total_bets}: {bet_state}  bal {state.current_balance:.8f}  p/l {state.profit:+.8f}"
+        if progress is not None and planned and state.total_bets % 256 == 0:
+            progress(state.total_bets / planned)
         if progress_every > 0 and state.total_bets % progress_every == 0:
             console.print(f"  [dim][BACKTEST][/] {state.total_bets} bets  "
                           f"W:{state.wins} L:{state.losses}  "
@@ -3512,18 +3520,20 @@ def _affordable_rolls(rolls):
         yield roll
 
 
-def _run_backtest_sessions(source, sessions: Optional[int], runs: int, balance: float) -> dict:
+def _run_backtest_sessions(source, sessions: Optional[int], runs: int, balance: float,
+                           progress=None) -> dict:
     """Play sessions back to back on one roll source and total the results.
 
     A session that ends on its own stop (cash-out, loss cap, bet or win count)
     is followed by a new one, whatever the live restart settings say. A run
     ends at the balance goal, at the balance floor, when the next bet cannot
-    be paid, after `sessions` sessions, or when the rolls run out.
+    be paid, after `sessions` sessions, or when the rolls run out. `progress`,
+    when given, is called with the share of runs (and sessions) done.
     """
     totals = {"sessions": 0, "green": 0, "won": 0.0, "lost": 0.0, "worst": 0.0,
               "net": 0.0, "wagered": 0.0, "bets": 0, "switches": 0,
               "runs": {}, "finals": []}
-    for _ in range(runs):
+    for run in range(runs):
         outcome = None
         rolls = _affordable_rolls(source)
         _backtest_new_session(balance)
@@ -3547,6 +3557,8 @@ def _run_backtest_sessions(source, sessions: Optional[int], runs: int, balance: 
                     outcome = "played every session"
                 else:
                     _backtest_new_session()
+                if progress is not None and sessions:
+                    progress((run + min(played, sessions) / sessions) / runs)
             elif not reason and not state.running:
                 outcome = _RUN_RULE_STOP
             elif not reason and not _can_pay_next_bet():
@@ -3561,38 +3573,67 @@ def _run_backtest_sessions(source, sessions: Optional[int], runs: int, balance: 
                 outcome = reason
         totals["runs"][outcome] = totals["runs"].get(outcome, 0) + 1
         totals["finals"].append(state.current_balance)
+        if progress is not None:
+            progress((run + 1) / runs)
         if outcome in (_RUN_ROLLS_OUT, _RUN_RULE_STOP):
             break
     return totals
 
 
-def _print_backtest_table(totals: dict, balance: float) -> None:
-    """Print the multi-session backtest result: session odds, cost and how the runs ended."""
+def _backtest_sessions_data(totals: dict, balance: float) -> dict:
+    """The multi-session backtest figures the result table shows (None where it shows "none")."""
     n, green = totals["sessions"], totals["green"]
     red = n - green
     wagered = totals["wagered"]
     finals = sorted(totals["finals"])
+    many = len(finals) > 1
+    return {
+        "sessions": n, "runs": len(finals), "green": green,
+        "green_pct": green / n * 100 if n else None,
+        "avg_win": totals["won"] / green if green else None,
+        "avg_loss": totals["lost"] / red if red else None,
+        "worst": totals["worst"],
+        "bets": totals["bets"], "bets_per_session": totals["bets"] / n if n else None,
+        "switches": totals["switches"],
+        "switches_per_session": totals["switches"] / n if n else None,
+        "wagered": wagered, "net": totals["net"],
+        "net_per_100": totals["net"] / wagered * 100 if wagered else None,
+        "long_run_cost": -_HOUSE_EDGE * wagered,
+        "start_balance": balance,
+        "final_balance": finals[0] if len(finals) == 1 else None,
+        "final_balance_typical": finals[len(finals) // 2] if many else None,
+        "final_balance_unlucky": finals[len(finals) // 20] if many else None,
+        "final_balance_lucky": finals[-1 - len(finals) // 20] if many else None,
+        "runs_ended": dict(sorted(totals["runs"].items(), key=lambda item: -item[1])),
+    }
+
+
+def _print_backtest_table(totals: dict, balance: float) -> None:
+    """Print the multi-session backtest result: session odds, cost and how the runs ended."""
+    d = _backtest_sessions_data(totals, balance)
+    n, green = d["sessions"], d["green"]
     tbl = Table(title="Backtest result", title_style="bold cyan", show_header=False)
     tbl.add_column(style="bold yellow", no_wrap=True)
     tbl.add_column(style="cyan")
-    tbl.add_row("Sessions finished", f"{n:,} in {len(finals):,} run(s)")
-    tbl.add_row("Green sessions", f"{green / n * 100:.2f}%  ({green:,} of {n:,})" if n else "none")
-    tbl.add_row("Average win", f"{totals['won'] / green:+.8f}" if green else "none")
-    tbl.add_row("Average loss", f"{totals['lost'] / red:+.8f}" if red else "none")
-    tbl.add_row("Worst session", f"{totals['worst']:+.8f}")
-    tbl.add_row("Bets per session", f"{totals['bets'] / n:.1f}" if n else str(totals["bets"]))
-    tbl.add_row("Phase switches per session", f"{totals['switches'] / n:.1f}" if n else str(totals["switches"]))
-    tbl.add_row("Wagered", f"{wagered:.8f}")
-    tbl.add_row("Net result", f"{totals['net']:+.8f}"
-                + (f"  ({totals['net'] / wagered * 100:+.2f} per 100 wagered)" if wagered else ""))
-    tbl.add_row("Long-run cost of that wagering", f"{-_HOUSE_EDGE * wagered:+.8f}  (-1.00 per 100 wagered)")
-    if len(finals) == 1:
-        tbl.add_row("Balance", f"{balance:.8f} to {finals[0]:.8f}")
-    elif finals:
-        tbl.add_row("Final balance", f"typical {finals[len(finals) // 2]:.8f}, "
-                                     f"unlucky 1 in 20 {finals[len(finals) // 20]:.8f}, "
-                                     f"lucky 1 in 20 {finals[-1 - len(finals) // 20]:.8f}")
-    for outcome, count in sorted(totals["runs"].items(), key=lambda item: -item[1]):
+    tbl.add_row("Sessions finished", f"{n:,} in {d['runs']:,} run(s)")
+    tbl.add_row("Green sessions", f"{d['green_pct']:.2f}%  ({green:,} of {n:,})" if n else "none")
+    tbl.add_row("Average win", f"{d['avg_win']:+.8f}" if d["avg_win"] is not None else "none")
+    tbl.add_row("Average loss", f"{d['avg_loss']:+.8f}" if d["avg_loss"] is not None else "none")
+    tbl.add_row("Worst session", f"{d['worst']:+.8f}")
+    tbl.add_row("Bets per session", f"{d['bets_per_session']:.1f}" if n else str(d["bets"]))
+    tbl.add_row("Phase switches per session",
+                f"{d['switches_per_session']:.1f}" if n else str(d["switches"]))
+    tbl.add_row("Wagered", f"{d['wagered']:.8f}")
+    tbl.add_row("Net result", f"{d['net']:+.8f}"
+                + (f"  ({d['net_per_100']:+.2f} per 100 wagered)" if d["net_per_100"] is not None else ""))
+    tbl.add_row("Long-run cost of that wagering", f"{d['long_run_cost']:+.8f}  (-1.00 per 100 wagered)")
+    if d["final_balance"] is not None:
+        tbl.add_row("Balance", f"{balance:.8f} to {d['final_balance']:.8f}")
+    elif d["final_balance_typical"] is not None:
+        tbl.add_row("Final balance", f"typical {d['final_balance_typical']:.8f}, "
+                                     f"unlucky 1 in 20 {d['final_balance_unlucky']:.8f}, "
+                                     f"lucky 1 in 20 {d['final_balance_lucky']:.8f}")
+    for outcome, count in d["runs_ended"].items():
         tbl.add_row(f"Runs ended: {escape(outcome)}", f"{count:,}")
     console.print(tbl)
     if not state.recurring:
@@ -3618,6 +3659,38 @@ def _run_backtest(args) -> None:
         logger.setLevel(previous_level)
 
 
+def _json_progress(interval: float = 0.5):
+    """A progress(fraction, final=False) callback writing {"progress": x} lines to stderr.
+
+    At most one line per `interval` seconds, so a long backtest streams about 2 lines
+    a second; final=True always writes.
+    """
+    last = [None]
+
+    def report(fraction: float, final: bool = False) -> None:
+        now = time.monotonic()
+        if not final and last[0] is not None and now - last[0] < interval:
+            return
+        last[0] = now
+        sys.stderr.write(json.dumps({"progress": round(min(1.0, max(0.0, fraction)), 4)}) + "\n")
+        sys.stderr.flush()
+    return report
+
+
+def _backtest_session_data() -> dict:
+    """One backtest session's figures, the ones the session summary prints."""
+    bets = state.total_bets
+    low = state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance
+    return {"bets": bets, "wins": state.wins, "losses": state.losses,
+            "win_rate_pct": state.wins / bets * 100 if bets else 0.0,
+            "profit": state.profit, "wagered": state.wagered,
+            "avg_pnl": state.profit / bets if bets else 0.0,
+            "start_balance": state.start_balance, "end_balance": state.current_balance,
+            "highest_balance": state.highest_balance, "lowest_balance": low,
+            "highest_win": state.highest_win, "biggest_loss": state.biggest_loss,
+            "max_win_streak": state.max_win_streak, "max_loss_streak": state.max_loss_streak}
+
+
 def _run_backtest_body(args) -> None:
     """Backtest entry point: load config → build source → run backtest_loop → summary.
 
@@ -3625,8 +3698,21 @@ def _run_backtest_body(args) -> None:
     saved ~/.wolfbet_autobot.json, else sensible defaults. Never touches the
     DB except to read historical bets in replay mode. With --sessions or --runs
     it plays sessions back to back and prints the result table; otherwise one
-    session and the session summary.
+    session and the session summary. With --json the console stays silent,
+    progress goes to stderr as JSON lines and the result (or error) is one
+    JSON document on stdout; exit codes are the same.
     """
+    as_json = bool(getattr(args, "json", False))
+    if as_json:
+        console.quiet = True
+
+    def fail(code: str, message: str, exit_code: int, rich_line: str) -> None:
+        if as_json:
+            _print_json({"error": {"code": code, "message": message}})
+        else:
+            console.print(rich_line)
+        sys.exit(exit_code)
+
     console.clear()
     console.print("[bold cyan]🧪 BACKTEST MODE[/]  [dim]- no API calls, no real balance risk[/]\n")
     init_db()  # needed for _read_bets in replay; harmless otherwise
@@ -3634,8 +3720,8 @@ def _run_backtest_body(args) -> None:
     # 1. Load config
     if args.preset:
         if not load_preset(args.preset):
-            console.print(f"[red]Preset '{args.preset}' not found.[/]")
-            sys.exit(1)
+            fail("preset_not_found", f"Preset '{args.preset}' not found.", 1,
+                 f"[red]Preset '{args.preset}' not found.[/]")
         console.print(f"  [dim]Loaded preset:[/] [cyan]{args.preset}[/]")
     elif load_config():
         console.print("  [dim]Loaded saved config from[/] [cyan]" + CONFIG_PATH + "[/]")
@@ -3652,14 +3738,14 @@ def _run_backtest_body(args) -> None:
         state.currency       = "usdt"
         state.game           = "dice"
 
-    _exit_on_session_rule_errors()
+    _exit_on_session_rule_errors(as_json=as_json)
     multi = args.sessions is not None or args.runs is not None
     balance = 1.0 if args.balance is None else args.balance     # $1 sandbox default
     if not (math.isfinite(balance) and balance > 0) \
             or (args.sessions is not None and args.sessions < 1) \
             or (args.runs is not None and args.runs < 1):
-        console.print("[red]--balance must be above 0; --sessions and --runs must be 1 or more.[/]")
-        sys.exit(2)
+        message = "--balance must be above 0; --sessions and --runs must be 1 or more."
+        fail("invalid_argument", message, 2, f"[red]{message}[/]")
 
     # 2. Initialise virtual session state (in-memory only)
     state.session_id       = -1
@@ -3671,12 +3757,15 @@ def _run_backtest_body(args) -> None:
 
     # 3. Build the outcome source
     if args.replay_session:
-        try:
-            source = _replay_bets_from_db(args.replay_session, lambda: state.current_bet)
-            console.print(f"  [dim]Replaying session[/] [cyan]#{args.replay_session}[/]\n")
-        except ValueError as e:
-            console.print(f"[red]✗ {e}[/]")
-            sys.exit(1)
+        # The replay source is a generator, so count the bets now: an empty
+        # session must be refused here, not as a failure halfway through the run.
+        planned = len(_read_bets(args.replay_session))
+        if not planned:
+            message = f"Session #{args.replay_session} has no bets to replay"
+            fail("replay_empty", message, 1, f"[red]✗ {message}[/]")
+        source = _replay_bets_from_db(args.replay_session, lambda: state.current_bet)
+        console.print(f"  [dim]Replaying session[/] [cyan]#{args.replay_session}[/]\n")
+        source_info = {"type": "replay", "session_id": args.replay_session}
     else:
         n = args.simulate or (_BACKTEST_ROLL_BUDGET if multi else 1000)
         rng = random.Random(args.seed) if args.seed is not None else random.Random()
@@ -3691,6 +3780,13 @@ def _run_backtest_body(args) -> None:
                     state.current_balance, rng,
                 )
         source = _gen()
+        source_info = {"type": "simulate", "bets": n, "seed": args.seed}
+        planned = n
+
+    progress = _json_progress() if as_json else None
+    head = {"source": source_info,
+            "strategy": {"name": state.strategy, "base_bet": state.base_bet,
+                         "multiplier": state.multiplier, "rule": state.rule}}
 
     # 4. Run the loop (synchronous: fast enough for CLI, no thread noise)
     console.print(f"  [dim]Strategy:[/] [bold]{state.strategy}[/]  "
@@ -3703,20 +3799,34 @@ def _run_backtest_body(args) -> None:
             console.print("  [dim]A replay has one set of rolls: running it once.[/]")
             runs = 1
         try:
-            totals = _run_backtest_sessions(source, args.sessions, runs, balance)
+            totals = _run_backtest_sessions(source, args.sessions, runs, balance, progress=progress)
         except Exception as e:
             detail = f": {e}" if APP_ENV != "production" else ""
-            console.print(f"[red]Backtest failed{detail}. Check the log and try again.[/]")
             logger.exception("BACKTEST error")
-            sys.exit(1)
+            fail("backtest_failed", f"Backtest failed{detail}. Check the log and try again.", 1,
+                 f"[red]Backtest failed{detail}. Check the log and try again.[/]")
+        if as_json:
+            progress(1.0, final=True)
+            _print_json({"mode": "sessions", **head,
+                         "results": _backtest_sessions_data(totals, balance)})
+            return
         _print_backtest_table(totals, balance)
         return
     try:
-        backtest_loop(source, progress_every=max(100, (args.simulate or 1000) // 20))
+        reason = backtest_loop(source, progress_every=0 if as_json else max(100, (args.simulate or 1000) // 20),
+                               progress=progress, planned=planned)
     except Exception as e:
-        console.print(f"[red]✗ Backtest failed:[/] {e}")
         logger.exception("BACKTEST error")
+        if as_json:
+            detail = f": {e}" if APP_ENV != "production" else ""
+            fail("backtest_failed", f"Backtest failed{detail}. Check the log and try again.", 1, "")
+        console.print(f"[red]✗ Backtest failed:[/] {e}")
         sys.exit(1)
+    if as_json:
+        progress(1.0, final=True)
+        _print_json({"mode": "session", **head, "stop_reason": reason or None,
+                     "summary": _backtest_session_data()})
+        return
 
     # 5. Summary
     console.print()
@@ -3724,19 +3834,39 @@ def _run_backtest_body(args) -> None:
     console.print()
 
 
-def _export_session(session_id: int, path: str) -> tuple:
-    """Write a session + its bets to `path`. Format detected from extension.
+class _ExportPathError(ValueError):
+    """An export path that could redirect the write: a symlink, a non-file, or no such directory."""
 
-    Returns (bet_count, format). Raises ValueError if the session is missing
-    or if the file cannot be written.
+
+def _export_target(path: str, session_id: int) -> tuple:
+    """Where an export of `session_id` goes: (absolute file path, "csv" | "json").
+
+    An existing directory gets wolfbet-session-<id>.csv inside it. Otherwise the
+    file must sit in an existing directory and must not be a symlink or any other
+    non-regular file, so the write can never land on a file somewhere else.
     """
-    path = os.path.expanduser(path)
-    fmt = "json" if path.lower().endswith(".json") else "csv"
+    path = os.path.abspath(os.path.expanduser(path))
+    if os.path.isdir(path) and not os.path.islink(path):
+        path = os.path.join(path, f"wolfbet-session-{session_id}.csv")
+    if (not os.path.isdir(os.path.dirname(path)) or os.path.islink(path)
+            or (os.path.exists(path) and not os.path.isfile(path))):
+        raise _ExportPathError(
+            "Export path must be a regular file in an existing directory (not a symlink)")
+    return path, "json" if path.lower().endswith(".json") else "csv"
+
+
+def _export_session(session_id: int, path: str) -> tuple:
+    """Write a session + its bets to `path` (see _export_target). Format detected from extension.
+
+    Returns (bet_count, format). Raises ValueError if the session is missing,
+    _ExportPathError for an unsafe path, OSError if the file cannot be written.
+    """
+    path, fmt = _export_target(path, session_id)
     session = _read_session(session_id)
     if not session:
         raise ValueError(f"Session #{session_id} not found")
     bets = _read_bets(session_id)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", newline="") as f:
         if fmt == "json":
             json.dump({"session": session, "bets": bets}, f, indent=2, default=str)
@@ -6305,7 +6435,7 @@ def cmd_monitor():
 # ══════════════════════════════════════════════════════════
 CLI_JSON_VERSION = 1
 _JSON_COMMANDS = ("status", "lanes_status", "config_show", "stats", "analytics",
-                  "last_bets", "session_bets")
+                  "last_bets", "session_bets", "export", "backtest")
 
 
 class _CliError(Exception):
@@ -8499,6 +8629,48 @@ def cmd_session_bets(session_id: int, as_json: bool = False):
         console.print(t)
     console.print()
 
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _cmd_export(args) -> None:
+    """--export: write one session to a file; with --json report {session_id, path, format, rows, bytes, sha256}."""
+    init_db()
+    sid = args.export_session_id or _latest_session_id()
+    if sid <= 0:
+        _cli_fail(_CliError("no_sessions", "No sessions in the DB yet.", style="red", exit_code=1),
+                  args.json)
+    try:
+        target, _ = _export_target(args.export, sid)
+        n, fmt = _export_session(sid, target)
+    except Exception as e:
+        if not args.json:
+            console.print(f"[red]✗ Export failed:[/] {e}")
+            if "not found" in str(e).lower():
+                console.print("[dim]  Tip: run `python wolfbet.py --stats` to see recent session IDs.[/]")
+            sys.exit(1)
+        if isinstance(e, _ExportPathError):
+            code, message = "invalid_path", str(e)
+        elif isinstance(e, ValueError):
+            code, message = "session_not_found", str(e)
+        else:
+            detail = f": {e}" if APP_ENV != "production" else ""
+            code, message = "write_failed", f"Could not write the export file{detail}"
+        _cli_fail(_CliError(code, message, exit_code=1), True)
+    if args.json:
+        _print_json({"session_id": sid, "path": target, "format": fmt, "rows": n,
+                     "bytes": os.path.getsize(target), "sha256": _file_sha256(target)})
+        sys.exit(0)
+    shown = target if os.path.isdir(os.path.expanduser(args.export)) else os.path.expanduser(args.export)
+    console.print(f"[green]✓[/] Exported [bold]{n}[/] bets from session #{sid} → "
+                  f"[cyan]{shown}[/] ({fmt.upper()})")
+    sys.exit(0)
+
+
 # ══════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════
@@ -8575,6 +8747,8 @@ Examples:
   Backtest / replay (no API calls, no real balance risk)
     wolfbet.py --backtest --simulate 10000 --seed 42
     wolfbet.py --backtest --replay-session 42 --preset new-strategy
+    wolfbet.py --backtest --simulate 100000 --sessions 200 --json   # result JSON; progress lines on stderr
+    wolfbet.py --export /some/dir/ --json   # writes wolfbet-session-<id>.csv; prints path, rows, bytes, sha256
 
   Concurrency
     wolfbet.py --resume --pipeline 3  # 3 in-flight bets (Flat strategies only)
@@ -8718,21 +8892,7 @@ def main():
 
     # ── Quick commands (no DB/state needed) ───────────────
     if args.export:
-        init_db()
-        sid = args.export_session_id or _latest_session_id()
-        if sid <= 0:
-            console.print("[red]No sessions in the DB yet.[/]")
-            sys.exit(1)
-        try:
-            n, fmt = _export_session(sid, args.export)
-            console.print(f"[green]✓[/] Exported [bold]{n}[/] bets from session #{sid} → "
-                          f"[cyan]{os.path.expanduser(args.export)}[/] ({fmt.upper()})")
-            sys.exit(0)
-        except Exception as e:
-            console.print(f"[red]✗ Export failed:[/] {e}")
-            if "not found" in str(e).lower():
-                console.print("[dim]  Tip: run `python wolfbet.py --stats` to see recent session IDs.[/]")
-            sys.exit(1)
+        _cmd_export(args)
     if args.backtest:
         _run_backtest(args)
         return

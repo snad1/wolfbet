@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-export-v1.json",
+  "title": "wolfbet.py --export PATH [--export-session-id ID] --json",
+  "description": "The export file that was written. PATH may be an existing directory (the file is then wolfbet-session-<id>.csv inside it); a symlink, a non-regular file or a missing directory is refused. sha256 and bytes are of the file as written, for the receiving side to verify.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "session_id",
+        "path",
+        "format",
+        "rows",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "session_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "format": {
+          "enum": [
+            "csv",
+            "json"
+          ]
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "no_sessions",
+                "session_not_found",
+                "invalid_path",
+                "write_failed"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
