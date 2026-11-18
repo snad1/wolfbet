@@ -1,5 +1,16 @@
 # Changelog
 
+## CLI v2.39.0 - bet events for the live dashboard (2026-11-18)
+
+Each saved bet can now also go to a Redis stream for the live dashboard. It is off by default; with it off the bot behaves exactly as before.
+
+- `_db_save_bet_dispatch` hands one tuple per bet to the event publisher (`core/events.py`) after the existing save, in both `db_write_mode` values and in both the serial and pipelined loops. The betting thread only builds the tuple and appends it to a bounded queue; the publisher's own thread does the JSON and the network.
+- New state fields `events_enabled` (default off) and `events_url` (from `WOLFBET_EVENTS_URL`). The publisher starts after the bet writer and stops after it on every exit path. The URL is never logged.
+- Redis down, slow or missing never stops or slows betting: lost events are counted by the publisher and show as gaps in `seq`.
+- The bet event carries session id, amount, multiplier, rule, bet value, roll, state, profit, balance after, session profit, total bets, current streak and the last API latency.
+
+**Tests**: `tests/test_phase11c_bet_events.py` (7).
+
 ## CLI v2.37.3 / TG v1.21.4 - limits reject nan and inf (2026-11-15)
 
 A `nan` limit passes every `< 0` guard and every stop comparison, so `/set maxloss nan` silently disabled the stop-loss and `--config-set` accepted the same value.

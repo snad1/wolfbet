@@ -48,6 +48,7 @@ from core.net_helpers import (
     validate_proxy, mask_proxy, classify_auto_stop_reason, parse_streak_delay,
 )
 from core.diagnostics import percentile, benchmark_verdict
+from core.events import EventPublisher
 from core.engine import (
     compute_next_bet as _core_compute_next_bet,
     wolfrider_switch as _core_wolfrider_switch,
@@ -832,7 +833,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.37.3"
+VERSION      = "2.39.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1542,6 +1543,8 @@ class BotState:
         # "sync": legacy path: fresh connection + fsync per bet (safe but slow).
         # Fallback to sync on queue overflow preserves nothing-lost semantics.
         self.db_write_mode    : str = "async"
+        self.events_enabled   : bool = False
+        self.events_url       : Optional[str] = os.environ.get("WOLFBET_EVENTS_URL") or None
 
         # ── Phase 5c: auto-bet recovery (max nonce / session expired) ──
         # Tag from _classify_auto_stop_reason: "max_nonce", "expired", or "".
@@ -3437,6 +3440,51 @@ def _db_save_bet_dispatch(bet_data: dict, profit: float, balance: float):
         _db_save_bet_async(bet_data, profit, balance)
     else:
         _db_save_bet(bet_data, profit, balance)
+    pub = _event_publisher
+    if pub is not None:
+        try:
+            pub.emit_bet((
+                state.session_id,
+                float(bet_data.get("amount", 0)),
+                float(bet_data.get("multiplier", 0)),
+                state.rule,
+                float(bet_data.get("bet_value", 0)),
+                float(bet_data.get("result_value", 0)),
+                bet_data.get("state", ""),
+                profit,
+                balance,
+                state.profit,
+                state.total_bets,
+                state.current_streak,
+                state._last_api_ms,
+            ))
+        except Exception:
+            pass
+
+
+_event_publisher: Optional[EventPublisher] = None
+
+
+def _start_events() -> None:
+    """Start the event publisher when events are enabled and a URL is set."""
+    global _event_publisher
+    if not state.events_enabled or _event_publisher is not None:
+        return
+    if not state.events_url:
+        logger.warning("EVENTS enabled but no events_url is set: events stay off")
+        return
+    pub = EventPublisher(state.events_url, lane=state.lane)
+    if pub.start():
+        _event_publisher = pub
+        logger.info("EVENTS publisher started (lane %d)", state.lane)
+
+
+def _stop_events() -> None:
+    """Flush and stop the event publisher if it is running."""
+    global _event_publisher
+    pub, _event_publisher = _event_publisher, None
+    if pub is not None:
+        pub.stop()
 
 
 def _db_save_session():
@@ -7763,6 +7811,7 @@ def main():
                 pass
         # v2.27.0: drain the async bet-writer so no queued rows are lost.
         _stop_bet_writer(timeout=5.0)
+        _stop_events()
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -7808,6 +7857,7 @@ def main():
     if state.db_write_mode == "async":
         _start_bet_writer()
         logger.info("BET WRITER started (async, batch=%d)", _BET_WRITER_BATCH_SIZE)
+    _start_events()
 
     # ── Betting thread ────────────────────────────────────
     t_bet = threading.Thread(target=_run_betting_loop, daemon=True, name="BettingLoop")
@@ -7842,6 +7892,7 @@ def main():
             pass
         state.running = False
         _stop_bet_writer(timeout=5.0)   # v2.27.0: drain async writer
+        _stop_events()
         _db_save_session()
         _save_state_file()
         _cleanup_state_file()
@@ -7903,6 +7954,7 @@ def main():
         sys.stdout.flush()
 
     _stop_bet_writer(timeout=5.0)   # v2.27.0: drain async writer
+    _stop_events()
     _db_save_session()
     _cleanup_state_file()
     _print_summary()
