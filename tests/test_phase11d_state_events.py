@@ -40,6 +40,10 @@ class _Recorder:
     def emit_bet(self, fields):
         self.calls.append(("bet", fields))
 
+    def stats(self):
+        return {"queued": 0, "sent": 0, "dropped": 0, "overflow": 0,
+                "last_error": "", "connected": True}
+
     def kinds(self):
         return [k for k, _ in self.calls]
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot — Unified Management Command v3.12
-# Wrapped in { } so bash reads entire script before executing —
+# WolfBet AutoBot - Unified Management Command v3.13
+# Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
 set -euo pipefail
@@ -10,9 +10,10 @@ WEB_DIR="$HOME/wolfbet-web"
 SERVICE="wolfbet"
 TG_SERVICE="wolfbet-tg"
 WEB_SERVICE="wolfbet-web"
-# v3.10 — parallel lanes: lane 1 = $SERVICE, lanes 2..N = wolfbet-lane@K
-# v3.11 — wolfctl lanes N --split none|budget|bet|both
-# v3.12 — wolfctl run-reset (new run total for profit_increment_scope=run)
+# v3.10 - parallel lanes: lane 1 = $SERVICE, lanes 2..N = wolfbet-lane@K
+# v3.11 - wolfctl lanes N --split none|budget|bet|both
+# v3.12 - wolfctl run-reset (new run total for profit_increment_scope=run)
+# v3.13 - doctor checks the dashboard event stream (wolfbet.py --events-check)
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -20,15 +21,15 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_NAME="wolfctl"
-# v3.9 — surface installed-vs-repo drift so operators stuck on an old
+# v3.9 - surface installed-vs-repo drift so operators stuck on an old
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
-# cmd_update's drift check — keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.12
+# cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
+WOLFCTL_VERSION=3.13
 
 usage() {
     echo ""
-    echo "  wolfctl — WolfBet AutoBot Manager v3.12"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.13"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -61,7 +62,7 @@ usage() {
     echo ""
     echo "  CONFIG:"
     echo "    wolfctl config-show                    Show current config (API key masked)"
-    echo "    wolfctl config-set KEY=VALUE [K=V …]   Non-interactive tweak (delay=0.35, maxprofit=0.005, …)"
+    echo "    wolfctl config-set KEY=VALUE [K=V ...]   Non-interactive tweak (delay=0.35, maxprofit=0.005, ...)"
     echo "    wolfctl pipeline N                     Set pipeline depth (1..8; Flat-only)"
     echo ""
     echo "  DATA:"
@@ -80,7 +81,7 @@ usage() {
     echo "    wolfctl benchmark [N]       API-latency probe (no bets placed; default N=20)"
     echo "    wolfctl diagnose            Analyse running session bottleneck (top blocker + advice)"
     echo "    wolfctl doctor [--fix] [-y] Health check + prescriptive fixes (VACUUM, journal, cleanup)"
-    echo "    wolfctl backtest [args…]    Backtest / replay (no API calls, no real balance)"
+    echo "    wolfctl backtest [args...]    Backtest / replay (no API calls, no real balance)"
     echo "                                Examples: --simulate 10000 --seed 42"
     echo "                                          --replay-session 42 --preset foo"
     echo "    wolfctl preset NAME         Load preset + start daemon"
@@ -100,11 +101,11 @@ usage() {
 
 # ── CLI bot commands ──────────────────────────────────
 cmd_setup() {
-    echo "Running setup wizard…"
+    echo "Running setup wizard..."
     "$PYTHON" "$BOT" --setup-only
 }
 
-# ── v3.10 — parallel lanes ─────────────────────────────
+# ── v3.10 - parallel lanes ─────────────────────────────
 # Configured lane count from the config file (1 when unset / unreadable).
 lane_count() {
     "$PYTHON" - "$HOME/.wolfbet_autobot.json" <<'PY' 2>/dev/null || echo 1
@@ -124,7 +125,7 @@ ensure_lane_unit() {
     mkdir -p "$SYSTEMD_DIR"
     cat > "$unit" << UNITEOF
 [Unit]
-Description=WolfBet AutoBot — parallel lane %i (CLI)
+Description=WolfBet AutoBot - parallel lane %i (CLI)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -217,17 +218,17 @@ cmd_lanes() {
     else
         "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
     fi
-    echo "Lanes set to $n — split: $(lane_split_mode)."
+    echo "Lanes set to $n - split: $(lane_split_mode)."
     if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
         # Restart every lane so each recomputes its budget share.
-        echo "Restarting lanes (each running chain is saved and ended)…"
+        echo "Restarting lanes (each running chain is saved and ended)..."
         stop_all_lanes
         systemctl --user restart "$SERVICE"
         sync_lanes "$n"
         sleep 2
         "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
     else
-        echo "Bot not running — start all $n lane(s) with: wolfctl start"
+        echo "Bot not running - start all $n lane(s) with: wolfctl start"
     fi
 }
 
@@ -360,7 +361,7 @@ cmd_presets() {
     "$PYTHON" "$BOT" --list-presets
 }
 
-# ── v2.25.0 parity — read-only inspection ─────────────
+# ── v2.25.0 parity - read-only inspection ─────────────
 cmd_analytics() {
     "$PYTHON" "$BOT" --analytics "$@"
 }
@@ -376,15 +377,15 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.12"
+    echo "  wolfctl v3.13"
 }
 
-# ── v2.25.0 parity — mutation ──────────────────────────
+# ── v2.25.0 parity - mutation ──────────────────────────
 cmd_config_set() {
     if [ $# -eq 0 ]; then
-        echo "Usage: wolfctl config-set KEY=VALUE [KEY=VALUE …]"
-        echo "  Aliases match the T-hotkey grammar (delay, maxprofit, pipeline, …)."
-        echo "  api_key is refused — set WOLFBET_API_KEY env var instead."
+        echo "Usage: wolfctl config-set KEY=VALUE [KEY=VALUE ...]"
+        echo "  Aliases match the T-hotkey grammar (delay, maxprofit, pipeline, ...)."
+        echo "  api_key is refused - set WOLFBET_API_KEY env var instead."
         exit 2
     fi
     "$PYTHON" "$BOT" --config-set "$@"
@@ -399,7 +400,7 @@ cmd_pipeline() {
     "$PYTHON" "$BOT" --config-set "pipeline_depth=$n"
 }
 
-# ── v2.25.0 parity — data + tools ──────────────────────
+# ── v2.25.0 parity - data + tools ──────────────────────
 cmd_export() {
     local path="${1:-}"
     local sid="${2:-}"
@@ -429,7 +430,7 @@ cmd_preset() {
     "$PYTHON" "$BOT" --preset "$name" --daemon
 }
 
-# v2.26.0 — bet-row retention purge (delegates to CLI's --cleanup).
+# v2.26.0 - bet-row retention purge (delegates to CLI's --cleanup).
 cmd_cleanup() {
     local days="${1:-}"
     if [ -z "$days" ]; then
@@ -439,7 +440,7 @@ cmd_cleanup() {
     fi
 }
 
-# v3.9 — hard statistics reset. ARCHIVES the DB (mv, never deletes) so a
+# v3.9 - hard statistics reset. ARCHIVES the DB (mv, never deletes) so a
 # fresh statistics flow can begin while config stays untouched. The daemon
 # is stopped if running; stale live-state is cleared so --resume doesn't
 # resurrect the old session number into the fresh DB.
@@ -452,7 +453,7 @@ cmd_reset() {
     done
     local db="$HOME/.wolfbet_autobot.db"
     if [ ! -f "$db" ]; then
-        echo "No DB found at $db — nothing to reset."
+        echo "No DB found at $db - nothing to reset."
         return
     fi
     local sess bets size
@@ -493,7 +494,7 @@ cmd_reset() {
     echo "Revisit anytime: wolfctl archives"
 }
 
-# v3.12 — start a new run total for the run-wide profit increment.
+# v3.12 - start a new run total for the run-wide profit increment.
 cmd_run_reset() {
     local yes=0 was_running=0
     for arg in "$@"; do
@@ -524,7 +525,7 @@ cmd_run_reset() {
     fi
 }
 
-# v3.9 — list archived statistics DBs with session counts + date spans.
+# v3.9 - list archived statistics DBs with session counts + date spans.
 cmd_archives() {
     local found=0 total_bytes=0
     for f in "$HOME"/.wolfbet_autobot-*.db; do
@@ -545,10 +546,10 @@ cmd_archives() {
     fi
     echo ""
     echo "  Total: $(echo "$total_bytes" | awk '{printf "%.1f MB", $1/1024/1024}')"
-    echo "  Query any archive directly: sqlite3 <archive> 'SELECT … FROM sessions'"
+    echo "  Query any archive directly: sqlite3 <archive> 'SELECT ... FROM sessions'"
 }
 
-# v2.26.1 — BPS diagnostics.
+# v2.26.1 - BPS diagnostics.
 cmd_benchmark() {
     # wolfctl benchmark [N] [--lanes M]
     local n="" args=()
@@ -570,7 +571,7 @@ cmd_diagnose() {
     "$PYTHON" "$BOT" --diagnose
 }
 
-# v3.9 — health check + prescriptive advice for reducing per-bet overhead.
+# v3.9 - health check + prescriptive advice for reducing per-bet overhead.
 # Read-only by default. `--fix` applies the three safe cleanups
 # (cleanup + VACUUM + journal vacuum); privileged fixes (renice / ionice /
 # cpupower) are prescribed only, never auto-applied. On virtualized hosts
@@ -588,7 +589,7 @@ cmd_doctor() {
     echo "─── wolfctl doctor ───"
     echo ""
     echo "1. Live diagnostic (wolfctl diagnose):"
-    "$PYTHON" "$BOT" --diagnose 2>/dev/null || echo "  (daemon not running — start with 'wolfctl start')"
+    "$PYTHON" "$BOT" --diagnose 2>/dev/null || echo "  (daemon not running - start with 'wolfctl start')"
 
     echo ""
     echo "2. Database health:"
@@ -634,6 +635,10 @@ cmd_doctor() {
     fi
 
     echo ""
+    echo "6. Event stream (Redis for the dashboard):"
+    "$PYTHON" "$BOT" --events-check 2>/dev/null || echo "  (events check failed to run)"
+
+    echo ""
     echo "─── Prescriptions ───"
 
     local do_vacuum=0 do_journal=0
@@ -649,7 +654,7 @@ cmd_doctor() {
     jsz=$(journalctl --user -u "$SERVICE" --disk-usage 2>/dev/null \
           | grep -oE '[0-9.]+[KMG]' | head -1)
     if [ -n "$jsz" ] && echo "$jsz" | grep -qE '[0-9]+G|[5-9][0-9][0-9]M'; then
-        echo "  [SAFE]  Journal is large ($jsz) — vacuum to 100 M:"
+        echo "  [SAFE]  Journal is large ($jsz) - vacuum to 100 M:"
         echo "          journalctl --user --vacuum-size=100M"
         do_journal=1
     fi
@@ -660,7 +665,7 @@ cmd_doctor() {
         echo "          sudo ionice -c 2 -n 0 -p $pid"
     fi
 
-    # v3.9 — governor prescription only if the host actually allows it.
+    # v3.9 - governor prescription only if the host actually allows it.
     # QEMU-KVM guests (most VPS) can't change the governor from inside;
     # cpupower returns "Error setting new values" and confuses the operator.
     local virt=""
@@ -672,19 +677,19 @@ cmd_doctor() {
     if [ -n "$gov" ] && [ "$gov" != "performance" ]; then
         if [ -n "$virt" ] && [ "$virt" != "none" ]; then
             echo "  [SKIP]  CPU governor is '$gov' (not performance) but this host"
-            echo "          is virtualized ($virt) — guests cannot set the governor."
+            echo "          is virtualized ($virt) - guests cannot set the governor."
             echo "          Ask your VPS provider or migrate to a dedicated-CPU plan."
         else
             echo "  [PRIV]  Pin CPU governor to performance (needs sudo):"
             echo "          sudo cpupower frequency-set -g performance"
         fi
     elif [ -z "$gov" ] && [ -n "$virt" ] && [ "$virt" != "none" ]; then
-        # v3.9 — governor path unreadable AND host is virtualized: still
+        # v3.9 - governor path unreadable AND host is virtualized: still
         # surface the honest "your VPS can't do this" advice instead of
         # staying silent (which hid the reason from operators hitting the
         # cpupower failure in the earlier runbook).
         echo "  [SKIP]  CPU governor path not exposed on this virtualized host ($virt)."
-        echo "          VPS provider controls it — migrate to a dedicated-CPU plan if needed."
+        echo "          VPS provider controls it - migrate to a dedicated-CPU plan if needed."
     fi
 
     if [ "$do_fix" = "1" ]; then
@@ -693,7 +698,7 @@ cmd_doctor() {
         _doctor_run_fix() {
             local desc="$1" cmd="$2"
             if [ "$do_yes" = "0" ]; then
-                read -r -p "  $desc — apply? [y/N] " reply
+                read -r -p "  $desc - apply? [y/N] " reply
                 case "$reply" in
                     y|Y|yes|YES) ;;
                     *) echo "    skipped." ; return ;;
@@ -724,10 +729,10 @@ cmd_doctor() {
 cmd_update() {
     # Pull latest from git if inside a repo
     if git rev-parse --is-inside-work-tree &>/dev/null; then
-        echo "Pulling latest from git…"
+        echo "Pulling latest from git..."
         # Detect a dirty tracked-file tree so the user sees WHAT got autostashed.
         if ! git diff --quiet || ! git diff --cached --quiet; then
-            echo "Local changes detected — autostashing before pull:"
+            echo "Local changes detected - autostashing before pull:"
             git status --porcelain
         fi
         # --autostash (git ≥ 2.9) stashes local changes, pulls, then pops.
@@ -739,7 +744,7 @@ cmd_update() {
             exit 1
         fi
     fi
-    echo "Updating bot files…"
+    echo "Updating bot files..."
     if [ ! -f "wolfbet.py" ]; then
         echo "No wolfbet.py in current directory."
         exit 1
@@ -784,7 +789,7 @@ cmd_update() {
             chmod +x "$installed"
             echo "Updated $SCRIPT_NAME → $installed"
         fi
-        # v3.9 — surface drift when the currently-executing wolfctl is older
+        # v3.9 - surface drift when the currently-executing wolfctl is older
         # than the repo copy. Chicken-and-egg: the OLD installed wolfctl won't
         # run this block at all, so on the FIRST upgrade the operator must
         # rerun `wolfctl update` (or `exec wolfctl update`) once to pick up
@@ -799,7 +804,7 @@ cmd_update() {
         fi
     fi
 
-    # v2.28.1 — migrate old Restart=always → Restart=on-failure so that
+    # v2.28.1 - migrate old Restart=always → Restart=on-failure so that
     # `wolfctl stop` and monitor's [S] stay stopped instead of triggering a
     # systemd respawn. Idempotent: subsequent runs find no match and skip.
     local _sd_reload=0
@@ -812,7 +817,7 @@ cmd_update() {
                 && echo "Migrated $_unit: Restart=always → Restart=on-failure" \
                 && _sd_reload=1
         fi
-        # v3.9 — persist Nice=-5 + best-effort IO priority in the unit so the
+        # v3.9 - persist Nice=-5 + best-effort IO priority in the unit so the
         # daemon starts with elevated scheduling on every restart. Was a
         # per-PID renice/ionice the operator had to reapply after every
         # `wolfctl update` (which restarts the CLI as of v2.30.2). Idempotent:
@@ -856,7 +861,7 @@ cmd_update() {
         echo "Updated. TG bot not running (skipped restart)."
     fi
 
-    # v3.9 — auto-restart CLI daemon so the running process picks up the new
+    # v3.9 - auto-restart CLI daemon so the running process picks up the new
     # wolfbet.py. Before this, `wolfctl update` only refreshed the file on
     # disk and left the daemon on the pre-pull code until manual restart.
     # --resume preserves session state across the restart.
@@ -864,7 +869,7 @@ cmd_update() {
         stop_all_lanes
         systemctl --user restart "$SERVICE"
         sleep 1
-        # v3.10 — bring parallel lanes back on the new code too.
+        # v3.10 - bring parallel lanes back on the new code too.
         sync_lanes "$(lane_count)"
         if systemctl --user is-active --quiet "$SERVICE"; then
             echo "CLI daemon restarted (session auto-resumed)."
@@ -924,9 +929,9 @@ cmd_tg() {
             if [ -f "$ENV_FILE" ]; then
                 TOKEN=$(grep -E "^WOLFBET_TG_TOKEN=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
                 if [ -n "$TOKEN" ]; then
-                    echo "  Token: ${TOKEN:0:10}…(set)"
+                    echo "  Token: ${TOKEN:0:10}...(set)"
                 else
-                    echo "  Token: NOT SET — run: wolfctl tg env"
+                    echo "  Token: NOT SET - run: wolfctl tg env"
                 fi
             else
                 echo "  .env: NOT FOUND"
@@ -941,7 +946,7 @@ cmd_tg() {
         env)
             if [ ! -f "$ENV_FILE" ]; then
                 cat > "$ENV_FILE" << 'INNEREOF'
-# WolfBet AutoBot — Environment
+# WolfBet AutoBot - Environment
 WOLFBET_TG_TOKEN=
 WOLFBET_TG_DATA=~/.wolfbot_tg
 INNEREOF
@@ -957,7 +962,7 @@ INNEREOF
 
 # ── All-services commands ────────────────────────────
 cmd_start_all() {
-    echo "Starting all services…"
+    echo "Starting all services..."
     cmd_start 2>/dev/null || true
     cmd_tg start 2>/dev/null || true
     echo ""
@@ -965,7 +970,7 @@ cmd_start_all() {
 }
 
 cmd_stop_all() {
-    echo "Stopping all services…"
+    echo "Stopping all services..."
     systemctl --user stop "$SERVICE" 2>/dev/null || true
     systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
     echo "All services stopped."
@@ -974,7 +979,7 @@ cmd_stop_all() {
 cmd_status_all() {
     echo ""
     echo "╔══════════════════════════════════════════╗"
-    echo "║   WolfBet AutoBot — Service Status        ║"
+    echo "║   WolfBet AutoBot - Service Status        ║"
     echo "╚══════════════════════════════════════════╝"
     echo ""
 
@@ -1047,7 +1052,7 @@ cmd_web() {
             ;;
         update)
             if [ -d "web" ]; then
-                echo "Updating web app files…"
+                echo "Updating web app files..."
                 mkdir -p "$WEB_DIR/web"
                 cp -r web/* "$WEB_DIR/web/" 2>/dev/null || true
                 [ -f "web/requirements.txt" ] && cp web/requirements.txt "$WEB_DIR/requirements.txt"

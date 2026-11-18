@@ -1,5 +1,18 @@
 # Changelog
 
+## CLI v2.41.0 / wolfctl v3.13 - turn the dashboard event stream on from wolfctl (2026-11-18)
+
+Events can now be switched on and off like any other setting, live, and checked from `wolfctl status` and `wolfctl doctor`.
+
+- New config keys `events_enabled` and `events_url`, shared by all lanes and live-reloadable: `wolfctl config-set events_url=redis://user:pass@host:6379/0 events_enabled=true` starts the publisher on the running daemon with no restart; `events_enabled=false` stops it and flushes what is queued. `WOLFBET_EVENTS_URL` still overrides the file.
+- `config-set` accepts only `redis://`, `rediss://` or `unix://` URLs with a host or socket path, and `events_enabled` only on/off; anything else exits 2 without echoing the value.
+- The URL is shown as scheme, host and port only in `config-show`, in config-set output, in the `reload` event and in every check; the password never prints.
+- `--status` / `wolfctl status` show an `Events` row: off, on but not running, or on with sent, dropped, connected and the last error. The state file and the state event carry the same counters under `events`.
+- `wolfctl doctor` adds step 6: pings the events Redis once with a 1 s timeout via the new `wolfbet.py --events-check`.
+- `wolfctl` output uses plain hyphens instead of long dashes.
+
+**Tests**: `tests/test_phase11e_events_config.py` (30).
+
 ## CLI v2.40.0 - status and event log for the live dashboard (2026-11-18)
 
 With events on, the dashboard now gets the bot's status and a log of what it did. With events off nothing changes.

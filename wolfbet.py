@@ -391,6 +391,7 @@ _TWEAK_PARAMS = {
     "pipeline_depth",
     "proxy", "purge_days",
     "db_write_mode",
+    "events_enabled", "events_url",
 }
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
@@ -602,6 +603,21 @@ def _apply_mutation(changes: dict) -> list:
             raise ValueError(f"db_write_mode must be 'async' or 'sync', got {v!r}")
         state.db_write_mode = v
         msgs.append(f"DB write mode: {state.db_write_mode}")
+
+    if "events_enabled" in changes:
+        v = str(changes["events_enabled"]).strip().lower()
+        if v in ("on", "true", "yes", "y", "1"):
+            state.events_enabled = True
+        elif v in ("off", "false", "no", "n", "0"):
+            state.events_enabled = False
+        else:
+            raise ValueError(f"events_enabled must be on or off, got {v!r}")
+        msgs.append(f"Events: {'on' if state.events_enabled else 'off'}")
+
+    if "events_url" in changes:
+        v = changes["events_url"]
+        state.events_url = None if _is_off(v) else _validate_events_url(str(v).strip())
+        msgs.append(f"Events URL: {_redact_url(state.events_url)}")
 
     # Pipeline depth: instant int (dispatcher re-evaluates on next iteration).
     # Guardrail is enforced by _effective_pipeline_depth(); we just clamp to [1, 8].
@@ -836,7 +852,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.40.0"
+VERSION      = "2.41.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -867,7 +883,7 @@ AUTOSTART_LOCK_PATH = os.environ.get(
 # Never overridable per lane: identity, account, network and storage settings.
 _LANE_FORBIDDEN_KEYS = {
     "api_key", "currency", "game", "proxy", "purge_days", "db_write_mode",
-    "pipeline_depth",
+    "pipeline_depth", "events_enabled", "events_url",
 }
 
 
@@ -990,6 +1006,7 @@ _CONFIG_KEYS = [
     "recurring", "basebet_pct",
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "streak_reset_losses", "streak_reset_delay",
+    "events_enabled", "events_url",
 ]
 
 def _mask_key(key: str) -> str:
@@ -1064,6 +1081,9 @@ def load_config() -> bool:
         env_key = os.environ.get("WOLFBET_API_KEY")
         if env_key:
             state.api_key = env_key
+        env_events_url = os.environ.get("WOLFBET_EVENTS_URL")
+        if env_events_url:
+            state.events_url = env_events_url
         secure_path(CONFIG_PATH)
         state.current_bet = state.base_bet
         # init profit milestone
@@ -1146,6 +1166,7 @@ _LIVE_RELOAD_KEYS = {
     "profit_increment", "profit_threshold",
     # Concurrency + retention + network
     "pipeline_depth", "proxy", "purge_days", "db_write_mode",
+    "events_enabled", "events_url",
     # Rule DSL (regenerated wholesale by _load_rules_from_text; strategy_key stays)
     "custom_rules_text",
 }
@@ -1200,6 +1221,9 @@ def _reload_live_config() -> dict:
         _apply_proxy_to_session()
     if "base_bet" in applied:
         _rebase_run_for_base_change(applied["base_bet"][1])
+    if "events_enabled" in applied or "events_url" in applied:
+        _stop_events()
+        _start_events()
     if "custom_rules_text" in applied and state.custom_rules_text:
         try:
             state.custom_rules = _load_rules_from_text(state.custom_rules_text)
@@ -1211,6 +1235,48 @@ def _reload_live_config() -> dict:
             len(skipped_unsafe), ", ".join(sorted(skipped_unsafe)),
         )
     return applied
+
+
+_EVENTS_URL_SCHEMES = ("redis", "rediss", "unix")
+
+
+def _redact_url(url: Optional[str]) -> str:
+    """Show an events URL as scheme://host[:port] (unix: the socket path), never credentials."""
+    if not url:
+        return "off"
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        if parts.scheme == "unix":
+            return f"unix://{parts.path}"
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}"
+    except ValueError:
+        return "(invalid url)"
+
+
+def _validate_events_url(url: str) -> str:
+    """Accept redis://, rediss:// or unix:// URLs with a host or socket path; raise ValueError otherwise."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        ok = parts.scheme in _EVENTS_URL_SCHEMES and (
+            parts.path if parts.scheme == "unix" else parts.hostname)
+        if ok and parts.port is not None and not 0 < parts.port < 65536:
+            ok = False
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ValueError("events_url must be redis://host[:port], rediss://host[:port] "
+                         "or unix:///path/to/socket")
+    return url
+
+
+_RELOAD_MASKS = {
+    "proxy": lambda v: _mask_proxy(v),
+    "events_url": lambda v: _redact_url(v),
+}
 
 
 def _sig_reload(sig, frame):
@@ -1225,7 +1291,8 @@ def _sig_reload(sig, frame):
             logger.info("SIGHUP: reloaded %d live field(s): %s",
                         len(applied), ", ".join(sorted(applied.keys())))
             _emit_lifecycle("reload", {"applied": {
-                k: [_mask_proxy(old), _mask_proxy(new)] if k == "proxy" else [old, new]
+                k: [_RELOAD_MASKS[k](old), _RELOAD_MASKS[k](new)] if k in _RELOAD_MASKS
+                else [old, new]
                 for k, (old, new) in applied.items()}})
         else:
             logger.info("SIGHUP: no live-safe changes to apply")
@@ -3610,6 +3677,7 @@ def _db_get_history(limit: int = 12):
 # ══════════════════════════════════════════════════════════
 def _state_snapshot() -> dict:
     """Live session state, as written to the state file and sent as the state event."""
+    pub = _event_publisher
     return {
         "pid": os.getpid(),
         "session_id": state.session_id,
@@ -3737,6 +3805,8 @@ def _state_snapshot() -> dict:
         "streak_reset_delay_sec": int(state.streak_reset_delay),
         "status": state.status,
         "last_error": state.last_error,
+        "events": dict({"enabled": state.events_enabled, "running": pub is not None},
+                       **(pub.stats() if pub is not None else {})),
         "updated_at": datetime.now().isoformat(),
     }
 
@@ -5846,6 +5916,43 @@ def cmd_lanes_status():
                   f"[dim]lanes live[/] {sum(1 for _, _, a in rows if a)}/{len(rows)}")
 
 
+def _fmt_events_row(ev: Optional[dict]) -> str:
+    """One-line Events summary for --status from the state file's events dict."""
+    if not ev or not ev.get("enabled"):
+        return "[dim]off[/]"
+    if not ev.get("running"):
+        return "[red]on, not running[/] [dim](check events_url / wolfctl doctor)[/]"
+    conn = "[green]yes[/]" if ev.get("connected") else "[red]no[/]"
+    line = (f"[green]on[/]  · sent [cyan]{ev.get('sent', 0)}[/]  · dropped "
+            f"[yellow]{ev.get('dropped', 0) + ev.get('overflow', 0)}[/]  · connected {conn}")
+    if ev.get("last_error"):
+        line += f"  · last error [red]{ev['last_error']}[/]"
+    return line
+
+
+def cmd_events_check() -> None:
+    """Ping the events Redis once with a 1 s timeout and print the result. Never prints credentials."""
+    load_config()
+    if not state.events_enabled:
+        console.print("  Events: off")
+        return
+    if not state.events_url:
+        console.print("  Events: on but no events_url is set")
+        return
+    shown = _redact_url(state.events_url)
+    try:
+        import redis
+    except ImportError:
+        console.print("  Events: redis package not installed (pip install -r requirements.txt)")
+        return
+    try:
+        redis.Redis.from_url(state.events_url, socket_connect_timeout=1,
+                             socket_timeout=1).ping()
+        console.print(f"  Events: Redis OK ({shown})")
+    except Exception as e:
+        console.print(f"  Events: Redis unreachable at {shown} ({type(e).__name__})")
+
+
 def cmd_status():
     if not os.path.exists(STATE_PATH):
         console.print("[yellow]No running session found.[/]")
@@ -6019,6 +6126,7 @@ def cmd_status():
                      f"depth=[magenta]{pipe_eff}[/]  · "
                      f"dispatched=[cyan]{d.get('pipeline_dispatched', 0)}[/]"))
 
+    rows.append(("Events", _fmt_events_row(d.get("events"))))
     rows += [
         ("Last Status",    d.get("status", "")[:80]),
         ("Updated",        d.get("updated_at", "?").replace("T", " ")),
@@ -6122,6 +6230,8 @@ _CONFIG_SHOW_FIELDS = [
     ("proxy",                 "HTTP/HTTPS/SOCKS5 proxy URL (credentials masked)"),
     ("purge_days",            "Bet-row retention window in days (1-30)"),
     ("db_write_mode",         "Bet DB writer: async (default, batched) or sync (legacy, per-bet fsync)"),
+    ("events_enabled",        "Send bets, status and lifecycle events to Redis for the dashboard"),
+    ("events_url",            "Redis URL for events (set via config-set or WOLFBET_EVENTS_URL)"),
     ("custom_rules_text",     "Rule-Based custom rules (JSON per line)"),
 ]
 
@@ -6134,6 +6244,8 @@ def _fmt_config_value(field: str, val) -> str:
     """
     if field == "proxy":
         return f"[cyan]{_mask_proxy(val)}[/]" if val else "[dim]direct[/]"
+    if field == "events_url":
+        return f"[cyan]{_redact_url(val)}[/]" if val else "[dim]off[/]"
     if val is None:
         return "[dim]off[/]"
     if isinstance(val, bool):
@@ -7670,6 +7782,8 @@ def main():
     group.add_argument("--benchmark", nargs="?", type=int, metavar="N", const=20,
                        help="Standalone API-latency probe (no bets placed). Default N=20, "
                             "clamped 3-200. Reports p50/p99/mean + BPS ceiling + verdict.")
+    group.add_argument("--events-check", action="store_true",
+                       help="Ping the events Redis (1 s timeout) and report; used by wolfctl doctor.")
     group.add_argument("--diagnose", action="store_true",
                        help="One-shot bottleneck analysis of the running daemon session "
                             "(reads live-state file; no side effects).")
@@ -7786,6 +7900,9 @@ def main():
         return
     if args.diagnose:
         cmd_diagnose()
+        return
+    if args.events_check:
+        cmd_events_check()
         return
 
     # ── Setup-only mode ───────────────────────────────────

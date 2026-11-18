@@ -1,4 +1,4 @@
-"""Phase 10 — v2.35.0: parallel lanes (N independent sessions side by side).
+"""Phase 10 - v2.35.0: parallel lanes (N independent sessions side by side).
 
 v2.36.0: how lanes share money is configurable (lanes.split, default none).
 
@@ -363,7 +363,7 @@ def test_wolfctl_lane_commands():
     assert '"$PYTHON" "$BOT" --monitor --lane "$k"' in s
     assert "--lanes-status" in s
     assert "stop_all_lanes" in s and "sync_lanes" in s
-    assert "WOLFCTL_VERSION=3.12" in s
+    assert "WOLFCTL_VERSION=3.13" in s
 
 
 def test_install_writes_lane_template():
