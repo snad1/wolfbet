@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.14
+# WolfBet AutoBot - Unified Management Command v3.15
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -16,6 +16,8 @@ WEB_SERVICE="wolfbet-web"
 # v3.13 - doctor checks the dashboard event stream (wolfbet.py --events-check)
 # v3.14 - pause / resume / reload [K|all]; prompts refuse with exit 3 without a
 #         terminal unless --yes; --json on status and lanes
+# v3.15 - update --branch NAME (fetch + switch + fast-forward, refuses a dirty
+#         checkout); status shows the deployed branch
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -28,11 +30,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.14
+WOLFCTL_VERSION=3.15
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.14"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.15"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -92,6 +94,8 @@ usage() {
     echo "                                          --replay-session 42 --preset foo"
     echo "    wolfctl preset NAME         Load preset + start daemon"
     echo "    wolfctl update              Pull latest + reinstall (git repo required)"
+    echo "    wolfctl update --branch NAME  Switch the checkout to NAME (fetch, switch, fast-forward"
+    echo "                                only; refuses local changes), then update"
     echo "    wolfctl version             Show CLI + wolfctl versions"
     echo ""
     echo "  SCRIPTING:"
@@ -99,7 +103,8 @@ usage() {
     echo "                 lanes, update, cleanup and stop-all never prompt and accept it too"
     echo "    --json       status and lanes (without N) print one JSON document"
     echo "    Exit codes: 0 ok, 1 failed or no running lane matched, 2 bad arguments,"
-    echo "                3 needs confirmation and there is no terminal (re-run with --yes)"
+    echo "                3 needs confirmation and there is no terminal (re-run with --yes),"
+    echo "                4 the checkout has local changes (update --branch)"
     echo ""
     echo "  WEB ADMIN:"
     echo "    wolfctl web install         Install web admin dashboard"
@@ -377,6 +382,9 @@ cmd_status() {
     echo "── CLI Bot Service ──"
     systemctl --user status "$SERVICE" --no-pager 2>/dev/null || echo "  Not running"
     echo ""
+    echo "── Code ──"
+    repo_code_line
+    echo ""
     echo "── Session Status ──"
     "$PYTHON" "$BOT" --status 2>/dev/null || echo "  No active session"
     if [ "$(lane_count)" -gt 1 ]; then
@@ -470,7 +478,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.14"
+    echo "  wolfctl v3.15"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -810,9 +818,79 @@ cmd_doctor() {
     fi
 }
 
+# v3.15 - move the repo checkout to another branch before an update. Fetch, switch
+# and a fast-forward pull only: never reset or force, and never over local changes.
+switch_branch() {
+    local branch="$1" dirty
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "update --branch must run inside the repo checkout (cd ~/wolfbet)" >&2
+        exit 2
+    fi
+    case "$branch" in
+        ''|-*) echo "Invalid branch name: '$branch'" >&2; exit 2 ;;
+    esac
+    if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+        echo "Invalid branch name: '$branch'" >&2
+        exit 2
+    fi
+    dirty=$(git status --porcelain)
+    if [ -n "$dirty" ]; then
+        echo "The checkout has local changes; commit or stash them first:" >&2
+        echo "$dirty" >&2
+        exit 4
+    fi
+    echo "Fetching origin..."
+    git fetch origin || { echo "git fetch failed." >&2; exit 1; }
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+        git switch "$branch" || exit 1
+    elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git switch -c "$branch" --track "origin/$branch" || exit 1
+    else
+        echo "No branch '$branch' locally or on origin." >&2
+        exit 2
+    fi
+    if ! git pull --ff-only; then
+        echo "Fast-forward failed: the branch was probably rewritten on origin." >&2
+        echo "  See casino-dashboard/docs/ops/branch-deploy.md, 'If the branch was rewritten'." >&2
+        exit 1
+    fi
+}
+
+# The branch, commit and lead over origin/main of the checkout the last update ran from.
+repo_code_line() {
+    local repo branch sha ahead
+    repo=$(cat "$INSTALL_DIR/.repo" 2>/dev/null || true)
+    if [ -z "$repo" ] || ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "  Code: unknown (run wolfctl update once from the repo checkout)"
+        return
+    fi
+    branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+    sha=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo "?")
+    if ahead=$(git -C "$repo" rev-list --count origin/main..HEAD 2>/dev/null); then
+        echo "  Code: $branch @ $sha, $ahead ahead of origin/main"
+    else
+        echo "  Code: $branch @ $sha (no origin/main to compare)"
+    fi
+}
+
 cmd_update() {
+    local branch="" branch_given=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --branch)
+                [ $# -ge 2 ] || { echo "Usage: wolfctl update [--branch NAME] [--yes]" >&2; exit 2; }
+                branch="$2"; branch_given=1; shift 2 ;;
+            --branch=*) branch="${1#--branch=}"; branch_given=1; shift ;;
+            --yes|-y) shift ;;
+            *) echo "Unknown option: $1" >&2
+               echo "Usage: wolfctl update [--branch NAME] [--yes]" >&2
+               exit 2 ;;
+        esac
+    done
+    if [ "$branch_given" = "1" ]; then
+        switch_branch "$branch"
     # Pull latest from git if inside a repo
-    if git rev-parse --is-inside-work-tree &>/dev/null; then
+    elif git rev-parse --is-inside-work-tree &>/dev/null; then
         echo "Pulling latest from git..."
         # Detect a dirty tracked-file tree so the user sees WHAT got autostashed.
         if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -836,6 +914,9 @@ cmd_update() {
 
     cp wolfbet.py         "$INSTALL_DIR/wolfbet.py"
     cp requirements.txt   "$INSTALL_DIR/requirements.txt"
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        git rev-parse --show-toplevel > "$INSTALL_DIR/.repo"
+    fi
 
     # Update core/
     if [ -d "core" ]; then
@@ -1195,7 +1276,7 @@ case "${1:-}" in
     diagnose)     cmd_diagnose ;;
     doctor)       shift; cmd_doctor "$@" ;;
     version|--version|-v) cmd_version ;;
-    update)       cmd_update ;;
+    update)       shift; cmd_update "$@" ;;
     tg)           cmd_tg "${2:-}" ;;
     web)          cmd_web "${@:2}" ;;
     start-all)    cmd_start_all ;;

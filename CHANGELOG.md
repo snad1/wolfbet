@@ -1,5 +1,13 @@
 # Changelog
 
+## wolfctl v3.15 - branch deploys and the deployed branch in status (2026-11-18)
+
+- `wolfctl update --branch NAME`, run in the repo checkout, moves the checkout to NAME and then runs the normal update (copy, dependencies, restarts). It only fetches `origin`, switches (creating NAME to track `origin/NAME` the first time) and fast-forwards; it never resets or forces. Exit 4 with the changed files listed when the checkout has local changes (untracked files included), exit 2 for a name `git check-ref-format` rejects, a name starting with `-`, a branch that exists nowhere or a run outside a checkout, exit 1 when fetch or the fast-forward fails (for example after the branch was rewritten on origin).
+- `wolfctl update` without `--branch` works as before (pull with autostash on the current branch); it now also accepts `--yes` explicitly and refuses unknown options with exit 2.
+- `wolfctl status` adds a Code line: `Code: <branch> @ <sha>, N ahead of origin/main`, from the checkout the last update ran from (`~/wolfbet-bot/.repo`), using local refs only. Until an update has run it says `unknown`.
+
+**Tests**: `tests/test_phase11o_wolfctl_branch.py` (20): real git against a temp origin and checkout: switch to a branch only on origin (with tracking), back to a local branch, new commits picked up, local or untracked changes refused with nothing moved, invalid and unknown names, a rewritten branch left untouched, plain update unchanged, the status line.
+
 ## CLI v2.44.0 - export and backtest results as JSON, safer export paths (2026-11-18)
 
 - `--export PATH --json` prints `{session_id, path, format, rows, bytes, sha256}` for the file it wrote, so whoever picks the file up can check it. PATH may be an existing directory: the file is then `wolfbet-session-<id>.csv` inside it.
