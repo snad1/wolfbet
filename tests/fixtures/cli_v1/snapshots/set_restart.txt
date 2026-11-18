@@ -1,0 +1,77 @@
+──────────────────────────────────────────────────────────────────────── Config updated ────────────────────────────────────────────────────────────────────────
+  multiplier: 2  →  3
+  strategy_key: 2  →  1
+  profit_increment_scope: session  →  run
+
+Saved to config.json
+Note: 3 field(s) need a full restart to apply: multiplier, profit_increment_scope, strategy_key. Run wolfctl restart when ready.
+Daemon reloaded live config.
+1 more lane(s) reloaded live config.
+[exit 0]
+{
+  "api_key": "wb_live_0123456789abcdefSECRET9876",
+  "currency": "usdt",
+  "game": "dice",
+  "rule": "over",
+  "multiplier": 3.0,
+  "bet_value": 66.99,
+  "base_bet": 0.0001,
+  "strategy": "Flat Bet",
+  "strategy_key": "1",
+  "win_mult": 1.0,
+  "loss_mult": 2.0,
+  "bet_delay": 0,
+  "max_profit": 0.01,
+  "max_loss": 0.005,
+  "max_bets": null,
+  "max_wins": null,
+  "stop_on_balance": null,
+  "custom_rules_text": "",
+  "delay_martin_threshold": 3,
+  "profit_increment": null,
+  "profit_threshold": null,
+  "profit_increment_scope": "run",
+  "pipeline_depth": 1,
+  "recurring_delay": 60,
+  "proxy": "http://proxyuser:proxypass@10.0.0.1:8080",
+  "purge_days": 3,
+  "db_write_mode": "async",
+  "recurring": true,
+  "basebet_pct": 0.0,
+  "milestone_bets": 100,
+  "milestone_wins": 0,
+  "milestone_losses": 0,
+  "milestone_profit": 0.0,
+  "streak_reset_losses": null,
+  "streak_reset_delay": 600.0,
+  "events_enabled": true,
+  "events_url": "redis://dash:redispass@127.0.0.1:6379/0",
+  "hard_cap": false,
+  "restart_after_loss": false,
+  "balance_goal": null,
+  "hybrid_recover_at": null,
+  "hybrid_recover_strategy": "2",
+  "hybrid_recover_bet": 1.0,
+  "hybrid_press_at": null,
+  "hybrid_press_floor": 0.0,
+  "hybrid_press_strategy": "5",
+  "hybrid_press_bet": 1.0,
+  "lanes": {
+    "count": 3,
+    "split": "bet",
+    "overrides": {
+      "2": {
+        "multiplier": 3.0,
+        "streak_delay_loss": "2:4"
+      },
+      "3": {
+        "max_loss": 0.002
+      }
+    }
+  },
+  "streak_delay_loss": "3:5.0",
+  "streak_delay_win": null,
+  "streak_delay_bets": null,
+  "streakbet_loss": null
+}
+[signals [(424242, <Signals.SIGHUP: 1>), (424243, <Signals.SIGHUP: 1>)]]

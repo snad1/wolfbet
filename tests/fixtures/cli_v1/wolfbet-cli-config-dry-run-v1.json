@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-config-dry-run-v1.json",
+  "title": "wolfbet.py --config-set --dry-run --json KEY=VALUE ...",
+  "description": "What a config-set would change, validated like the real set and written nowhere. Base entries include lanes / lane_split and values derived from the change (bet_value after multiplier). A lane entry with removed=true drops the override so the lane uses the base value.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "base",
+        "lanes",
+        "warnings"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "base": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "old",
+              "new",
+              "apply"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "old": {},
+              "new": {},
+              "apply": {
+                "enum": [
+                  "live",
+                  "restart"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "key": {
+                      "enum": [
+                        "proxy",
+                        "events_url"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "old": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "pattern": "^[^@]*$",
+                      "description": "scheme://host[:port] only; userinfo is never printed"
+                    },
+                    "new": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "pattern": "^[^@]*$",
+                      "description": "scheme://host[:port] only; userinfo is never printed"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "lanes": {
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "key",
+                  "old",
+                  "new",
+                  "apply",
+                  "removed"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "old": {},
+                  "new": {},
+                  "apply": {
+                    "enum": [
+                      "live",
+                      "restart"
+                    ]
+                  },
+                  "removed": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "key": {
+                          "enum": [
+                            "proxy",
+                            "events_url"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "old": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[^@]*$",
+                          "description": "scheme://host[:port] only; userinfo is never printed"
+                        },
+                        "new": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[^@]*$",
+                          "description": "scheme://host[:port] only; userinfo is never printed"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "api_key_refused",
+                "invalid_argument",
+                "invalid_lane_override",
+                "invalid_value",
+                "no_config"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

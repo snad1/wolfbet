@@ -1,5 +1,14 @@
 # Changelog
 
+## CLI v2.43.0 - config schema, config-set dry run, no partial config writes (2026-11-18)
+
+- `--config-schema` prints every key `--config-set` accepts as one JSON document: type, choices or min/max (and whether out-of-range input is clamped), whether `off` is accepted, aliases, default, whether it reloads live, whether a lane may override it, and its help text. It is built from the tables config-set validates with, and the clamp bounds and the `db_write_mode` choices now live in that one table, so the two cannot drift. Schema: `casino-dashboard/contracts/schemas/wolfbet-cli-config-schema-v1.json`.
+- `--dry-run --config-set KEY=VALUE ...` validates exactly like the real set and prints the old and new value of each key, base and per lane, with `live` or `restart`, plus clamp warnings. It writes nothing and signals no daemon. Add `--json` for one document (`wolfbet-cli-config-dry-run-v1.json`); proxy and events URLs show no credentials. Put the flags before `--config-set`, since its values run to the end of the line.
+- Fix: a `--config-set` call that mixed lane pairs with a bad base pair (for example `lane2.multiplier=3 maxloss=abc`) saved the lane change and reloaded that lane before failing on the base pair. Every pair is now validated before anything is written, so a failing call changes nothing. An invalid lane override no longer prints the "Lane config updated" header first.
+- `--dry-run` without `--config-set` exits 2; `--json` also works with `--config-schema` and `--dry-run`.
+
+**Tests**: `tests/test_phase11h_config_schema.py` (44): snapshots of the real config-set output taken before the change, the schema against the accepted keys, aliases, live-reload and lane tables, every listed choice accepted and a bogus one refused, every clamp bound against the validator, dry run leaves files and daemons untouched, invalid input gives the same message and exit 2 as the real set, the partial-write regression, masking, the real CLI.
+
 ## CLI v2.42.0 - JSON output for the read commands (2026-11-18)
 
 `--json` prints one JSON document to stdout for `--status`, `--lanes-status`, `--config-show`, `--stats`, `--analytics`, `--last-bets N` and `--session-bets ID`, so the dashboard agent never has to parse the tables.

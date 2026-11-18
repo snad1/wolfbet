@@ -63,7 +63,7 @@ from core.games import (
 from core.session_rules import (
     PHASE_BASE, PHASE_RECOVER, PHASE_PRESS, HALF_SAT,
     next_phase, loss_room, floor_room, config_errors,
-    parse_amount, parse_flag, parse_multiple, parse_strategy_key,
+    parse_amount, parse_flag, parse_multiple, parse_strategy_key, PHASE_STRATEGY_KEYS,
 )
 
 # ══════════════════════════════════════════════════════════
@@ -557,7 +557,8 @@ def _apply_mutation(changes: dict) -> list:
                 # v2.30.6: cap raised from 3600 (arbitrary TG mirror) to 86400
                 # (24 h). Silent clamp swapped for visible warning via _clamped.
                 state.recurring_delay = _clamped(
-                    "recurring_delay", _finite_num("Recurring delay", v), 0.0, 86400.0)
+                    "recurring_delay", _finite_num("Recurring delay", v),
+                    *_rule_bounds("recurring_delay"))
             except (TypeError, ValueError):
                 raise ValueError(f"recurring_delay must be a number 0-86400, got {v!r}")
         msgs.append(f"Recurring delay: {state.recurring_delay:.0f}s"
@@ -587,7 +588,8 @@ def _apply_mutation(changes: dict) -> list:
         else:
             try:
                 state.streak_reset_delay = _clamped(
-                    "streak_reset_delay", _finite_num("Streak reset delay", v), 0.0, 86400.0)
+                    "streak_reset_delay", _finite_num("Streak reset delay", v),
+                    *_rule_bounds("streak_reset_delay"))
             except (TypeError, ValueError):
                 raise ValueError(f"streak_reset_delay must be a number 0-86400, got {v!r}")
         msgs.append(f"Streak reset delay: {state.streak_reset_delay:.0f}s"
@@ -610,7 +612,8 @@ def _apply_mutation(changes: dict) -> list:
             state.purge_days = 3
         else:
             try:
-                state.purge_days = int(_clamped("purge_days", _finite_num("Purge days", v), 1.0, 30.0))
+                state.purge_days = int(_clamped("purge_days", _finite_num("Purge days", v),
+                                                *_rule_bounds("purge_days")))
             except (TypeError, ValueError):
                 raise ValueError(f"purge_days must be an integer 1-30, got {v!r}")
         msgs.append(f"Purge days: {state.purge_days}")
@@ -618,7 +621,7 @@ def _apply_mutation(changes: dict) -> list:
     # DB write mode: "async" (batched, tuned) or "sync" (legacy, per-bet fsync).
     if "db_write_mode" in changes:
         v = str(changes["db_write_mode"]).strip().lower()
-        if v not in ("async", "sync"):
+        if v not in _CONFIG_VALUE_RULES["db_write_mode"]["choices"]:
             raise ValueError(f"db_write_mode must be 'async' or 'sync', got {v!r}")
         state.db_write_mode = v
         msgs.append(f"DB write mode: {state.db_write_mode}")
@@ -646,7 +649,8 @@ def _apply_mutation(changes: dict) -> list:
             state.pipeline_depth = 1
         else:
             try:
-                state.pipeline_depth = int(_clamped("pipeline_depth", _finite_num("Pipeline depth", v), 1.0, 8.0))
+                state.pipeline_depth = int(_clamped("pipeline_depth", _finite_num("Pipeline depth", v),
+                                                    *_rule_bounds("pipeline_depth")))
             except (TypeError, ValueError):
                 raise ValueError(f"pipeline_depth must be an integer 1-8, got {v!r}")
         msgs.append(f"Pipeline depth: {state.pipeline_depth}")
@@ -938,7 +942,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.42.0"
+VERSION      = "2.43.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -6896,6 +6900,93 @@ def cmd_config_show(as_json: bool = False):
                   f"[cyan]python3 wolfbet.py --config-set KEY=VALUE ...[/]")
 
 
+# Value rules for every key config-set accepts, read by _apply_mutation for its
+# clamps and choices and published by --config-schema. A rule states only what
+# _apply_mutation enforces; "clamps" means out-of-range input is clamped, not refused.
+_URL_SCHEMES_PROXY = ("http", "https", "socks5")
+_CONFIG_VALUE_RULES = {
+    "bet_delay":               {"type": "number"},
+    "basebet_pct":             {"type": "number", "off_allowed": True},
+    "streak_delay_loss":       {"type": "string", "format": "N:X", "off_allowed": True},
+    "streak_delay_win":        {"type": "string", "format": "N:X", "off_allowed": True},
+    "streak_delay_bets":       {"type": "string", "format": "N:X", "off_allowed": True},
+    "streakbet_loss":          {"type": "string", "format": "N:X", "off_allowed": True},
+    "max_profit":              {"type": "number", "off_allowed": True},
+    "max_loss":                {"type": "number", "off_allowed": True},
+    "max_bets":                {"type": "integer", "off_allowed": True},
+    "max_wins":                {"type": "integer", "off_allowed": True},
+    "stop_on_balance":         {"type": "number", "off_allowed": True},
+    "milestone_bets":          {"type": "integer", "off_allowed": True},
+    "milestone_wins":          {"type": "integer", "off_allowed": True},
+    "milestone_losses":        {"type": "integer", "off_allowed": True},
+    "milestone_profit":        {"type": "number", "off_allowed": True},
+    "profit_increment":        {"type": "number", "off_allowed": True},
+    "profit_threshold":        {"type": "number", "off_allowed": True},
+    "profit_increment_scope":  {"type": "string", "choices": PROFIT_INCREMENT_SCOPES},
+    "recurring":               {"type": "boolean"},
+    "recurring_delay":         {"type": "number", "min": 0.0, "max": 86400.0, "clamps": True,
+                                "off_allowed": True},
+    "streak_reset_losses":     {"type": "integer", "min": 1, "off_allowed": True},
+    "streak_reset_delay":      {"type": "number", "min": 0.0, "max": 86400.0, "clamps": True,
+                                "off_allowed": True},
+    "base_bet":                {"type": "number"},
+    "multiplier":              {"type": "number"},
+    "loss_mult":               {"type": "number"},
+    "win_mult":                {"type": "number"},
+    "game":                    {"type": "string", "choices": tuple(sorted(GAME_ENDPOINTS))},
+    "strategy_key":            {"type": "string", "choices": tuple(sorted(STRATEGY_NAMES))},
+    "pipeline_depth":          {"type": "integer", "min": 1, "max": 8, "clamps": True,
+                                "off_allowed": True},
+    "proxy":                   {"type": "string", "format": "url", "schemes": _URL_SCHEMES_PROXY,
+                                "off_allowed": True},
+    "purge_days":              {"type": "integer", "min": 1, "max": 30, "clamps": True,
+                                "off_allowed": True},
+    "db_write_mode":           {"type": "string", "choices": ("async", "sync")},
+    "events_enabled":          {"type": "boolean"},
+    "events_url":              {"type": "string", "format": "url", "schemes": _EVENTS_URL_SCHEMES,
+                                "off_allowed": True},
+    "hard_cap":                {"type": "boolean"},
+    "restart_after_loss":      {"type": "boolean"},
+    "balance_goal":            {"type": "number", "min": 0.0, "off_allowed": True},
+    "hybrid_recover_at":       {"type": "number", "min": 0.0, "off_allowed": True},
+    "hybrid_press_at":         {"type": "number", "min": 0.0, "off_allowed": True},
+    "hybrid_press_floor":      {"type": "number", "min": 0.0, "off_allowed": True},
+    "hybrid_recover_bet":      {"type": "number", "min": 1.0},
+    "hybrid_press_bet":        {"type": "number", "min": 1.0},
+    "hybrid_recover_strategy": {"type": "string", "choices": PHASE_STRATEGY_KEYS},
+    "hybrid_press_strategy":   {"type": "string", "choices": PHASE_STRATEGY_KEYS},
+}
+
+
+def _rule_bounds(key: str) -> tuple:
+    """(min, max) of a clamped config key, as _apply_mutation clamps it."""
+    rule = _CONFIG_VALUE_RULES[key]
+    return rule["min"], rule["max"]
+
+
+def _config_schema_data() -> dict:
+    """Every key --config-set accepts: value rule, aliases, default, live reload, lane override, help."""
+    defaults = BotState()
+    aliases = {}
+    for alias, key in _TWEAK_ALIAS.items():
+        aliases.setdefault(key, []).append(alias)
+    helps = dict(_CONFIG_SHOW_FIELDS)
+    keys = [{"key": key,
+             "off_allowed": False,
+             **_CONFIG_VALUE_RULES[key],
+             "aliases": sorted(aliases.get(key, [])),
+             "default": _config_show_value(key, getattr(defaults, key, None)),
+             "live_reload": key in _LIVE_RELOAD_KEYS,
+             "lane_overridable": key not in _LANE_FORBIDDEN_KEYS,
+             "help": helps[key]}
+            for key in sorted(_TWEAK_PARAMS)]
+    return {"keys": keys,
+            "lanes": {"count": {"min": 1, "max": LANES_MAX},
+                      "split": {"choices": list(LANE_SPLIT_MODES)},
+                      "override_lanes": {"min": 2, "max": LANES_MAX},
+                      "unset_values": list(_LANE_UNSET_VALUES)}}
+
+
 def _parse_config_set_pairs(pairs: list) -> dict:
     """Parse ['max_profit=0.005', 'base_bet=0.0001'] → {'max_profit': '0.005', ...}.
 
@@ -7015,104 +7106,188 @@ def _signal_lane_daemons(lanes=None) -> int:
     return n
 
 
-def _cmd_config_set_lanes(per_lane: dict, count, split=None) -> None:
+def _plan_lane_changes(per_lane: dict, count, split) -> dict:
+    """Validate lanes=N, lane_split and laneK.* pairs and build the lanes block to write.
+
+    Returns {"raw": config dict with the new lanes block, "changes": [...], "lanes": [K, ...]};
+    each change is {lane (None for lanes/lane_split), key, old, new, removed}.
+    """
     try:
         with open(CONFIG_PATH) as f:
             raw = json.load(f)
     except (OSError, ValueError):
-        console.print("[yellow]No config saved yet: run the wizard first.[/]")
-        sys.exit(1)
+        raise _CliError("no_config", "No config saved yet: run the wizard first.",
+                        exit_code=1) from None
     lanes = raw.setdefault("lanes", {})
     overrides = lanes.setdefault("overrides", {})
+    changes = []
     if count is not None:
-        old = lanes.get("count", 1)
+        changes.append({"lane": None, "key": "lanes", "old": lanes.get("count", 1),
+                        "new": count, "removed": False})
         lanes["count"] = count
-        console.print(f"  [yellow]lanes[/]: [dim]{old}[/]  →  [green]{count}[/]")
     if split is not None:
-        old = _lane_split(raw)
+        changes.append({"lane": None, "key": "lane_split", "old": _lane_split(raw),
+                        "new": split, "removed": False})
         lanes["split"] = split
-        console.print(f"  [yellow]lane_split[/]: [dim]{old}[/]  →  [green]{split}[/]  "
-                      f"[dim]({_LANE_SPLIT_HELP[split]})[/]")
     for lane, lane_pairs in sorted(per_lane.items()):
         try:
             sets, removals = _lane_override_changes(lane, lane_pairs)
         except ValueError as e:
-            console.print(f"[red]Invalid lane{lane} override:[/] {e}")
-            sys.exit(2)
+            raise _CliError("invalid_lane_override", f"Invalid lane{lane} override: {e}",
+                            style="red", exit_code=2) from None
         ov = overrides.setdefault(str(lane), {})
         for k in sorted(removals):
-            ov.pop(k, None)
-            console.print(f"  [yellow]lane{lane}.{k}[/]: [dim]override removed (uses base)[/]")
+            changes.append({"lane": lane, "key": k, "old": ov.pop(k, None), "new": None,
+                            "removed": True})
         for k, v in sets.items():
+            changes.append({"lane": lane, "key": k, "old": ov.get(k), "new": v, "removed": False})
             ov[k] = v
-            console.print(f"  [yellow]lane{lane}.{k}[/]  →  "
-                          f"[green]{_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}[/]")
         if not ov:
             overrides.pop(str(lane), None)
-    _write_config_raw(raw)
+    return {"raw": raw, "changes": changes, "lanes": sorted(per_lane)}
+
+
+def _config_set_plan(pairs: list) -> dict:
+    """Validate every --config-set pair and work out the result, writing and signalling nothing.
+
+    Lane pairs are checked first and the base pairs last, the order the writes
+    happen in, so state ends up holding the new base config. Returns
+    {"lanes": _plan_lane_changes result or None, "parsed", "old", "before", "msgs"}.
+    Raises _CliError with the message and exit code the command has always used.
+    """
+    for p in pairs:
+        if p.lower().startswith("api_key="):
+            raise _CliError("api_key_refused", "Refusing to write api_key via --config-set.",
+                            style="red", exit_code=2,
+                            hint="  Set the WOLFBET_API_KEY environment variable instead "
+                                 "(never in shell history / process args).")
+    try:
+        pairs, per_lane, lanes_count, lane_split = _split_lane_pairs(pairs)
+    except ValueError as e:
+        raise _CliError("invalid_argument", f"Invalid --config-set argument: {e}",
+                        style="red", exit_code=2) from None
+    plan = {"lanes": None, "parsed": {}, "old": {}, "before": {}, "msgs": []}
+    if per_lane or lanes_count is not None or lane_split is not None:
+        plan["lanes"] = _plan_lane_changes(per_lane, lanes_count, lane_split)
+        if not pairs:
+            return plan
+    try:
+        parsed = _parse_config_set_pairs(pairs)
+    except ValueError as e:
+        raise _CliError("invalid_argument", f"Invalid --config-set argument: {e}",
+                        style="red", exit_code=2) from None
+    if not load_config():
+        raise _CliError("no_config", "No config saved yet: run the wizard first.",
+                        hint="  Try: python3 wolfbet.py --setup-only", exit_code=1)
+    keys = list(_CONFIG_KEYS) + list(_STREAK_TUPLE_KEYS)
+    plan["before"] = {k: getattr(state, k, None) for k in keys}
+    plan["old"] = {k: getattr(state, k, None) for k in parsed}
+    try:
+        plan["msgs"] = _apply_mutation(parsed) or []
+    except ValueError as e:
+        raise _CliError("invalid_value", f"Mutation failed: {e}", style="red", exit_code=2) from None
+    plan["parsed"] = parsed
+    return plan
+
+
+def _config_dry_run_data(plan: dict) -> dict:
+    """The diff a config-set would write: base keys (parsed and derived), lane overrides, warnings.
+
+    A lane entry with removed=True drops the override, so the lane uses the base value again.
+    """
+    def entry(key, old, new):
+        return {"key": key, "old": _config_show_value(key, old), "new": _config_show_value(key, new),
+                "apply": "live" if key in _LIVE_RELOAD_KEYS else "restart"}
+
+    base, lanes = [], {}
+    for c in (plan["lanes"] or {}).get("changes", []):
+        if c["lane"] is None:
+            base.append({**entry(c["key"], c["old"], c["new"]), "apply": "restart"})
+        else:
+            lanes.setdefault(str(c["lane"]), []).append(
+                {**entry(c["key"], c["old"], c["new"]), "removed": c["removed"]})
+    if plan["parsed"]:
+        derived = [k for k, v in plan["before"].items()
+                   if k not in plan["parsed"] and getattr(state, k, None) != v]
+        for k in list(plan["parsed"]) + derived:
+            old = plan["old"][k] if k in plan["old"] else plan["before"][k]
+            base.append(entry(k, old, getattr(state, k, None)))
+    warnings = [m[1:].strip() for m in plan["msgs"] if isinstance(m, str) and m.startswith("⚠")]
+    return {"base": base, "lanes": lanes, "warnings": warnings}
+
+
+def _print_config_dry_run(data: dict) -> None:
+    console.print(Rule("[bold cyan]Dry run: nothing saved[/]"))
+    rows = [("", e) for e in data["base"]]
+    rows += [(f"lane{lane}.", e) for lane, entries in data["lanes"].items() for e in entries]
+    for prefix, e in rows:
+        new = "base" if e.get("removed") else _fmt_config_value(e["key"], e["new"])
+        console.print(f"  [yellow]{prefix}{e['key']}[/]: [dim]{_fmt_config_value(e['key'], e['old'])}[/]"
+                      f"  →  [green]{new}[/]  [dim]({e['apply']})[/]")
+    for w in data["warnings"]:
+        console.print(f"  [yellow]⚠ {w}[/]")
+
+
+def _write_lane_plan(lp: dict) -> None:
+    """Write the planned lanes block, print each change and SIGHUP the lanes it touched."""
+    for c in lp["changes"]:
+        k, lane = c["key"], c["lane"]
+        if lane is None and k == "lanes":
+            console.print(f"  [yellow]lanes[/]: [dim]{c['old']}[/]  →  [green]{c['new']}[/]")
+        elif lane is None:
+            console.print(f"  [yellow]lane_split[/]: [dim]{c['old']}[/]  →  [green]{c['new']}[/]  "
+                          f"[dim]({_LANE_SPLIT_HELP[c['new']]})[/]")
+        elif c["removed"]:
+            console.print(f"  [yellow]lane{lane}.{k}[/]: [dim]override removed (uses base)[/]")
+        else:
+            v = c["new"]
+            console.print(f"  [yellow]lane{lane}.{k}[/]  →  "
+                          f"[green]{_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}[/]")
+    _write_config_raw(lp["raw"])
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
-    if per_lane:
-        n = _signal_lane_daemons(sorted(per_lane))
+    if lp["lanes"]:
+        n = _signal_lane_daemons(lp["lanes"])
         if n:
             console.print(f"[dim]{n} running lane(s) reloaded live config "
                           "(restart-only fields apply on the next start).[/]")
+    count = next((c["new"] for c in lp["changes"] if c["lane"] is None and c["key"] == "lanes"), None)
+    split_changed = any(c["lane"] is None and c["key"] == "lane_split" for c in lp["changes"])
     if count is not None:
         console.print(f"[dim]Run [cyan]wolfctl lanes {count}[/] to start/stop lane processes "
                       "(restart running lanes so each recomputes its budget share).[/]")
-    elif split is not None:
+    elif split_changed:
         console.print("[dim]lane_split applies on the next lane start: run "
                       "[cyan]wolfctl restart[/].[/]")
 
 
-def cmd_config_set(pairs: list):
-    """Apply KEY=VALUE mutations to the saved config, then persist. No wizard."""
-    # Security: reject api_key: credentials belong in env vars, not shell history.
-    for p in pairs:
-        if p.lower().startswith("api_key="):
-            console.print("[red]Refusing to write api_key via --config-set.[/]")
-            console.print("[dim]  Set the WOLFBET_API_KEY environment variable instead "
-                          "(never in shell history / process args).[/]")
-            sys.exit(2)
+def cmd_config_set(pairs: list, dry_run: bool = False, as_json: bool = False):
+    """Apply KEY=VALUE mutations to the saved config, then persist. No wizard.
 
-    # v2.35.0: lanes=N and laneK.key=value write the lanes block directly.
+    Every pair is validated before anything is written, so a bad pair leaves the
+    file and the running lanes untouched. With dry_run, print the diff instead
+    (JSON with as_json) and write or signal nothing. api_key is refused:
+    credentials belong in env vars, not shell history.
+    """
     try:
-        pairs, per_lane, lanes_count, lane_split = _split_lane_pairs(pairs)
-    except ValueError as e:
-        console.print(f"[red]Invalid --config-set argument:[/] {e}")
-        sys.exit(2)
-    if per_lane or lanes_count is not None or lane_split is not None:
+        plan = _config_set_plan(pairs)
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if dry_run:
+        data = _config_dry_run_data(plan)
+        if as_json:
+            _print_json(data)
+        else:
+            _print_config_dry_run(data)
+        return
+
+    if plan["lanes"]:
         console.print(Rule("[bold cyan]Lane config updated[/]"))
-        _cmd_config_set_lanes(per_lane, lanes_count, lane_split)
-        if not pairs:
-            return
-
-    try:
-        parsed = _parse_config_set_pairs(pairs)
-    except ValueError as e:
-        console.print(f"[red]Invalid --config-set argument:[/] {e}")
-        sys.exit(2)
-
-    if not load_config():
-        console.print("[yellow]No config saved yet: run the wizard first.[/]")
-        console.print("[dim]  Try: python3 wolfbet.py --setup-only[/]")
-        sys.exit(1)
-
-    # Snapshot old values BEFORE mutation for the diff print.
-    old = {}
-    for canonical in parsed:
-        try:
-            old[canonical] = getattr(state, canonical)
-        except AttributeError:
-            old[canonical] = None
-
-    try:
-        # v2.30.6: capture msgs to surface clamp warnings (⚠ ...) beside
-        # the standard "old → new" panel. Was: return value discarded and
-        # silent clamps went unseen.
-        mutation_msgs = _apply_mutation(parsed) or []
-    except ValueError as e:
-        console.print(f"[red]Mutation failed:[/] {e}")
-        sys.exit(2)
+        _write_lane_plan(plan["lanes"])
+    parsed = plan["parsed"]
+    if not parsed:
+        return
+    old, mutation_msgs = plan["old"], plan["msgs"]
 
     save_config()
     console.print(Rule("[bold cyan]Config updated[/]"))
@@ -8387,6 +8562,8 @@ Examples:
     wolfbet.py --config-set recurring=on recdelay=90 maxbets=1000
     wolfbet.py --config-set proxy=https://user:pass@10.0.0.1:8080
     wolfbet.py --config-set purgedays=7
+    wolfbet.py --dry-run --json --config-set maxloss=0.01   # validate + diff, nothing saved
+    wolfbet.py --config-schema        # every settable key as JSON
     wolfbet.py --preset martingale-safe --daemon
 
   Data
@@ -8448,6 +8625,12 @@ def main():
                        help="Non-interactive config mutation. Aliases match the T-hotkey grammar "
                             "(delay=0.35, maxprofit=0.005, pipeline=3, ...). api_key is refused: "
                             "use the WOLFBET_API_KEY env var.")
+    group.add_argument("--config-schema", action="store_true",
+                       help="Print every key --config-set accepts as JSON: type, choices or range, "
+                            "aliases, default, live reload, lane override, help")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="With --config-set: validate and print the old -> new diff "
+                             "without saving or reloading anything")
     group.add_argument("--cleanup", nargs="?", type=int, metavar="DAYS", const=-1,
                        help="Purge old bet rows from the DB (default: state.purge_days, "
                             "explicit: --cleanup N for N days, clamped 1-30). "
@@ -8501,10 +8684,15 @@ def main():
 
     args = parser.parse_args()
 
+    if args.dry_run and not args.config_set:
+        sys.stderr.write("--dry-run works with --config-set only\n")
+        sys.exit(2)
     if args.json:
-        if not any(getattr(args, c) not in (None, False) for c in _JSON_COMMANDS):
+        if not (any(getattr(args, c) not in (None, False) for c in _JSON_COMMANDS)
+                or args.config_schema or args.dry_run):
             sys.stderr.write("--json works with " + ", ".join(
-                "--" + c.replace("_", "-") for c in _JSON_COMMANDS) + "\n")
+                "--" + c.replace("_", "-") for c in _JSON_COMMANDS)
+                + ", --config-schema and --config-set --dry-run\n")
             sys.exit(2)
         console.file = sys.stderr   # stdout carries only the JSON document
 
@@ -8579,7 +8767,10 @@ def main():
         cmd_config_show(as_json=args.json)
         return
     if args.config_set:
-        cmd_config_set(args.config_set)
+        cmd_config_set(args.config_set, dry_run=args.dry_run, as_json=args.json)
+        return
+    if args.config_schema:
+        _print_json(_config_schema_data())
         return
     if args.cleanup is not None:
         init_db()

@@ -1,0 +1,44 @@
+───────────────────────────────────────────────────────────────────── Lane config updated ──────────────────────────────────────────────────────────────────────
+  lanes: 3  →  4
+  lane_split: bet  →  budget  (each lane may risk balance ÷ lanes)
+  lane2.multiplier: override removed (uses base)
+  lane3.max_wins  →  5
+
+Saved to config.json
+1 running lane(s) reloaded live config (restart-only fields apply on the next start).
+Run wolfctl lanes 4 to start/stop lane processes (restart running lanes so each recomputes its budget share).
+[exit 0]
+{
+  "api_key": "wb_live_0123456789abcdefSECRET9876",
+  "currency": "usdt",
+  "game": "dice",
+  "rule": "over",
+  "multiplier": 2.0,
+  "bet_value": 49.5,
+  "strategy": "Martingale",
+  "strategy_key": "2",
+  "base_bet": 0.0001,
+  "loss_mult": 2.0,
+  "max_profit": 0.01,
+  "max_loss": 0.005,
+  "recurring": true,
+  "recurring_delay": 60,
+  "streak_delay_loss": "3:5",
+  "proxy": "http://proxyuser:proxypass@10.0.0.1:8080",
+  "events_enabled": true,
+  "events_url": "redis://dash:redispass@127.0.0.1:6379/0",
+  "lanes": {
+    "count": 4,
+    "split": "budget",
+    "overrides": {
+      "2": {
+        "streak_delay_loss": "2:4"
+      },
+      "3": {
+        "max_loss": 0.002,
+        "max_wins": 5
+      }
+    }
+  }
+}
+[signals [(424243, <Signals.SIGHUP: 1>)]]

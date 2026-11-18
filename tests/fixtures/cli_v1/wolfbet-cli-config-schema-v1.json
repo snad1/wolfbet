@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-config-schema-v1.json",
+  "title": "wolfbet.py --config-schema",
+  "description": "Every key wolfbet.py --config-set accepts, built from the tables config-set validates with. min/max with clamps=true are clamped, not refused; off_allowed keys accept off/none/0. Lane overrides are written laneK.key=value for K in lanes.override_lanes, or laneK.key=default (any of lanes.unset_values) to drop one.",
+  "type": "object",
+  "required": [
+    "v",
+    "keys",
+    "lanes"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "type",
+          "off_allowed",
+          "aliases",
+          "default",
+          "live_reload",
+          "lane_overridable",
+          "help"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "number",
+              "integer",
+              "string",
+              "boolean"
+            ]
+          },
+          "off_allowed": {
+            "type": "boolean"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "min": {
+            "type": "number"
+          },
+          "max": {
+            "type": "number"
+          },
+          "clamps": {
+            "const": true
+          },
+          "format": {
+            "enum": [
+              "N:X",
+              "url"
+            ]
+          },
+          "schemes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {},
+          "live_reload": {
+            "type": "boolean"
+          },
+          "lane_overridable": {
+            "type": "boolean"
+          },
+          "help": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "lanes": {
+      "type": "object",
+      "required": [
+        "count",
+        "split",
+        "override_lanes",
+        "unset_values"
+      ],
+      "properties": {
+        "count": {
+          "type": "object",
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer"
+            },
+            "max": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        },
+        "split": {
+          "type": "object",
+          "required": [
+            "choices"
+          ],
+          "properties": {
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "override_lanes": {
+          "type": "object",
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer"
+            },
+            "max": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        },
+        "unset_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
