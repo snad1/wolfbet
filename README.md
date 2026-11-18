@@ -48,6 +48,7 @@ Both the CLI bot and the Telegram bot import shared logic from `core/` (includin
 | **Live hotkeys** | `P`ause · `R`esume · `T`weak · `E`xport · `H`istory · `Q`uit — mid-session |
 | **Runtime tweak grammar** | 22 tunable params via `T` hotkey or `/tweak` — instant vs auto-restart semantics |
 | **Advanced session tuning** | Recurring restart, streak delays, streakbet-on-loss, dynamic basebet_pct, milestones |
+| **Session box** | Loss cap checked before each bet, restart after a capped loss, balance goal, change of strategy by session profit |
 | **Session summary panel** | End-of-session recap: profit, wagered, ROI, streaks, top wins/losses |
 | **Session exports** | `--export` (CSV/JSON) or `E` hotkey — per session or all sessions |
 | **Backtest / replay** | `--simulate N` (random, seedable) or `--replay-session ID` — zero API calls, zero real balance risk |
@@ -137,12 +138,13 @@ Inspect or mutate the saved config without walking the wizard:
 python3 wolfbet.py --config-show                        # dump current config as a table
 python3 wolfbet.py --config-set maxprofit=0.005 delay=0.35
 python3 wolfbet.py --config-set pipeline=3 recurring=on
+python3 wolfbet.py --config-set game=dice            # dice / dice-manual / limbo / dice-auto / limbo-auto
 ```
 
 - `--config-show` reads `~/.wolfbet_autobot.json`, renders a Rich table (Field / Value / Description), and prints file path + mode. API key is masked.
 - `--config-set KEY=VALUE [KEY=VALUE …]` mutates one or more fields, then persists via `save_config()`. Aliases are the same as the `T` hotkey grammar (`delay` → `bet_delay`, `maxprofit` → `max_profit`, `pipeline` → `pipeline_depth`, …).
 - **`api_key=…` is refused.** Credentials belong in the `WOLFBET_API_KEY` env var, not shell history.
-- Unknown fields and malformed pairs exit non-zero with a clear error.
+- Unknown fields and malformed pairs exit non-zero with a clear error. `game` is checked against the games the bot supports, and changing it clears a live auto-bet cycle.
 - **Live reload** (v2.28.3): if the daemon is running, `wolfctl config-set` sends `SIGHUP` after saving, and the daemon hot-applies safe fields (recurring, stop conditions, delays, milestones, pipeline depth, proxy, retention, …) in place. Unsafe fields (`game`, `strategy_key`, `base_bet`, `api_key`, …) print a heads-up that a full `wolfctl restart` is required. Nothing to remember — the command tells you which path it took.
 
 ### First real run
@@ -359,6 +361,15 @@ python3 wolfbet.py --backtest --simulate 10000 --seed 42 --preset martingale-saf
 
 # Replay a real historical session against your current strategy
 python3 wolfbet.py --backtest --replay-session 123 --preset new-tweak
+
+# 20,000 sessions back to back: share in profit, average win and loss, cost
+python3 wolfbet.py --backtest --sessions 20000 --seed 1
+
+# 300 runs from a balance of 1.0, each until the balance goal or the floor
+python3 wolfbet.py --backtest --runs 300 --balance 1.0 --seed 1
+
+# The same table for the rolls of a recorded session
+python3 wolfbet.py --backtest --replay-session 123 --sessions 100000
 ```
 
 Guarantees:
@@ -367,6 +378,8 @@ Guarantees:
 - **`--simulate`** uses `random.Random(seed)` — same seed → same outcome sequence, every time.
 - **`--replay-session`** re-runs the strategy against the actual bet outcomes recorded in `sessions/bets` for that session ID.
 - Results print as a summary panel; no DB rows are written (backtests don't pollute your session history).
+- **`--sessions` / `--runs`** start a new session after every session end, loss or win, whatever the live restart settings are. The note under the table says what the live bot would do. Without `--simulate N` they draw up to 5,000,000 rolls (about 12 seconds on a laptop).
+- The net result of a short backtest is partly luck. Over 20,000 two-bet sessions the loss per 100 wagered falls between a gain of 0.5 and a loss of 2.3 in 19 runs out of 20, and about 1 run in 12 shows a gain. Over 200,000 sessions it falls between 0.6 and 1.4. The table prints the long-run cost (1 per 100 wagered) next to the measured result.
 
 ---
 
@@ -480,6 +493,96 @@ All configuration can be set via environment variables (recommended for servers)
 
 ---
 
+## Session box
+
+A session box is a loss cap, a cash-out and, if you want, a change of strategy by session profit. It decides how a session ends. It does not change the odds: a dice bet costs about 1% of its amount on average at any payout, so every setup loses about 1 per 100 wagered over time. No setup here is profitable.
+
+| Setting | Meaning |
+|---|---|
+| `max_profit` | Cash-out: the session ends in profit at this amount (existing setting). |
+| `max_loss` | The most one session may lose (existing setting). |
+| `hard_cap` | `on`: the next bet is checked before it is placed. A bet that would take the loss past `max_loss`, or the balance below `stop_on_balance`, is not placed and the session ends. `off`: `max_loss` is checked after the bet, so a doubled bet can pass it. |
+| `restart_after_loss` | `on`: a session that ended at its loss cap is followed by a new one after `recurring_delay`. Needs `recurring`, `hard_cap`, `max_loss` and `stop_on_balance`. |
+| `stop_on_balance` | Balance floor: the bot stops here and stays stopped (existing setting). |
+| `balance_goal` | The bot stops when the balance reaches this and stays stopped. |
+| `hybrid_recover_at` | Session loss that switches to the recovery strategy, until the session is back to break-even. |
+| `hybrid_recover_strategy`, `hybrid_recover_bet` | Recovery strategy key (1-7, default 2) and its first bet as a multiple of `base_bet`. |
+| `hybrid_press_at`, `hybrid_press_floor` | Session profit that switches to the press strategy, and the profit at which it hands back. |
+| `hybrid_press_strategy`, `hybrid_press_bet` | Press strategy key (1-7, default 5) and its first bet as a multiple of `base_bet`. |
+
+Set them with `wolfctl config-set KEY=VALUE`, then `wolfctl restart`. A phase threshold switches the pre-bet cap on as well. If the rules cannot work, `config-set` prints a warning that names the setting and the bot refuses to start.
+
+### What the numbers say
+
+200,000 simulated sessions per row with the bot's own bet sizing, dice 2x, loss cap 20 targets. One target is the profit a session aims for (`max_profit`).
+
+| Opening strategy, cash out at the target | Sessions in profit | Loss when it fails | Expected loss per session | Bets per session |
+|---|---|---|---|---|
+| Martingale, first bet = target | 93.5% | 15 targets | 0.041 targets | 2 |
+| Martingale from target/4, then press the profit with Anti-Martingale | 93.7% | 15.75 | 0.079 | 13 |
+| D'Alembert, unit = target/4 | 93.5% | 18.25 | 0.136 | 13 |
+| Flat, bet = target | 94.2% | 20 | 0.212 | 21 |
+| Flat from target/50, Martingale recovery, Paroli press | 82.7% | 16.8 | 1.970 | 9,085 |
+| Flat, bet = target/50 | 36.8% | 20 | 12.275 | 61,374 |
+
+The expected loss is 1% of what the session wagers, so fewer and larger bets cost less. A high share of sessions in profit is paid for by the size of the loss: with a cap of 15 targets, one losing session takes back 15 winning ones.
+
+### Example setups
+
+The opening strategy is chosen in the wizard (`wolfctl setup`). Amounts below aim for 100 satoshis per session.
+
+```bash
+# A. Martingale whose first bet is the target, cap = four losses in a row
+wolfctl config-set base_bet=0.000001 loss_mult=2 max_profit=0.000001 \
+  max_loss=0.000015 hard_cap=on recurring=on
+
+# B. Small Martingale, press the profit with Anti-Martingale
+wolfctl config-set base_bet=0.00000025 loss_mult=2 win_mult=2 max_profit=0.000001 \
+  max_loss=0.00001575 hybrid_press_at=0.00000025 hybrid_press_strategy=3 hybrid_press_bet=1
+
+# C. D'Alembert (choose it in the wizard), unit = a quarter of the target
+wolfctl config-set base_bet=0.00000025 max_profit=0.000001 max_loss=0.00002 hard_cap=on
+
+# Keep running after a capped loss, between a balance floor and a balance goal
+wolfctl config-set restart_after_loss=on stop_on_balance=FLOOR balance_goal=GOAL
+```
+
+Check a setup before it bets real money:
+
+```bash
+wolfctl backtest --sessions 200000 --seed 1   # same rolls every time: compare setups
+wolfctl backtest --sessions 2000              # new rolls every run: see the spread
+```
+
+### Watch the switching live
+
+Flat 1 sat; at -100 sats switch to Martingale from 25; at +20 sats switch to Paroli from 10; cash out at +50; cap 1,000:
+
+```bash
+wolfctl config-set game=dice strategy_key=1 base_bet=0.00000001 loss_mult=2 win_mult=2 \
+  max_profit=0.0000005 max_loss=0.00001 \
+  hybrid_recover_at=0.000001 hybrid_recover_strategy=2 hybrid_recover_bet=25 \
+  hybrid_press_at=0.0000002 hybrid_press_strategy=5 hybrid_press_bet=10 \
+  recurring=on recurring_delay=2 restart_after_loss=on \
+  stop_on_balance=FLOOR balance_goal=GOAL
+wolfctl restart
+wolfctl monitor                                                    # phase beside the strategy
+tail -f ~/.wolfbet_logs/wolfbet.log | grep -E "PHASE|SESSION END"   # one line per switch / session
+```
+
+Measured with the bot's code: about 6.7 switches and 9,000 bets per session (about 5 minutes), 82% of sessions in profit, about -839 sats when one fails, about -1,085 sats an hour overall.
+
+### Limits
+
+- The cap is exact on `dice`, `dice-manual` and `limbo`. On `dice-auto` / `limbo-auto` the server sizes each bet and the bot mirrors it; a mismatch can overshoot by one bet.
+- On an auto game every new session and every phase switch costs one `/auto/start`. Sessions of a few bets fit the plain `dice` game better.
+- With `loss_mult` 2.01 a cap of exactly 15 first bets does not cover the fourth bet. Use `loss_mult=2` or size the cap from the real chain.
+- `hybrid_press_floor` is where the press phase ends, not a guaranteed minimum: profit can pass it by one bet.
+- Thresholds are amounts and do not scale when `base_bet` changes.
+- These settings are not in the wizard, need a restart to apply, and the Telegram bot does not have them.
+
+---
+
 ## Rule-Based Strategy (Strategy 8)
 
 ### Condition Modes
@@ -547,6 +650,9 @@ All configuration can be set via environment variables (recommended for servers)
 | `--simulate N` | Random simulation of N bets (uses `random.Random(seed)`) |
 | `--seed N` | Deterministic RNG seed for `--simulate` |
 | `--replay-session ID` | Replay strategy against recorded outcomes of session `ID` |
+| `--sessions N` | Play N sessions back to back and print session odds and cost |
+| `--runs R` | Repeat from a fresh balance R times; report how the runs ended |
+| `--balance X` | Starting balance for the backtest (default 1.0) |
 | `--preset NAME` | Load preset `NAME` before running (works with all modes) |
 
 **Concurrency**
@@ -597,6 +703,7 @@ Parity between CLI and Telegram is tracked in [audits/cli-vs-tg-parity.md](audit
 
 See [CHANGELOG.md](CHANGELOG.md) for the full per-version log. Recent milestones:
 
+- **v2.38.0** - Session box: `hard_cap` checks a bet against `max_loss` and the balance floor before it is placed; `restart_after_loss` starts a new session after a capped loss; `balance_goal` stops the bot at a balance; `hybrid_*` settings change strategy by session profit. Backtest gains `--sessions`, `--runs` and `--balance`. Profit target and max loss now fire to the nearest satoshi.
 - **Phase 1-3** — CLI ↔ TG parity: auto-bet endpoints, session robustness, observability metrics.
 - **Phase 4** — Named presets + runtime tweak grammar (22 params).
 - **Phase 5a** — Session summary panel + CSV/JSON export.

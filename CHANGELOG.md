@@ -35,6 +35,93 @@ Each saved bet can now also go to a Redis stream for the live dashboard. It is o
 
 **Tests**: `tests/test_phase11c_bet_events.py` (7).
 
+## CLI v2.38.2 - see the strategy switching live (2026-11-16)
+
+With phases on, a strategy switch was logged at INFO while the live log level is WARNING, so nothing showed; the only sign was `phase recover` beside the strategy in the monitor. The opening strategy also could not be set from `config-set`.
+
+- Every phase switch writes one line to the live log: `PHASE session 152: base (Flat Bet) -> recover (Martingale) at profit -0.00000100, next bet 0.00000025`.
+- Every session end writes one line: `SESSION END 152: Profit target reached: +0.00000050 after 5040 bets, 7 phase switches, balance 2.21898968`.
+- `grep -E "PHASE|SESSION END" ~/.wolfbet_logs/wolfbet.log` now reads as a timeline of the run. Both lines fire per switch and per session, never per bet.
+- `config-set strategy_key=1` (alias `strategy`) sets the opening strategy, keys 1-8; an unknown key is refused with the valid keys named. It resets the D'Alembert and Paroli counters, clears a live auto-bet cycle and needs a restart.
+- A backtest no longer writes to the live log, so 200,000 simulated sessions do not bury the live timeline.
+- Fix: the switch count shown per session now starts at zero in every recurring session; it used to carry over.
+
+**Tests**: 10 new cases across `tests/test_phase14_session_box.py` and `tests/test_phase5d_config_cli.py`. Version assertions bumped. **1001 total passing.**
+
+`VERSION` `2.38.1` -> `2.38.2`.
+
+## CLI v2.38.1 - config-set can change the game (2026-11-16)
+
+`wolfctl config-set game=dice` answered `Unknown config field: 'game'`. The game was saved, shown by `config-show` and refused per lane, but it was missing from the list of fields `config-set` and the `T` hotkey accept, so the only ways to change it were the wizard or hand-editing the config file.
+
+- `game` joins that list. The value is checked against the games the bot knows, and an unknown one is refused with the valid values named: `game must be one of dice, dice-auto, dice-manual, limbo, limbo-auto, got 'slots'`.
+- Changing the game clears a live auto-bet cycle, so no server cycle keeps running under the old game.
+- The change needs a full restart; `config-set` already names it in the restart note, and the setting is not live-reloadable.
+- Per-lane overrides still refuse it, because every lane must bet the same game.
+
+`rule`, `currency` and `strategy_key` remain wizard-only; adding `rule` also means re-deriving `bet_value`, which is a separate change.
+
+**Tests**: seven cases added to `tests/test_phase5d_config_cli.py` (parse, every known game, unknown game refused with the state unchanged, the stale cycle cleared, no change no clear, restart-only, lane refusal). Version assertions bumped. **991 total passing.**
+
+`VERSION` `2.38.0` -> `2.38.1`.
+
+## CLI v2.38.0 - session box: pre-bet loss cap, phases, loss restart, balance goal (2026-11-16)
+
+A session can now run inside a box: a loss cap checked before every bet, a cash-out, and an optional change of strategy by session profit. The bot can start a new session after a capped loss and stop for good at a balance goal or at the balance floor. A multi-session backtest shows what a setup does before it bets real money.
+
+None of this changes the odds. A dice bet costs about 1% of its amount on average at any payout, so every setup loses about 1 per 100 wagered over time. The settings only choose how that loss arrives: many small wins and a few capped losses.
+
+### New settings
+All off by default. Set them with `config-set`; they apply on the next start.
+
+| Setting | What it does |
+|---|---|
+| `hard_cap` | Checks the next bet before it is placed. A bet that would take the session loss past `max_loss`, or the balance below `stop_on_balance`, is not placed and the session ends. |
+| `restart_after_loss` | Starts a new session after a session ends at its loss cap. Needs `recurring`, `hard_cap`, `max_loss` and `stop_on_balance`. |
+| `balance_goal` | Stops the bot when the balance reaches this amount. Never restarts. |
+| `hybrid_recover_at`, `hybrid_recover_strategy`, `hybrid_recover_bet` | At this session loss, bet with another strategy (key 1-7) from its own first bet (a multiple of `base_bet`) until the session is back to break-even. |
+| `hybrid_press_at`, `hybrid_press_floor`, `hybrid_press_strategy`, `hybrid_press_bet` | At this session profit, bet with another strategy until profit falls to the floor or the session cashes out at `max_profit`. |
+
+Setting a phase threshold switches the pre-bet cap on as well.
+
+### Stop and restart behaviour
+- Without `hard_cap` the cap works as before: `max_loss` is checked after a bet, so a doubled bet can pass it.
+- A loss stop restarts only when every guard is set and the session ended on `Max loss hit` or `Loss cap`. Insufficient balance, the balance floor, a rule stop, the lane budget and a lost auto-bet cycle still stop the bot.
+- With phases on, a server auto-bet cycle may restart while the session is in the red, because the phase owns the recovery and the loss cap bounds it. Without phases that stop is unchanged.
+- A phase switch on `dice-auto` / `limbo-auto` ends the server cycle and starts one with the phase's strategy and first bet. Its stop rules carry the profit and loss still left in the session.
+- With the cap on, pipelined betting runs one bet at a time.
+
+### Start-up check
+`config-set` prints a warning that names the setting when the rules cannot work: a cap without `max_loss`, a restart without a floor, a first bet larger than the cap, thresholds out of order, a win progression with `win_mult` 1. The bot then refuses to start with the same message. The service exits without an error code in that case, so its unit does not retry every 10 seconds and then start betting by itself once the config is fixed.
+
+### Backtest
+- `--sessions N` plays N sessions back to back on one roll stream and prints the share of sessions in profit, average win and loss, worst session, bets and phase switches per session, the amount wagered and the net result per 100 wagered.
+- `--runs R` repeats from a fresh `--balance X` and reports how the runs ended: balance goal, balance floor, next bet unaffordable, or played out.
+- `--replay-session ID --sessions N` prints the same table for the rolls of a recorded session.
+- The backtest starts a new session after a loss whatever the live restart settings are, and says below the table what the live bot would do.
+- Without `--simulate N` these modes draw up to 5,000,000 rolls.
+- `backtest_loop` checks the stop conditions before it draws a roll, so no roll is dropped between sessions. A single `--simulate` run prints what it printed before.
+
+### Fixes that apply with every new setting off
+- **Profit target and max loss fire to the nearest satoshi.** Session profit is a sum of bet results and drifts off the exact value by float rounding. With flat 1 satoshi bets and a 1 satoshi target, 43% of the sessions that needed more than one bet missed the target and played on (4,142 of 9,625 simulated). A Martingale that doubles from 0.00000100 missed its target after 2, 3, 7, 8, 10 or 11 losses. A value less than half a satoshi short now counts as reached.
+- **A new recurring session starts D'Alembert and Paroli from their first step.** The unit count and the win count used to carry over from the session before.
+
+### Screens and records
+- `monitor`, `status` and the dashboard show `phase base`, `phase recover` or `phase press` beside the strategy while phases are on. The live state file carries `hybrid_phase`.
+- Sessions that ran with phases are stored as `Hybrid: <strategy>`, so `stats` and `analytics` list them apart.
+- `config-show` lists the ten settings.
+
+### Known limits
+- The cap is exact on `dice`, `dice-manual` and `limbo`, where the bot sizes each bet. On `dice-auto` / `limbo-auto` the server sizes the bet and the bot mirrors it; a mismatch can overshoot by one bet.
+- Every new session and every phase switch on an auto game costs one `/auto/start`.
+- With `loss_mult` 2.01 a cap of exactly 15 first bets does not cover the fourth bet (87.2% of sessions in profit instead of 93.5%). Use `loss_mult=2` or size the cap from the real chain.
+- `hybrid_press_floor` is where the press phase ends, not a guaranteed minimum.
+- The new settings are not in the wizard, are not reloaded live, and the Telegram bot does not have them.
+
+**Tests**: `tests/test_phase14_session_box.py` (145): phase choice, room for the next bet, value parsing, every config error, the cap in the stop check and in the bet loop, each guard of the loss restart, the balance goal, auto-bet config per phase, labels, config round trip, the start refusal and the multi-session backtest. Version assertions bumped. **984 total passing.**
+
+`VERSION` `2.37.2` -> `2.38.0`.
+
 ## CLI v2.37.3 / TG v1.21.4 - limits reject nan and inf (2026-11-15)
 
 A `nan` limit passes every `< 0` guard and every stop comparison, so `/set maxloss nan` silently disabled the stop-loss and `--config-set` accepted the same value.
@@ -63,7 +150,6 @@ A `nan` limit passes every `< 0` guard and every stop comparison, so `/set maxlo
 **Tests**: `tests/test_phase11n_tg_hardening.py` (16): owner gate with unset, non-numeric and configured ids, refusals for a non-owner and for the old fallback id, argv shape with a hostile path, path validation, a loop that keeps ticking during a benchmark, and the async DB helpers. **887 total passing.**
 
 `tg.VERSION` `1.21.2` -> `1.21.3`.
-
 ## CLI v2.37.2 - the base bet you set is the base bet it bets (2026-11-15)
 
 The operator saved `base_bet 0.00005805`, started the bot, and it kept betting `0.00006534`. Three separate defects produced that, and each one hid the others.

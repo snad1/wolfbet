@@ -82,6 +82,7 @@
 | Strategy 8 Rule-Based (custom `StrategyRule` list) | shared | Y | P0 | Manual apply via `apply_rules()`. |
 | Server-side translation of strategy → WolfBet auto-bet rules | tg/engine.py:542-601 | N | P0 | Phase 1 (only meaningful for auto games — manual games run strategies client-side). |
 | `_custom_rule_to_wolfbet()` — client-rule → server-rule translator | tg/engine.py:500-540 | N | P0 | Phase 1. |
+| Session box: pre-bet loss cap, restart after a capped loss, balance goal, strategy change by session profit | none (CLI only since v2.38.0) | Y | P2 | TG has no equivalent. The rules are pure functions in `core/session_rules.py`, so a TG port can reuse them. |
 
 ## 3. Session robustness (P0 for "runs smoothly, knows how to recover")
 

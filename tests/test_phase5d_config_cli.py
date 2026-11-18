@@ -1,4 +1,4 @@
-"""Phase 5d tests — non-interactive config CLI (--config-show / --config-set).
+"""Phase 5d tests - non-interactive config CLI (--config-show / --config-set).
 
 Run: WOLFBET_ENV=testing pytest wolfbet/tests/test_phase5d_config_cli.py -q
 """
@@ -206,3 +206,120 @@ def test_version_flag():
     rc, out, err = _run_cli("--version")
     assert rc == 0
     assert wb.VERSION in out
+
+
+# ── game is settable from config-set ──────────────────────
+def _reset_mutated_state():
+    """State every mutation test starts from; session rules off so no warnings fire."""
+    s = wb.state
+    s.game = "dice-auto"
+    s.rule = "over"
+    s.multiplier = 2.0
+    s.bet_value = 50.49
+    s._auto_uuid = None
+    s.max_loss = None
+    s.max_profit = None
+    s.hard_cap = False
+    s.restart_after_loss = False
+    s.balance_goal = None
+    s.hybrid_recover_at = None
+    s.hybrid_press_at = None
+
+
+def test_parse_kv_game_is_known():
+    assert wb._parse_config_set_pairs(["game=dice"]) == {"game": "dice"}
+
+
+def test_mutation_accepts_every_game():
+    for game in sorted(wb.GAME_ENDPOINTS):
+        _reset_mutated_state()
+        msgs = wb._apply_mutation({"game": game})
+        assert wb.state.game == game
+        assert any("restart to apply" in m for m in msgs)
+
+
+def test_mutation_refuses_an_unknown_game():
+    _reset_mutated_state()
+    try:
+        wb._apply_mutation({"game": "slots"})
+    except ValueError as e:
+        assert "game must be one of" in str(e)
+        assert "slots" in str(e)
+    else:
+        raise AssertionError("expected ValueError for an unknown game")
+    assert wb.state.game == "dice-auto"
+
+
+def test_mutation_clears_the_auto_bet_cycle_it_leaves_behind():
+    _reset_mutated_state()
+    wb.state.game = "dice-auto"
+    wb.state._auto_uuid = "live"
+    msgs = wb._apply_mutation({"game": "dice"})
+    assert wb.state._auto_uuid is None
+    assert any("Auto-bet UUID cleared" in m for m in msgs)
+
+
+def test_mutation_leaves_the_cycle_alone_when_it_changes_nothing():
+    _reset_mutated_state()
+    wb.state.game = "dice"
+    wb.state._auto_uuid = None
+    msgs = wb._apply_mutation({"game": "dice"})
+    assert wb.state.game == "dice"
+    assert not any("Auto-bet UUID" in m for m in msgs)
+
+
+def test_game_needs_a_restart_to_apply():
+    assert "game" not in wb._LIVE_RELOAD_KEYS
+
+
+def test_game_cannot_differ_per_lane():
+    assert "game" in wb._LANE_FORBIDDEN_KEYS
+    try:
+        wb._lane_override_changes(2, ["game=dice"])
+    except ValueError as e:
+        assert "can't differ per lane" in str(e)
+    else:
+        raise AssertionError("expected ValueError for a per-lane game override")
+
+
+# ── the opening strategy is settable from config-set ──────
+def test_mutation_sets_the_opening_strategy():
+    _reset_mutated_state()
+    wb.state.strategy_key = "2"
+    wb.state.strategy = "Martingale"
+    wb.state.dalembert_unit = 3
+    wb.state.paroli_count = 2
+    msgs = wb._apply_mutation({"strategy_key": "1"})
+    assert (wb.state.strategy_key, wb.state.strategy) == ("1", "Flat Bet")
+    assert (wb.state.dalembert_unit, wb.state.paroli_count) == (0, 0)
+    assert any("restart to apply" in m for m in msgs)
+
+
+def test_strategy_alias_resolves_to_the_key():
+    assert wb._parse_config_set_pairs(["strategy=4"]) == {"strategy_key": "4"}
+    _reset_mutated_state()
+    wb._apply_mutation({"strategy_key": "4"})
+    assert wb.state.strategy == "D'Alembert"
+
+
+def test_mutation_refuses_an_unknown_strategy():
+    _reset_mutated_state()
+    wb.state.strategy_key = "2"
+    try:
+        wb._apply_mutation({"strategy_key": "9"})
+    except ValueError as e:
+        assert "strategy_key must be one of" in str(e)
+    else:
+        raise AssertionError("expected ValueError for strategy_key 9")
+    assert wb.state.strategy_key == "2"
+
+
+def test_strategy_change_clears_a_live_auto_bet_cycle():
+    _reset_mutated_state()
+    wb.state._auto_uuid = "live"
+    wb._apply_mutation({"strategy_key": "1"})
+    assert wb.state._auto_uuid is None
+
+
+def test_strategy_needs_a_restart_to_apply():
+    assert "strategy_key" not in wb._LIVE_RELOAD_KEYS

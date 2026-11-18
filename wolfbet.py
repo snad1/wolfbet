@@ -60,6 +60,11 @@ from core.games import (
     wolfbet_hash, is_auto_game, fmt_multiplier, request_hash_header,
     custom_rule_to_wolfbet, build_auto_config, build_auto_start_payload,
 )
+from core.session_rules import (
+    PHASE_BASE, PHASE_RECOVER, PHASE_PRESS, HALF_SAT,
+    next_phase, loss_room, floor_room, config_errors,
+    parse_amount, parse_flag, parse_multiple, parse_strategy_key,
+)
 
 # ══════════════════════════════════════════════════════════
 #  CONSTANTS (configurable via environment variables)
@@ -266,6 +271,8 @@ def _check_risky_config() -> list:
 
 
 STREAK_RESET_REASON = "Loss streak reset"
+LOSS_CAP_REASON = "Loss cap"
+BALANCE_GOAL_REASON = "Balance goal reached"
 
 
 def _restart_delay_for(reason: str) -> float:
@@ -325,6 +332,10 @@ def _reset_session_for_recurring(delay: Optional[float] = None, reason: str = ""
         state.highest_balance = state.current_balance
         state.lowest_balance  = state.current_balance
         state.current_bet    = state.base_bet
+        state.hybrid_phase   = PHASE_BASE
+        state.hybrid_switches = 0
+        state.dalembert_unit = 0
+        state.paroli_count   = 0
         # Reset auto-bet UUID so betting_loop fires a fresh /auto/start next tick.
         state._auto_uuid     = None
         state._auto_restart_pending = False
@@ -378,7 +389,13 @@ _TWEAK_ALIAS = {
     "purgedays":   "purge_days",
     "dbmode":      "db_write_mode",
     "dbwritemode": "db_write_mode",
+    "strategy":    "strategy_key",
 }
+_SESSION_RULE_KEYS = (
+    "hard_cap", "restart_after_loss", "balance_goal",
+    "hybrid_recover_at", "hybrid_recover_strategy", "hybrid_recover_bet",
+    "hybrid_press_at", "hybrid_press_floor", "hybrid_press_strategy", "hybrid_press_bet",
+)
 _TWEAK_PARAMS = {
     "bet_delay", "basebet_pct",
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
@@ -388,10 +405,12 @@ _TWEAK_PARAMS = {
     "recurring", "recurring_delay",
     "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
+    "game", "strategy_key",
     "pipeline_depth",
     "proxy", "purge_days",
     "db_write_mode",
     "events_enabled", "events_url",
+    *_SESSION_RULE_KEYS,
 }
 _TWEAK_OFF_VALUES = (None, "", "off", "none", "0", "disable", "false", "no", "n")
 
@@ -632,8 +651,51 @@ def _apply_mutation(changes: dict) -> list:
                 raise ValueError(f"pipeline_depth must be an integer 1-8, got {v!r}")
         msgs.append(f"Pipeline depth: {state.pipeline_depth}")
 
+    for attr in ("hard_cap", "restart_after_loss"):
+        if attr in changes:
+            setattr(state, attr, parse_flag(attr, changes[attr]))
+            msgs.append(f"{attr}: {'on' if getattr(state, attr) else 'off'}")
+    for attr in ("balance_goal", "hybrid_recover_at", "hybrid_press_at"):
+        if attr in changes:
+            amount = parse_amount(attr, changes[attr])
+            setattr(state, attr, amount)
+            msgs.append(f"{attr}: {amount:.8f}" if amount else f"{attr}: off")
+    if "hybrid_press_floor" in changes:
+        state.hybrid_press_floor = parse_amount("hybrid_press_floor", changes["hybrid_press_floor"]) or 0.0
+        msgs.append(f"hybrid_press_floor: {state.hybrid_press_floor:.8f}")
+    for attr in ("hybrid_recover_bet", "hybrid_press_bet"):
+        if attr in changes:
+            setattr(state, attr, parse_multiple(attr, changes[attr]))
+            msgs.append(f"{attr}: {getattr(state, attr):g}x base_bet")
+    for attr in ("hybrid_recover_strategy", "hybrid_press_strategy"):
+        if attr in changes:
+            setattr(state, attr, parse_strategy_key(attr, changes[attr]))
+            msgs.append(f"{attr}: {STRATEGY_NAMES[getattr(state, attr)]}")
+
     # ── Strategy-config changes: auto games clear UUID for fresh restart ──
     strategy_touched = False
+    if "game" in changes:
+        game = str(changes["game"]).strip().lower()
+        if game not in GAME_ENDPOINTS:
+            raise ValueError(f"game must be one of {', '.join(sorted(GAME_ENDPOINTS))}, "
+                             f"got {game!r}")
+        if is_auto_game(state.game) and state._auto_uuid:
+            with state.lock:
+                state._auto_uuid = None
+            msgs.append("Auto-bet UUID cleared - restarts on next bet")
+        state.game = game
+        msgs.append(f"Game: {GAME_LABELS.get(game, game)} (restart to apply)")
+    if "strategy_key" in changes:
+        key = str(changes["strategy_key"]).strip()
+        if key not in STRATEGY_NAMES:
+            raise ValueError(f"strategy_key must be one of {', '.join(sorted(STRATEGY_NAMES))}, "
+                             f"got {key!r}")
+        state.strategy_key = key
+        state.strategy = STRATEGY_NAMES[key]
+        state.dalembert_unit = 0
+        state.paroli_count = 0
+        msgs.append(f"Strategy: {state.strategy} (restart to apply)")
+        strategy_touched = True
     if "base_bet" in changes:
         state.base_bet = float(changes["base_bet"])
         state.current_bet = state.base_bet
@@ -669,19 +731,43 @@ def _apply_mutation(changes: dict) -> list:
         state.win_mult = float(changes["win_mult"])
         msgs.append(f"Win mult: {state.win_mult:.2f}")
         strategy_touched = True
+    if any(key.startswith("hybrid_") for key in changes):
+        strategy_touched = True
 
     if strategy_touched and is_auto_game(state.game) and state._auto_uuid:
         with state.lock:
             state._auto_uuid = None
         msgs.append("Auto-bet UUID cleared: restarts on next bet")
 
+    msgs.extend(f"⚠ {problem}" for problem in _session_rule_errors())
     return msgs
 
 
-def _should_recurring_restart(reason: str) -> bool:
-    """Whitelist safe stop-reasons for recurring restart. Loss / insufficient-balance never restart."""
-    if state.profit < 0:
+def _loss_restart_allowed(reason: str) -> bool:
+    """True when a session that ended in the red may start a new one.
+
+    Needs restart_after_loss with recurring, the pre-bet cap, max_loss and a
+    balance floor, a balance still above that floor, and a session that ended
+    at its loss cap. Every other loss stop ends the run.
+    """
+    if not (state.restart_after_loss and state.recurring and _hard_cap_on()):
         return False
+    if state.max_loss is None or state.stop_on_balance is None:
+        return False
+    if state.current_balance <= state.stop_on_balance:
+        return False
+    return reason.startswith(("Max loss hit", LOSS_CAP_REASON))
+
+
+def _should_recurring_restart(reason: str) -> bool:
+    """Whether a stopped session starts a new one.
+
+    In profit: streak reset, or recurring after a profit target, max bets or
+    max wins. In the red: only the guarded loss restart. Insufficient balance
+    and the balance floor never restart.
+    """
+    if state.profit < 0:
+        return _loss_restart_allowed(reason)
     # Streak reset is its own restart rule: independent of the recurring flag.
     if reason.startswith(STREAK_RESET_REASON):
         return bool(state.streak_reset_losses)
@@ -1007,6 +1093,7 @@ _CONFIG_KEYS = [
     "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
     "streak_reset_losses", "streak_reset_delay",
     "events_enabled", "events_url",
+    *_SESSION_RULE_KEYS,
 ]
 
 def _mask_key(key: str) -> str:
@@ -1139,6 +1226,7 @@ _PRESET_KEYS = [
     "db_write_mode",
     # v2.32.0: loss-streak reset restart:
     "streak_reset_losses", "streak_reset_delay",
+    *_SESSION_RULE_KEYS,
 ]
 
 # Fields stored on state as (N, X) tuples but round-tripped through JSON as "N:X" strings.
@@ -1454,6 +1542,20 @@ class BotState:
         self.max_bets        : Optional[int]   = None
         self.max_wins        : Optional[int]   = None
         self.stop_on_balance : Optional[float] = None
+
+        # ── session rules: pre-bet cap, loss restart, balance goal, phases ──
+        self.hard_cap           : bool = False
+        self.restart_after_loss : bool = False
+        self.balance_goal       : Optional[float] = None
+        self.hybrid_recover_at       : Optional[float] = None
+        self.hybrid_recover_strategy : str = "2"
+        self.hybrid_recover_bet      : float = 1.0
+        self.hybrid_press_at         : Optional[float] = None
+        self.hybrid_press_floor      : float = 0.0
+        self.hybrid_press_strategy   : str = "5"
+        self.hybrid_press_bet        : float = 1.0
+        self.hybrid_phase            : str = PHASE_BASE
+        self.hybrid_switches         : int = 0
 
         # ── session info ──
         self.session_id     = None
@@ -1805,10 +1907,9 @@ def _build_bet_payload(amount: float) -> dict:
 def _build_auto_config() -> list:
     """Adapter: state.* → shared build_auto_config()."""
     return build_auto_config(
-        state.strategy_key, state.loss_mult, state.win_mult, state.base_bet,
+        _active_strategy_key(), state.loss_mult, state.win_mult, _active_base_bet(),
         state.game, state.custom_rules,
-        {"max_profit": state.max_profit, "max_loss": state.max_loss,
-         "max_bets": state.max_bets, "stop_on_balance": state.stop_on_balance},
+        _auto_stop_conditions(),
         state.delay_martin_threshold, logger,
     )
 
@@ -1816,7 +1917,7 @@ def _build_auto_config() -> list:
 def _build_auto_start_payload() -> dict:
     """Adapter: state.* → shared build_auto_start_payload()."""
     return build_auto_start_payload(
-        state.game, state.currency, state.base_bet, state.multiplier,
+        state.game, state.currency, _active_base_bet(), state.multiplier,
         state.rule, state.bet_value, _build_auto_config(),
     )
 
@@ -2154,12 +2255,125 @@ def api_place_bet(amount: float) -> Optional[dict]:
     return None
 
 # ══════════════════════════════════════════════════════════
+#  SESSION RULES: pre-bet cap, loss restart, balance goal, phases
+# ══════════════════════════════════════════════════════════
+def _hybrid_on() -> bool:
+    """True when a phase threshold is set."""
+    return state.hybrid_recover_at is not None or state.hybrid_press_at is not None
+
+
+def _hard_cap_on() -> bool:
+    """True when a bet is checked against the loss cap before it is placed. Phases always do."""
+    return bool(state.hard_cap) or _hybrid_on()
+
+
+def _active_strategy_key() -> str:
+    """Strategy that sizes the next bet: the current phase's, else the configured one."""
+    if _hybrid_on():
+        if state.hybrid_phase == PHASE_RECOVER:
+            return str(state.hybrid_recover_strategy)
+        if state.hybrid_phase == PHASE_PRESS:
+            return str(state.hybrid_press_strategy)
+    return state.strategy_key
+
+
+def _active_base_bet() -> float:
+    """First bet of the current phase: base_bet times the phase's multiple."""
+    if _hybrid_on():
+        if state.hybrid_phase == PHASE_RECOVER:
+            return state.base_bet * state.hybrid_recover_bet
+        if state.hybrid_phase == PHASE_PRESS:
+            return state.base_bet * state.hybrid_press_bet
+    return state.base_bet
+
+
+def _strategy_label() -> str:
+    """Strategy name for the session row; marks sessions that ran with phases."""
+    return f"Hybrid: {state.strategy}" if _hybrid_on() else state.strategy
+
+
+def _with_phase(strategy: str, phase) -> str:
+    """Strategy text for the live screens, with the current phase when phases are on."""
+    return f"{strategy}  phase {phase}" if phase else strategy
+
+
+def _auto_stop_conditions() -> dict:
+    """Stop rules sent with a server auto-bet cycle.
+
+    With phases on a cycle starts mid-session, so the profit and loss limits
+    are the distances left from the session profit so far.
+    """
+    max_profit, max_loss = state.max_profit, state.max_loss
+    if _hybrid_on():
+        if max_profit is not None:
+            max_profit = max(max_profit - state.profit, 0.0)
+        if max_loss is not None:
+            max_loss = max(abs(max_loss) + state.profit, 0.0)
+    return {"max_profit": max_profit, "max_loss": max_loss,
+            "max_bets": state.max_bets, "stop_on_balance": state.stop_on_balance}
+
+
+def _session_rule_errors() -> list:
+    """Reasons the configured session rules cannot work (empty when usable or all off)."""
+    cfg = {key: getattr(state, key) for key in _SESSION_RULE_KEYS}
+    for key in ("base_bet", "loss_mult", "win_mult", "max_profit", "max_loss",
+                "stop_on_balance", "recurring"):
+        cfg[key] = getattr(state, key)
+    return config_errors(cfg)
+
+
+def _exit_on_session_rule_errors(exit_code: int = 2) -> None:
+    """Refuse to start betting with session rules that cannot work, naming each setting.
+
+    The service start passes exit_code 0. Its unit restarts the bot after a
+    failure code, which would retry every few seconds and then start betting by
+    itself the moment the config is fixed.
+    """
+    problems = _session_rule_errors()
+    if not problems:
+        return
+    console.print("[red]Cannot start: fix these settings first.[/]")
+    for problem in problems:
+        console.print(f"  [yellow]{escape(problem)}[/]")
+    logger.error("START REFUSED: %s", "; ".join(problems))
+    sys.exit(exit_code)
+
+
+def _hybrid_step() -> bool:
+    """Move to the phase the session profit calls for. Returns True on a switch.
+
+    A switch starts the phase's strategy from its first bet. On an auto game it
+    also ends the server cycle, so the next tick starts one with that strategy.
+    """
+    target = PHASE_BASE
+    if _hybrid_on():
+        target = next_phase(state.hybrid_phase, state.profit, state.hybrid_recover_at,
+                            state.hybrid_press_at, state.hybrid_press_floor)
+    if target == state.hybrid_phase:
+        return False
+    previous, previous_name = state.hybrid_phase, STRATEGY_NAMES.get(_active_strategy_key(), "?")
+    with state.lock:
+        state.hybrid_phase = target
+        state.hybrid_switches += 1
+        state.current_bet = _active_base_bet()
+        state.dalembert_unit = 0
+        state.paroli_count = 0
+    logger.warning("PHASE session %s: %s (%s) -> %s (%s) at profit %+.8f, next bet %.8f",
+                   state.session_id, previous, previous_name, target,
+                   STRATEGY_NAMES.get(_active_strategy_key(), "?"),
+                   round(state.profit, 8) or 0.0, state.current_bet)
+    if is_auto_game(state.game):
+        api_auto_stop()
+    return True
+
+
+# ══════════════════════════════════════════════════════════
 #  STRATEGY ENGINE
 # ══════════════════════════════════════════════════════════
 def compute_next_bet(last_result: str) -> float:
     """Compute next bet amount (delegates to core.engine)."""
     nxt, state.dalembert_unit, state.paroli_count = _core_compute_next_bet(
-        state.strategy_key, state.base_bet, state.current_bet,
+        _active_strategy_key(), _active_base_bet(), state.current_bet,
         state.loss_mult, state.win_mult, last_result,
         state.current_streak, state.delay_martin_threshold,
         state.dalembert_unit, state.paroli_count,
@@ -2174,12 +2388,43 @@ def wolfrider_switch():
         state.bet_value = new_bv
         logger.debug("WOLFRIDER SWITCH → %s  bet_value=%s  (bet #%d)", new_rule, new_bv, state.total_bets)
 
+def _bet_fit_stop(profit: float, balance: float) -> str:
+    """Stop reason when the next bet would pass the loss cap or the balance floor, else ''.
+
+    Compares the amount as it is sent (8 decimals), so the cap is exact wherever
+    the bot sizes the bet itself.
+    """
+    bet = round(state.current_bet, 8)
+    room = loss_room(profit, state.max_loss)
+    if bet > room + HALF_SAT:
+        if state.max_loss is None:
+            return f"{LOSS_CAP_REASON}: hard_cap needs max_loss"
+        return f"{LOSS_CAP_REASON}: next bet {bet:.8f} does not fit (left {room:.8f})"
+    if bet > floor_room(balance, state.stop_on_balance) + HALF_SAT:
+        return (f"Balance floor: next bet {bet:.8f} does not fit above "
+                f"{state.stop_on_balance:.8f}")
+    return ""
+
+
+def _reached(value: float, target: float) -> bool:
+    """True when value has reached target, to the nearest satoshi.
+
+    Session profit is a sum of bet results and carries float dust, while real
+    amounts are whole satoshis, so a value less than half a satoshi short counts
+    as reached. The slack shrinks for a target under one satoshi, so zero profit
+    never counts.
+    """
+    return value > target - min(HALF_SAT, abs(target) / 2)
+
+
 def should_stop() -> tuple:
     p = state.profit
     b = state.current_balance
-    if state.max_profit is not None and p >= state.max_profit:
+    if state.balance_goal is not None and b >= state.balance_goal:
+        return True, f"{BALANCE_GOAL_REASON}: {b:.8f}"
+    if state.max_profit is not None and _reached(p, state.max_profit):
         return True, f"Profit target reached: {p:+.8f}"
-    if state.max_loss is not None and p <= -abs(state.max_loss):
+    if state.max_loss is not None and _reached(-p, abs(state.max_loss)):
         return True, f"Max loss hit: {p:+.8f}"
     if state.max_bets is not None and state.total_bets >= state.max_bets:
         return True, f"Max bets reached: {state.total_bets}"
@@ -2198,6 +2443,10 @@ def should_stop() -> tuple:
     if eq is not None and state.current_bet > eq:
         return True, (f"{LANE_BUDGET_REASON} (next bet {state.current_bet:.8f}, "
                       f"lane equity {eq:.8f})")
+    if _hard_cap_on():
+        reason = _bet_fit_stop(p, b)
+        if reason:
+            return True, reason
     return False, ""
 
 
@@ -2462,9 +2711,15 @@ def betting_loop():
             logger.info("Rate limit cooldown done, resuming betting")
             continue
 
+        # The phase step runs first so the stop check sees the new phase's bet.
+        _hybrid_step()
+
         # ── stop-condition check ─────────────────────────
         stop, reason = should_stop()
         if stop:
+            logger.warning("SESSION END %s: %s after %d bets, %d phase switches, balance %.8f",
+                           state.session_id, reason, state.total_bets,
+                           state.hybrid_switches, state.current_balance)
             if _should_recurring_restart(reason):
                 logger.info("RECURRING RESTART after: %s", reason)
                 # Best-effort: stop the old auto UUID before spinning up a new session.
@@ -2496,7 +2751,8 @@ def betting_loop():
         if is_auto_game(state.game) and not state._auto_uuid:
             # v2.32.1: a new server cycle restarts the progression at base_bet.
             # Mid loss chain / in the red that abandons the loss with no way out.
-            midchain = _midchain_loss_reason()
+            # With phases on the phase owns recovery and the loss cap bounds it.
+            midchain = "" if _hybrid_on() else _midchain_loss_reason()
             if state._insufficient_balance or midchain:
                 reason = "Insufficient balance" if state._insufficient_balance else midchain
                 logger.warning("AUTO-CYCLE not restarted: %s", reason)
@@ -2534,6 +2790,11 @@ def betting_loop():
             with state.lock:
                 state.consecutive_errors = 0
                 state.backoff_delay = 1.0
+                if _hybrid_on():
+                    # A fresh server cycle sizes its first bet from the phase's base.
+                    state.current_bet = _active_base_bet()
+                    state.dalembert_unit = 0
+                    state.paroli_count = 0
 
         # ── bet pacing delay ───────────────────────────────
         if state.bet_delay > 0:
@@ -2671,11 +2932,12 @@ def betting_loop():
         _db_save_bet_dispatch(bet_data, raw_profit, new_balance)
 
         # ── WolfRider: switch over/under after bet ──
-        if state.strategy_key == "6":
+        active_key = _active_strategy_key()
+        if active_key == "6":
             wolfrider_switch()
 
         # ── Rule-Based: apply custom rules after bet ──
-        if state.strategy_key == "8" and state.custom_rules:
+        if active_key == "8" and state.custom_rules:
             apply_rules(bet_state)
 
         # ── milestone check (bets/wins/losses/profit) ──
@@ -2688,11 +2950,12 @@ def betting_loop():
 
         # calculate next bet: no cap, API rejects if insufficient balance
         raw_next  = compute_next_bet(bet_state)
-        next_bet  = max(state.base_bet, raw_next)
+        floor_bet = _active_base_bet()
+        next_bet  = max(floor_bet, raw_next)
         # ── streakbet_loss: reduce bet after N consecutive losses ──
         sb_factor = _get_streakbet_loss_factor()
         if sb_factor != 1.0:
-            next_bet = max(state.base_bet, next_bet * sb_factor)
+            next_bet = max(floor_bet, next_bet * sb_factor)
             logger.info("STREAKBET_LOSS: current_bet ×%.2f → %.8f (loss streak %d)",
                         sb_factor, next_bet, state.current_streak)
         state.current_bet = next_bet
@@ -2727,6 +2990,9 @@ def _effective_pipeline_depth() -> int:
         return 1
     if state.strategy_key != "1":
         state.pipeline_reason = f"forced to 1: {state.strategy} needs outcome-ordered bets (Flat-only)"
+        return 1
+    if _hard_cap_on():
+        state.pipeline_reason = "forced to 1: the pre-bet loss cap checks one bet at a time"
         return 1
     state.pipeline_reason = ""
     return min(requested, _PIPELINE_MAX)
@@ -3140,36 +3406,42 @@ def _apply_backtest_result(result: dict) -> str:
     return bet_state
 
 
-def backtest_loop(source, progress_every: int = 100):
+def backtest_loop(source, progress_every: int = 100) -> str:
     """Run the strategy over `source` (iterator of bet-result dicts) with no API calls.
 
-    Honours should_stop() and state.running so both stop-condition config and the
-    q hotkey work. Prints progress every `progress_every` bets so long simulations
-    show heartbeat instead of feeling frozen.
+    Honours should_stop() and state.running. Stops are checked before a roll is
+    drawn, so sessions can run back to back on one source without losing a roll.
+    Returns the stop reason, or "" when the rolls ran out or the run was halted.
+    Prints progress every `progress_every` bets (0 disables).
     """
-    for result in source:
-        if not state.running:
-            break
+    rolls = iter(source)
+    while state.running:
+        _hybrid_step()
         stop, reason = should_stop()
         if stop:
             state.status = f"[BACKTEST] STOPPED: {reason}"
+            return reason
+        result = next(rolls, None)
+        if result is None:
             break
 
         bet_state = _apply_backtest_result(result)
 
         # Strategy hooks: reuse from betting_loop path
         _check_milestone(bet_state)
-        if state.strategy_key == "6":
+        active_key = _active_strategy_key()
+        if active_key == "6":
             wolfrider_switch()
-        if state.strategy_key == "8" and state.custom_rules:
+        if active_key == "8" and state.custom_rules:
             apply_rules(bet_state)
 
         # Next-bet computation with Phase 2 streakbet reduction
         raw_next = compute_next_bet(bet_state)
-        next_bet = max(state.base_bet, raw_next)
+        floor_bet = _active_base_bet()
+        next_bet = max(floor_bet, raw_next)
         sb_factor = _get_streakbet_loss_factor()
         if sb_factor != 1.0:
-            next_bet = max(state.base_bet, next_bet * sb_factor)
+            next_bet = max(floor_bet, next_bet * sb_factor)
         state.current_bet = next_bet
 
         state.status = f"[BACKTEST] bet {state.total_bets}: {bet_state}  bal {state.current_balance:.8f}  p/l {state.profit:+.8f}"
@@ -3179,15 +3451,177 @@ def backtest_loop(source, progress_every: int = 100):
                           f"P/L: [{'green' if state.profit >= 0 else 'red'}]"
                           f"{'+' if state.profit >= 0 else ''}{state.profit:.8f}[/]  "
                           f"bal: {state.current_balance:.8f}")
+    return ""
+
+
+_BACKTEST_ROLL_BUDGET = 5_000_000
+_BACKTEST_SESSION_ENDS = ("Profit target", "Max bets", "Max wins", "Max loss hit",
+                          LOSS_CAP_REASON, STREAK_RESET_REASON)
+_RUN_ROLLS_OUT = "the rolls ran out"
+_RUN_RULE_STOP = "a strategy rule stopped it"
+# The game pays 99% back at every multiplier (see _derive_bet_value).
+_HOUSE_EDGE = 0.01
+
+
+def _backtest_new_session(balance: Optional[float] = None) -> None:
+    """Zero the in-memory session counters for a backtest session.
+
+    With `balance` the session starts from that balance; without it the balance
+    carries over from the session before, as it does between live sessions.
+    """
+    if balance is not None:
+        state.current_balance = balance
+    state.session_start    = time.time()
+    state.total_bets       = 0
+    state.wins             = 0
+    state.losses           = 0
+    state.profit           = 0.0
+    state.wagered          = 0.0
+    state.current_streak   = 0
+    state.max_win_streak   = 0
+    state.max_loss_streak  = 0
+    state.last_broken_loss_streak = 0
+    state.highest_bet      = 0.0
+    state.highest_win      = 0.0
+    state.biggest_loss     = 0.0
+    state.start_balance    = state.current_balance
+    state.highest_balance  = state.current_balance
+    state.lowest_balance   = state.current_balance
+    state.current_bet      = state.base_bet
+    state.hybrid_phase     = PHASE_BASE
+    state.hybrid_switches  = 0
+    state.dalembert_unit   = 0
+    state.paroli_count     = 0
+
+
+def _can_pay_next_bet() -> bool:
+    """True while the balance covers the next bet; the casino refuses a larger one."""
+    return round(state.current_bet, 8) <= state.current_balance + HALF_SAT
+
+
+def _affordable_rolls(rolls):
+    """Pass rolls through for as long as the balance can pay the next bet."""
+    while _can_pay_next_bet():
+        roll = next(rolls, None)
+        if roll is None:
+            return
+        yield roll
+
+
+def _run_backtest_sessions(source, sessions: Optional[int], runs: int, balance: float) -> dict:
+    """Play sessions back to back on one roll source and total the results.
+
+    A session that ends on its own stop (cash-out, loss cap, bet or win count)
+    is followed by a new one, whatever the live restart settings say. A run
+    ends at the balance goal, at the balance floor, when the next bet cannot
+    be paid, after `sessions` sessions, or when the rolls run out.
+    """
+    totals = {"sessions": 0, "green": 0, "won": 0.0, "lost": 0.0, "worst": 0.0,
+              "net": 0.0, "wagered": 0.0, "bets": 0, "switches": 0,
+              "runs": {}, "finals": []}
+    for _ in range(runs):
+        outcome = None
+        rolls = _affordable_rolls(source)
+        _backtest_new_session(balance)
+        played = 0
+        while outcome is None:
+            reason = backtest_loop(rolls, progress_every=0)
+            totals["net"] += state.profit
+            totals["wagered"] += state.wagered
+            totals["bets"] += state.total_bets
+            totals["switches"] += state.hybrid_switches
+            if reason.startswith(_BACKTEST_SESSION_ENDS) and state.total_bets > 0:
+                totals["sessions"] += 1
+                played += 1
+                if state.profit > 0:
+                    totals["green"] += 1
+                    totals["won"] += state.profit
+                else:
+                    totals["lost"] += state.profit
+                totals["worst"] = min(totals["worst"], state.profit)
+                if sessions is not None and played >= sessions:
+                    outcome = "played every session"
+                else:
+                    _backtest_new_session()
+            elif not reason and not state.running:
+                outcome = _RUN_RULE_STOP
+            elif not reason and not _can_pay_next_bet():
+                outcome = "balance too low for the next bet"
+            elif not reason:
+                outcome = _RUN_ROLLS_OUT
+            elif reason.startswith(BALANCE_GOAL_REASON):
+                outcome = "reached the balance goal"
+            elif reason.startswith("Balance floor"):
+                outcome = "at the balance floor"
+            else:
+                outcome = reason
+        totals["runs"][outcome] = totals["runs"].get(outcome, 0) + 1
+        totals["finals"].append(state.current_balance)
+        if outcome in (_RUN_ROLLS_OUT, _RUN_RULE_STOP):
+            break
+    return totals
+
+
+def _print_backtest_table(totals: dict, balance: float) -> None:
+    """Print the multi-session backtest result: session odds, cost and how the runs ended."""
+    n, green = totals["sessions"], totals["green"]
+    red = n - green
+    wagered = totals["wagered"]
+    finals = sorted(totals["finals"])
+    tbl = Table(title="Backtest result", title_style="bold cyan", show_header=False)
+    tbl.add_column(style="bold yellow", no_wrap=True)
+    tbl.add_column(style="cyan")
+    tbl.add_row("Sessions finished", f"{n:,} in {len(finals):,} run(s)")
+    tbl.add_row("Green sessions", f"{green / n * 100:.2f}%  ({green:,} of {n:,})" if n else "none")
+    tbl.add_row("Average win", f"{totals['won'] / green:+.8f}" if green else "none")
+    tbl.add_row("Average loss", f"{totals['lost'] / red:+.8f}" if red else "none")
+    tbl.add_row("Worst session", f"{totals['worst']:+.8f}")
+    tbl.add_row("Bets per session", f"{totals['bets'] / n:.1f}" if n else str(totals["bets"]))
+    tbl.add_row("Phase switches per session", f"{totals['switches'] / n:.1f}" if n else str(totals["switches"]))
+    tbl.add_row("Wagered", f"{wagered:.8f}")
+    tbl.add_row("Net result", f"{totals['net']:+.8f}"
+                + (f"  ({totals['net'] / wagered * 100:+.2f} per 100 wagered)" if wagered else ""))
+    tbl.add_row("Long-run cost of that wagering", f"{-_HOUSE_EDGE * wagered:+.8f}  (-1.00 per 100 wagered)")
+    if len(finals) == 1:
+        tbl.add_row("Balance", f"{balance:.8f} to {finals[0]:.8f}")
+    elif finals:
+        tbl.add_row("Final balance", f"typical {finals[len(finals) // 2]:.8f}, "
+                                     f"unlucky 1 in 20 {finals[len(finals) // 20]:.8f}, "
+                                     f"lucky 1 in 20 {finals[-1 - len(finals) // 20]:.8f}")
+    for outcome, count in sorted(totals["runs"].items(), key=lambda item: -item[1]):
+        tbl.add_row(f"Runs ended: {escape(outcome)}", f"{count:,}")
+    console.print(tbl)
+    if not state.recurring:
+        console.print("[dim]  Live, recurring is off: the bot stops after its first session.[/]")
+    elif not state.restart_after_loss:
+        console.print("[dim]  Live, the bot stops after its first losing session "
+                      "(restart_after_loss is off).[/]")
+    console.print("[dim]  The net result of a short run is partly luck. The long-run cost is 1% of "
+                  "the amount wagered, whatever the settings.[/]")
 
 
 def _run_backtest(args) -> None:
+    """Run a backtest without writing to the live log.
+
+    Each simulated phase switch would otherwise log a warning, and a 200,000
+    session backtest would bury the live bot's timeline. Errors still log.
+    """
+    previous_level = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        _run_backtest_body(args)
+    finally:
+        logger.setLevel(previous_level)
+
+
+def _run_backtest_body(args) -> None:
     """Backtest entry point: load config → build source → run backtest_loop → summary.
 
     Config source is (in order): explicit --preset NAME, else the wizard's
     saved ~/.wolfbet_autobot.json, else sensible defaults. Never touches the
-    DB except to read historical bets in replay mode. Prints progress + final
-    summary via format_session_summary from v2.20.0.
+    DB except to read historical bets in replay mode. With --sessions or --runs
+    it plays sessions back to back and prints the result table; otherwise one
+    session and the session summary.
     """
     console.clear()
     console.print("[bold cyan]🧪 BACKTEST MODE[/]  [dim]- no API calls, no real balance risk[/]\n")
@@ -3214,28 +3648,20 @@ def _run_backtest(args) -> None:
         state.currency       = "usdt"
         state.game           = "dice"
 
+    _exit_on_session_rule_errors()
+    multi = args.sessions is not None or args.runs is not None
+    balance = 1.0 if args.balance is None else args.balance     # $1 sandbox default
+    if not (math.isfinite(balance) and balance > 0) \
+            or (args.sessions is not None and args.sessions < 1) \
+            or (args.runs is not None and args.runs < 1):
+        console.print("[red]--balance must be above 0; --sessions and --runs must be 1 or more.[/]")
+        sys.exit(2)
+
     # 2. Initialise virtual session state (in-memory only)
     state.session_id       = -1
-    state.session_start    = time.time()
     state.running          = True
     state.paused           = False
-    state.total_bets       = 0
-    state.wins             = 0
-    state.losses           = 0
-    state.profit           = 0.0
-    state.wagered          = 0.0
-    state.current_streak   = 0
-    state.max_win_streak   = 0
-    state.max_loss_streak  = 0
-    state.last_broken_loss_streak = 0
-    state.highest_bet      = 0.0
-    state.highest_win      = 0.0
-    state.biggest_loss     = 0.0
-    state.start_balance    = 1.0     # $1 sandbox default
-    state.current_balance  = 1.0
-    state.highest_balance  = 1.0
-    state.lowest_balance   = 1.0
-    state.current_bet      = state.base_bet
+    _backtest_new_session(balance)
     if state.custom_rules_text:
         state.custom_rules = _load_rules_from_text(state.custom_rules_text)
 
@@ -3248,10 +3674,11 @@ def _run_backtest(args) -> None:
             console.print(f"[red]✗ {e}[/]")
             sys.exit(1)
     else:
-        n = args.simulate or 1000
+        n = args.simulate or (_BACKTEST_ROLL_BUDGET if multi else 1000)
         rng = random.Random(args.seed) if args.seed is not None else random.Random()
         seed_str = f"seed={args.seed}" if args.seed is not None else "seed=system-entropy"
-        console.print(f"  [dim]Simulating[/] [cyan]{n}[/] [dim]bets with[/] [cyan]{seed_str}[/]\n")
+        console.print(f"  [dim]Simulating{' up to' if multi else ''}[/] [cyan]{n}[/] "
+                      f"[dim]bets with[/] [cyan]{seed_str}[/]\n")
 
         def _gen():
             for _ in range(n):
@@ -3266,6 +3693,20 @@ def _run_backtest(args) -> None:
                   f"[dim]base_bet:[/] {state.base_bet:.8f}  "
                   f"[dim]multiplier:[/] {state.multiplier}x  "
                   f"[dim]rule:[/] {state.rule}\n")
+    if multi:
+        runs = args.runs or 1
+        if args.replay_session and runs > 1:
+            console.print("  [dim]A replay has one set of rolls: running it once.[/]")
+            runs = 1
+        try:
+            totals = _run_backtest_sessions(source, args.sessions, runs, balance)
+        except Exception as e:
+            detail = f": {e}" if APP_ENV != "production" else ""
+            console.print(f"[red]Backtest failed{detail}. Check the log and try again.[/]")
+            logger.exception("BACKTEST error")
+            sys.exit(1)
+        _print_backtest_table(totals, balance)
+        return
     try:
         backtest_loop(source, progress_every=max(100, (args.simulate or 1000) // 20))
     except Exception as e:
@@ -3314,7 +3755,7 @@ def _db_start_session() -> int:
         VALUES (?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
-        state.currency, state.game, state.strategy,
+        state.currency, state.game, _strategy_label(),
         state.base_bet, state.multiplier, state.start_balance,
         getattr(state, "lane", 1),
     ))
@@ -3769,6 +4210,7 @@ def _state_snapshot() -> dict:
         "max_bets": state.max_bets,
         "max_wins": state.max_wins,
         "stop_on_balance": state.stop_on_balance,
+        "hybrid_phase": state.hybrid_phase if _hybrid_on() else None,
         "profit_increment": state.profit_increment,
         "profit_threshold": state.profit_threshold,
         # rule-based info
@@ -3960,7 +4402,7 @@ def build_dashboard_screen() -> str:
     if state.profit_increment is not None and state.profit_threshold:
         s4 += f"  {_a('dim', 'Base')} {_a('bold_green', f'{state.base_bet:.8f}')}"
     s4 += (f"  {_a('dim', 'Hi')} {_a('white', f'{state.highest_bet:.8f}')}"
-           f"  {_a('cyan', state.strategy)}"
+           f"  {_a('cyan', _with_phase(state.strategy, state.hybrid_phase if _hybrid_on() else None))}"
            f"  {_a('dim', f'{state.multiplier}x')}"
            f"  {_a('dim', state.rule)}"
            f"  {_a('dim', 'BPS')} {_a('magenta', f'{state.bets_per_second:.1f}')}"
@@ -5543,7 +5985,7 @@ def _build_monitor_screen(d: dict, bets: list, pid_alive: bool) -> str:
     sid       = d.get("session_id", "?")
     uptime    = str(timedelta(seconds=d.get("uptime_sec", 0)))
     currency  = d.get("currency", "?").upper()
-    strategy  = d.get("strategy", "?")
+    strategy  = _with_phase(d.get("strategy", "?"), d.get("hybrid_phase"))
     mult      = d.get("multiplier", 0)
     rule      = d.get("rule", "over")
     base_bet  = d.get("base_bet", 0)
@@ -6017,7 +6459,8 @@ def cmd_status():
     console.print(Rule(f"[bold cyan]WolfBet Session #{d.get('session_id', '?')}  {status}[/]"))
 
     # ── Session Info ──
-    strat_str = f"{d.get('strategy', '?')}  {d.get('multiplier', '?')}x  {d.get('rule', '?')}"
+    strat_str = (f"{_with_phase(d.get('strategy', '?'), d.get('hybrid_phase'))}  "
+                 f"{d.get('multiplier', '?')}x  {d.get('rule', '?')}")
     sk = d.get("strategy_key", "")
     if sk in ("2", "6", "7"):
         strat_str += f"  [dim](loss mult: {d.get('loss_mult', '?')}x)[/]"
@@ -6210,6 +6653,16 @@ _CONFIG_SHOW_FIELDS = [
     ("max_bets",              "Stop after this many bets"),
     ("max_wins",              "Stop after this many wins"),
     ("stop_on_balance",       "Stop when balance floor reached"),
+    ("balance_goal",          "Stop the bot when the balance reaches this"),
+    ("hard_cap",              "Never place a bet that would pass max_loss or the balance floor"),
+    ("restart_after_loss",    "New session after a capped loss (needs recurring, hard_cap, max_loss, stop_on_balance)"),
+    ("hybrid_recover_at",     "Session loss that switches to the recovery strategy"),
+    ("hybrid_recover_strategy", "Recovery strategy key (1-7)"),
+    ("hybrid_recover_bet",    "First recovery bet, as a multiple of base_bet"),
+    ("hybrid_press_at",       "Session profit that switches to the press strategy"),
+    ("hybrid_press_floor",    "Profit at which press hands back to the opening strategy"),
+    ("hybrid_press_strategy", "Press strategy key (1-7)"),
+    ("hybrid_press_bet",      "First press bet, as a multiple of base_bet"),
     ("profit_increment",      "Bump base_bet by this at every profit milestone"),
     ("profit_threshold",      "Profit interval between increments"),
     ("profit_increment_scope", "session = each session's profit · run = total since run start (wolfctl run-reset)"),
@@ -6256,7 +6709,8 @@ def _fmt_config_value(field: str, val) -> str:
     if isinstance(val, float):
         if field in ("base_bet", "bet_value", "max_profit", "max_loss",
                      "stop_on_balance", "profit_increment", "profit_threshold",
-                     "milestone_profit"):
+                     "milestone_profit", "balance_goal", "hybrid_recover_at",
+                     "hybrid_press_at", "hybrid_press_floor"):
             return f"{val:.8f}"
         return f"{val:.4f}".rstrip("0").rstrip(".") or "0"
     if isinstance(val, str) and len(val) > 60:
@@ -7656,11 +8110,12 @@ def cmd_session_bets(session_id: int):
 # ══════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════
-def _load_and_connect():
+def _load_and_connect(daemon: bool = False):
     """Load saved config and fetch fresh balance. Used by --resume and --daemon."""
     if not load_config():
         console.print("[red]No saved config found. Run without --resume first.[/]")
         sys.exit(1)
+    _exit_on_session_rule_errors(exit_code=0 if daemon else 2)
     console.print("[dim]Loading saved config...[/]")
     try:
         balances = api_get_balances()
@@ -7804,6 +8259,13 @@ def main():
                         help="Backtest data source: simulate N synthetic bets (default 1000)")
     parser.add_argument("--seed", type=int, metavar="N",
                         help="RNG seed for --simulate (deterministic reproducibility)")
+    parser.add_argument("--sessions", type=int, metavar="N",
+                        help="Backtest: play N sessions back to back and print session odds and cost")
+    parser.add_argument("--runs", type=int, metavar="R",
+                        help="Backtest: repeat from a fresh balance R times and report how the runs ended "
+                             "(balance goal, balance floor, played out)")
+    parser.add_argument("--balance", type=float, metavar="X",
+                        help="Backtest: starting balance (default 1.0)")
     parser.add_argument("--lane", type=int, metavar="K", default=None,
                         help=f"Parallel lane to run / inspect (1-{LANES_MAX}; default 1). "
                              "With --stats/--analytics: only that lane's sessions")
@@ -7925,6 +8387,7 @@ def main():
             console.print(f"[red]Preset '{args.preset}' not found.[/]")
             cmd_list_presets()
             sys.exit(1)
+        _exit_on_session_rule_errors()
         # need API key from main config
         if not state.api_key:
             saved = {}
@@ -7955,9 +8418,10 @@ def main():
             sys.exit(1)
 
     elif args.resume or args.daemon:
-        _load_and_connect()
+        _load_and_connect(daemon=args.daemon)
     else:
         setup_wizard()
+        _exit_on_session_rule_errors()
 
     # Apply CLI --pipeline override AFTER config/preset load so it wins.
     if args.pipeline is not None:
