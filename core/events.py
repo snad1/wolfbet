@@ -49,7 +49,8 @@ _YIELD_EVERY = 32
 _BACKOFF_MIN_S = 0.5
 _BACKOFF_MAX_S = 30.0
 _LOG_EVERY_S = 60.0
-_SOCKET_TIMEOUT_S = 0.1
+_CONNECT_TIMEOUT_S = 0.1
+_REPLY_TIMEOUT_S = 1.0
 
 logger = logging.getLogger("wolfbet.events")
 
@@ -151,8 +152,8 @@ class EventPublisher:
                 return False
             self._client = redis.Redis.from_url(
                 self.url,
-                socket_connect_timeout=_SOCKET_TIMEOUT_S,
-                socket_timeout=_SOCKET_TIMEOUT_S,
+                socket_connect_timeout=_CONNECT_TIMEOUT_S,
+                socket_timeout=_REPLY_TIMEOUT_S,
             )
         self._enabled = True
         self._stop.clear()
@@ -226,6 +227,8 @@ class EventPublisher:
             if bad < len(batch):
                 pipe.execute()
         except Exception as exc:
+            # After a reply timeout Redis may already hold the batch, so "dropped"
+            # means unconfirmed; consumers detect real loss from seq gaps.
             self._dropped += len(batch)
             self._connected = False
             self._last_error = type(exc).__name__

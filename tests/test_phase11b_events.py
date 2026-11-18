@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -242,6 +243,23 @@ def test_missing_redis_package_disables_publisher(monkeypatch, caplog):
     pub.emit_bet(_BET)
     assert pub.stats()["queued"] == 0
     assert not any(t.name == "EventPublisher" for t in threading.enumerate())
+
+
+def test_connect_gives_up_fast_but_a_late_reply_is_still_awaited(monkeypatch):
+    seen = {}
+
+    class Redis:
+        @staticmethod
+        def from_url(url, **kw):
+            seen.update(kw)
+            return _FakeRedis()
+    monkeypatch.setitem(sys.modules, "redis", types.SimpleNamespace(Redis=Redis))
+    pub = EventPublisher("redis://unused")
+    try:
+        assert pub.start()
+    finally:
+        pub.stop()
+    assert seen == {"socket_connect_timeout": 0.1, "socket_timeout": 1.0}
 
 
 def test_redis_is_not_imported_unless_started():

@@ -1,5 +1,11 @@
 # Changelog
 
+## CLI v2.41.2 - event sender waits up to 1 s for Redis to answer (2026-11-18)
+
+- The event sender now waits up to 1 s for Redis to confirm a batch instead of 100 ms; connecting still gives up after 100 ms. On the live host Redis once answered late after it had already stored the batch, so a delivered event was counted as dropped. The wait runs on the sender thread only and never holds the betting thread.
+
+**Tests**: `tests/test_phase11b_events.py` checks the timeouts handed to the Redis client.
+
 ## CLI v2.41.1 - event queue that never slows the betting thread (2026-11-18)
 
 Measured with the bet-path bench at 20,000 fake bets per second, then fixed at the cause.
