@@ -1,4 +1,4 @@
-"""Phase 5i tests — BPS diagnostics (--benchmark, --diagnose, latency status rows).
+"""Phase 5i tests - BPS diagnostics (--benchmark, --diagnose, latency status rows).
 
 Run: WOLFBET_ENV=testing pytest wolfbet/tests/test_phase5i_diagnostics.py -q
 """
@@ -38,7 +38,7 @@ def test_percentile_single_sample():
     assert wb._percentile([42.0], 0.5) == 42.0
 
 
-# ── cmd_benchmark — n clamping ────────────────────────────
+# ── cmd_benchmark - n clamping ────────────────────────────
 class _FakeResponse:
     def __init__(self, status_code=200):
         self.status_code = status_code
@@ -119,7 +119,7 @@ def test_benchmark_no_config_exits_nonzero(monkeypatch):
     raise AssertionError("expected SystemExit(1) when no config")
 
 
-# ── cmd_diagnose — missing state file ─────────────────────
+# ── cmd_diagnose - missing state file ─────────────────────
 def test_diagnose_missing_state_file(monkeypatch, capsys):
     tmp = tempfile.NamedTemporaryFile(delete=True)
     path = tmp.name
@@ -130,7 +130,7 @@ def test_diagnose_missing_state_file(monkeypatch, capsys):
     assert "No running daemon session" in out
 
 
-# ── cmd_diagnose — top-blocker selection ──────────────────
+# ── cmd_diagnose - top-blocker selection ──────────────────
 def _write_state(tmpdir, **overrides):
     payload = {
         "api_p50_ms": 30,
@@ -186,7 +186,7 @@ def test_diagnose_pipeline_advice_for_flat_no_delay(monkeypatch, capsys):
 # ── State file has all diagnostic fields ─────────────────
 def test_state_file_layout_includes_diagnostic_fields():
     import inspect
-    src = inspect.getsource(wb._save_state_file)
+    src = inspect.getsource(wb._state_snapshot)
     for field in ("api_p50_ms", "api_p99_ms", "cycle_ms", "overhead_ms",
                   "efficiency_pct", "theoretical_max_bps",
                   "pipeline_effective", "pipeline_dispatched"):

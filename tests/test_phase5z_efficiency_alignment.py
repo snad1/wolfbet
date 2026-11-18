@@ -36,7 +36,7 @@ def _reset():
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.39.0"
+    assert wb.VERSION == "2.40.0"
 
 
 # ── cycle_mean helper ────────────────────────────────────
@@ -104,7 +104,7 @@ def test_efficiency_stays_within_100_on_healthy_traffic():
 
 # ── State-file emission ──────────────────────────────────
 def test_state_file_emits_cycle_mean_ms():
-    src = inspect.getsource(wb._save_state_file)
+    src = inspect.getsource(wb._state_snapshot)
     assert '"cycle_mean_ms"' in src
     # Old keys still emitted for backwards compat.
     assert '"cycle_p50_ms"' in src

@@ -275,10 +275,13 @@ def _restart_delay_for(reason: str) -> float:
     return state.recurring_delay
 
 
-def _reset_session_for_recurring(delay: Optional[float] = None) -> None:
+def _reset_session_for_recurring(delay: Optional[float] = None, reason: str = "") -> None:
     """Reset per-session counters while preserving config. Starts a new DB session row."""
     if delay is None:
         delay = state.recurring_delay
+    _emit_lifecycle("session_close", _session_close_data())
+    _emit_lifecycle("cycle", {"from_session_id": state.session_id, "reason": reason,
+                              "delay_s": delay})
     # v2.28.4: freeze the "bet end" timestamp BEFORE the sleep so uptime +
     # DB ended_at reflect the real betting window (not "5 min bet + 1 h pause"
     # lumped together). Cleared just before we set the new session_start.
@@ -833,7 +836,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.39.0"
+VERSION      = "2.40.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1221,6 +1224,9 @@ def _sig_reload(sig, frame):
         if applied:
             logger.info("SIGHUP: reloaded %d live field(s): %s",
                         len(applied), ", ".join(sorted(applied.keys())))
+            _emit_lifecycle("reload", {"applied": {
+                k: [_mask_proxy(old), _mask_proxy(new)] if k == "proxy" else [old, new]
+                for k, (old, new) in applied.items()}})
         else:
             logger.info("SIGHUP: no live-safe changes to apply")
     except Exception as e:
@@ -2398,7 +2404,7 @@ def betting_loop():
                 if is_auto_game(state.game):
                     api_auto_stop()
                 _db_save_session()
-                _reset_session_for_recurring(_restart_delay_for(reason))
+                _reset_session_for_recurring(_restart_delay_for(reason), reason)
                 last_result = "none"
                 continue
             state.running = False
@@ -2874,7 +2880,7 @@ def pipelined_betting_loop(depth: int):
                 if _should_recurring_restart(reason):
                     logger.info("RECURRING RESTART after: %s", reason)
                     _db_save_session()
-                    _reset_session_for_recurring(_restart_delay_for(reason))
+                    _reset_session_for_recurring(_restart_delay_for(reason), reason)
                     with state.lock:
                         state.pipeline_dispatched = 0
                     continue
@@ -3248,6 +3254,7 @@ def _db_start_session() -> int:
     conn.commit()
     sid = c.lastrowid
     conn.close()
+    _emit_lifecycle("session_open", _session_open_data(sid))
     return sid
 
 def _db_save_bet(bet_data: dict, profit: float, balance: float):
@@ -3477,6 +3484,67 @@ def _start_events() -> None:
     if pub.start():
         _event_publisher = pub
         logger.info("EVENTS publisher started (lane %d)", state.lane)
+        _emit_lifecycle("start", {
+            "version": VERSION, "lane": state.lane, "lanes_count": state.lanes_count,
+            "game": state.game, "currency": state.currency, "strategy": state.strategy,
+            "strategy_key": state.strategy_key, "base_bet": state.base_bet,
+            "multiplier": state.multiplier, "rule": state.rule,
+            "db_write_mode": state.db_write_mode, "pipeline_depth": state.pipeline_depth,
+            "recurring": state.recurring,
+        })
+        if state.session_id:
+            _emit_lifecycle("session_open", _session_open_data(state.session_id))
+
+
+def _emit_lifecycle(kind: str, data: dict) -> None:
+    pub = _event_publisher
+    if pub is not None:
+        pub.emit_lifecycle(kind, data)
+
+
+def _session_open_data(session_id: int) -> dict:
+    return {"session_id": session_id, "game": state.game, "currency": state.currency,
+            "strategy": state.strategy, "base_bet": state.base_bet,
+            "multiplier": state.multiplier, "start_balance": state.start_balance}
+
+
+def _session_close_data() -> dict:
+    return {"session_id": state.session_id, "total_bets": state.total_bets,
+            "wins": state.wins, "losses": state.losses, "profit": state.profit,
+            "wagered": state.wagered, "end_balance": state.current_balance}
+
+
+_EVENTS_STATE_EVERY_S = 2.0
+_events_next_state = 0.0
+_events_last_paused = False
+
+
+def _events_tick(snapshot: Optional[dict] = None) -> None:
+    """Send the state snapshot every 2 s and pause/resume transitions, from the main loop."""
+    global _events_next_state, _events_last_paused
+    pub = _event_publisher
+    if pub is None:
+        return
+    paused = bool(state.paused)
+    if paused != _events_last_paused:
+        _events_last_paused = paused
+        pub.emit_lifecycle("pause" if paused else "resume", {})
+    now = time.monotonic()
+    if now < _events_next_state:
+        return
+    _events_next_state = now + _EVENTS_STATE_EVERY_S
+    try:
+        pub.emit_state(snapshot if snapshot is not None else _state_snapshot())
+    except Exception:
+        pass
+
+
+def _emit_session_end() -> None:
+    """Final events for a stopping bot: terminal error, session totals, stop reason."""
+    if state._insufficient_balance:
+        _emit_lifecycle("error", {"reason": "Insufficient balance"})
+    _emit_lifecycle("session_close", _session_close_data())
+    _emit_lifecycle("stop", {"reason": state.status})
 
 
 def _stop_events() -> None:
@@ -3540,143 +3608,149 @@ def _db_get_history(limit: int = 12):
 # ══════════════════════════════════════════════════════════
 #  STATE FILE  (for --status / --daemon communication)
 # ══════════════════════════════════════════════════════════
+def _state_snapshot() -> dict:
+    """Live session state, as written to the state file and sent as the state event."""
+    return {
+        "pid": os.getpid(),
+        "session_id": state.session_id,
+        "running": state.running,
+        "paused": state.paused,
+        "currency": state.currency,
+        "strategy": state.strategy,
+        "multiplier": state.multiplier,
+        "base_bet": state.base_bet,
+        "current_bet": state.current_bet,
+        "total_bets": state.total_bets,
+        "wins": state.wins,
+        "losses": state.losses,
+        "profit": state.profit,
+        "wagered": state.wagered,
+        "current_balance": state.current_balance,
+        "start_balance": state.start_balance,
+        "current_streak": state.current_streak,
+        "max_win_streak": state.max_win_streak,
+        "max_loss_streak": state.max_loss_streak,
+        "highest_bet": state.highest_bet,
+        "highest_win": state.highest_win,
+        "biggest_loss": state.biggest_loss,
+        "bets_per_minute": state.bets_per_minute,
+        "bets_per_second": state.bets_per_second,
+        "peak_bps": state.peak_bps,
+        "low_bps": state.low_bps if state.low_bps != float("inf") else 0,
+        "peak_bpm": state.peak_bpm,
+        "low_bpm": state.low_bpm if state.low_bpm != float("inf") else 0,
+        "highest_balance": state.highest_balance,
+        "lowest_balance": state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance,
+        "rate_remaining": state.rate_remaining,
+        "rate_limit": state.rate_limit,
+        # auto-bet state (dice-auto / limbo-auto)
+        "auto_uuid": state._auto_uuid,
+        "auto_start_remaining": state._auto_start_remaining,
+        "game": state.game,
+        # Phase 2 config (persisted for --status visibility + future --resume)
+        "recurring": state.recurring,
+        "streak_delay_loss": f"{state.streak_delay_loss[0]}:{state.streak_delay_loss[1]}" if state.streak_delay_loss[0] > 0 else None,
+        "streak_delay_win":  f"{state.streak_delay_win[0]}:{state.streak_delay_win[1]}"  if state.streak_delay_win[0] > 0 else None,
+        "streak_delay_bets": f"{state.streak_delay_bets[0]}:{state.streak_delay_bets[1]}" if state.streak_delay_bets[0] > 0 else None,
+        "streakbet_loss":    f"{state.streakbet_loss[0]}:{state.streakbet_loss[1]}"      if state.streakbet_loss[0] > 0 else None,
+        "basebet_pct":       state.basebet_pct or None,
+        "milestone_bets":    state.milestone_bets,
+        "milestone_wins":    state.milestone_wins or None,
+        "milestone_losses":  state.milestone_losses or None,
+        "milestone_profit":  state.milestone_profit or None,
+        "last_profit_milestone": state._last_profit_milestone,
+        # v2.30.1: actionable profit-increment target (distinct from
+        # last_profit_milestone which is the notification tracker).
+        "next_profit_milestone": state.next_profit_milestone,
+        # Phase 3 observability metrics
+        "api_ms":              state._last_api_ms,
+        "api_avg_ms":          _compute_api_avg(),
+        "api_peak_ms":         state.peak_api_ms,
+        "api_p50_ms":          _compute_api_p50(),
+        "api_p99_ms":          _compute_api_p99(),
+        "on_target_pct":       _compute_on_target_pct(),
+        "cycle_ms":            state._cycle_ms,
+        "overhead_ms":         state._cycle_overhead_ms,
+        # v2.30.4: windowed cycle metrics + recent BPS for consistent
+        # efficiency computation. cycle_ms above is aliased to cycle_p50
+        # for backwards-compat readers.
+        "cycle_p50_ms":        _compute_cycle_p50(),
+        "cycle_p99_ms":        _compute_cycle_p99(),
+        # v2.30.5: mean cycle drives Recent BPS + efficiency (was p50).
+        # Same statistic on both sides of the ratio; no more >100% edge.
+        "cycle_mean_ms":       _compute_cycle_mean(),
+        "cycle_sample_count":  len(state._cycle_samples),
+        "bets_per_second_recent": _compute_recent_bps(),
+        "efficiency_pct":      _compute_efficiency_pct(),
+        "theoretical_max_bps": _compute_theoretical_max_bps(),
+        "pipeline_effective":  state.pipeline_effective,
+        "pipeline_dispatched": state.pipeline_dispatched,
+        # v2.27.0: async bet-writer visibility (surfaced by --diagnose)
+        "db_write_mode":       state.db_write_mode,
+        "db_writer_stats":     dict(_bet_writer_stats),
+        "db_writer_queue":     _bet_write_queue.qsize(),
+        "rule": state.rule,
+        "bet_value": state.bet_value,
+        "bet_delay": state.bet_delay,
+        "loss_mult": state.loss_mult,
+        "win_mult": state.win_mult,
+        "strategy_key": state.strategy_key,
+        # stop conditions
+        "max_profit": state.max_profit,
+        "max_loss": state.max_loss,
+        "max_bets": state.max_bets,
+        "max_wins": state.max_wins,
+        "stop_on_balance": state.stop_on_balance,
+        "profit_increment": state.profit_increment,
+        "profit_threshold": state.profit_threshold,
+        # rule-based info
+        "rule_count": len(state.custom_rules) if state.strategy_key == "8" else 0,
+        "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "8" else [],
+        # v2.28.4: uptime freezes at bet-end when session is in recurring
+        # pause, so "5 min bet + 1 h pause" no longer displays as "1 h 5 min
+        # session". Pause remaining is surfaced separately for the monitor.
+        "uptime_sec": int(
+            (state.session_bet_ended_at or time.time()) - state.session_start
+        ),
+        # v2.34.0: wall-clock time since bot start (pauses included)
+        "run_uptime_sec": int(time.time() - state.run_started_at),
+        # v2.35.0: parallel lanes + shared throttle state
+        "lane": state.lane,
+        "lanes_count": state.lanes_count,
+        "lane_share": state.lane_share,
+        "lane_split": state.lane_split,
+        # v2.37.0: run-wide profit increment
+        "profit_increment_scope": state.profit_increment_scope,
+        "run_profit_total": run_profit_total(),
+        "run_first_session": state.run_first_session,
+        "run_bumps": state.run_bumps,
+        "lane_equity": lane_equity(),
+        "soft_pace_delay": state.soft_pace_delay,
+        "pause_remaining_sec": (
+            max(0, int(state.session_pause_total - (time.time() - state.session_pause_started_at)))
+            if state.session_pause_started_at else 0
+        ),
+        "recurring_delay_sec": int(state.recurring_delay),
+        # Length of the pause in progress (streak reset has its own delay).
+        "pause_total_sec": int(state.session_pause_total),
+        "streak_reset_losses": state.streak_reset_losses,
+        "streak_reset_delay_sec": int(state.streak_reset_delay),
+        "status": state.status,
+        "last_error": state.last_error,
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
 def _save_state_file():
-    """Write live session state to JSON so --status can read it."""
+    """Write live session state to JSON so --status can read it. Returns the dict written."""
     try:
-        data = {
-            "pid": os.getpid(),
-            "session_id": state.session_id,
-            "running": state.running,
-            "paused": state.paused,
-            "currency": state.currency,
-            "strategy": state.strategy,
-            "multiplier": state.multiplier,
-            "base_bet": state.base_bet,
-            "current_bet": state.current_bet,
-            "total_bets": state.total_bets,
-            "wins": state.wins,
-            "losses": state.losses,
-            "profit": state.profit,
-            "wagered": state.wagered,
-            "current_balance": state.current_balance,
-            "start_balance": state.start_balance,
-            "current_streak": state.current_streak,
-            "max_win_streak": state.max_win_streak,
-            "max_loss_streak": state.max_loss_streak,
-            "highest_bet": state.highest_bet,
-            "highest_win": state.highest_win,
-            "biggest_loss": state.biggest_loss,
-            "bets_per_minute": state.bets_per_minute,
-            "bets_per_second": state.bets_per_second,
-            "peak_bps": state.peak_bps,
-            "low_bps": state.low_bps if state.low_bps != float("inf") else 0,
-            "peak_bpm": state.peak_bpm,
-            "low_bpm": state.low_bpm if state.low_bpm != float("inf") else 0,
-            "highest_balance": state.highest_balance,
-            "lowest_balance": state.lowest_balance if state.lowest_balance != float("inf") else state.current_balance,
-            "rate_remaining": state.rate_remaining,
-            "rate_limit": state.rate_limit,
-            # auto-bet state (dice-auto / limbo-auto)
-            "auto_uuid": state._auto_uuid,
-            "auto_start_remaining": state._auto_start_remaining,
-            "game": state.game,
-            # Phase 2 config (persisted for --status visibility + future --resume)
-            "recurring": state.recurring,
-            "streak_delay_loss": f"{state.streak_delay_loss[0]}:{state.streak_delay_loss[1]}" if state.streak_delay_loss[0] > 0 else None,
-            "streak_delay_win":  f"{state.streak_delay_win[0]}:{state.streak_delay_win[1]}"  if state.streak_delay_win[0] > 0 else None,
-            "streak_delay_bets": f"{state.streak_delay_bets[0]}:{state.streak_delay_bets[1]}" if state.streak_delay_bets[0] > 0 else None,
-            "streakbet_loss":    f"{state.streakbet_loss[0]}:{state.streakbet_loss[1]}"      if state.streakbet_loss[0] > 0 else None,
-            "basebet_pct":       state.basebet_pct or None,
-            "milestone_bets":    state.milestone_bets,
-            "milestone_wins":    state.milestone_wins or None,
-            "milestone_losses":  state.milestone_losses or None,
-            "milestone_profit":  state.milestone_profit or None,
-            "last_profit_milestone": state._last_profit_milestone,
-            # v2.30.1: actionable profit-increment target (distinct from
-            # last_profit_milestone which is the notification tracker).
-            "next_profit_milestone": state.next_profit_milestone,
-            # Phase 3 observability metrics
-            "api_ms":              state._last_api_ms,
-            "api_avg_ms":          _compute_api_avg(),
-            "api_peak_ms":         state.peak_api_ms,
-            "api_p50_ms":          _compute_api_p50(),
-            "api_p99_ms":          _compute_api_p99(),
-            "on_target_pct":       _compute_on_target_pct(),
-            "cycle_ms":            state._cycle_ms,
-            "overhead_ms":         state._cycle_overhead_ms,
-            # v2.30.4: windowed cycle metrics + recent BPS for consistent
-            # efficiency computation. cycle_ms above is aliased to cycle_p50
-            # for backwards-compat readers.
-            "cycle_p50_ms":        _compute_cycle_p50(),
-            "cycle_p99_ms":        _compute_cycle_p99(),
-            # v2.30.5: mean cycle drives Recent BPS + efficiency (was p50).
-            # Same statistic on both sides of the ratio; no more >100% edge.
-            "cycle_mean_ms":       _compute_cycle_mean(),
-            "cycle_sample_count":  len(state._cycle_samples),
-            "bets_per_second_recent": _compute_recent_bps(),
-            "efficiency_pct":      _compute_efficiency_pct(),
-            "theoretical_max_bps": _compute_theoretical_max_bps(),
-            "pipeline_effective":  state.pipeline_effective,
-            "pipeline_dispatched": state.pipeline_dispatched,
-            # v2.27.0: async bet-writer visibility (surfaced by --diagnose)
-            "db_write_mode":       state.db_write_mode,
-            "db_writer_stats":     dict(_bet_writer_stats),
-            "db_writer_queue":     _bet_write_queue.qsize(),
-            "rule": state.rule,
-            "bet_value": state.bet_value,
-            "bet_delay": state.bet_delay,
-            "loss_mult": state.loss_mult,
-            "win_mult": state.win_mult,
-            "strategy_key": state.strategy_key,
-            # stop conditions
-            "max_profit": state.max_profit,
-            "max_loss": state.max_loss,
-            "max_bets": state.max_bets,
-            "max_wins": state.max_wins,
-            "stop_on_balance": state.stop_on_balance,
-            "profit_increment": state.profit_increment,
-            "profit_threshold": state.profit_threshold,
-            # rule-based info
-            "rule_count": len(state.custom_rules) if state.strategy_key == "8" else 0,
-            "rule_descriptions": [r.description for r in state.custom_rules] if state.strategy_key == "8" else [],
-            # v2.28.4: uptime freezes at bet-end when session is in recurring
-            # pause, so "5 min bet + 1 h pause" no longer displays as "1 h 5 min
-            # session". Pause remaining is surfaced separately for the monitor.
-            "uptime_sec": int(
-                (state.session_bet_ended_at or time.time()) - state.session_start
-            ),
-            # v2.34.0: wall-clock time since bot start (pauses included)
-            "run_uptime_sec": int(time.time() - state.run_started_at),
-            # v2.35.0: parallel lanes + shared throttle state
-            "lane": state.lane,
-            "lanes_count": state.lanes_count,
-            "lane_share": state.lane_share,
-            "lane_split": state.lane_split,
-            # v2.37.0: run-wide profit increment
-            "profit_increment_scope": state.profit_increment_scope,
-            "run_profit_total": run_profit_total(),
-            "run_first_session": state.run_first_session,
-            "run_bumps": state.run_bumps,
-            "lane_equity": lane_equity(),
-            "soft_pace_delay": state.soft_pace_delay,
-            "pause_remaining_sec": (
-                max(0, int(state.session_pause_total - (time.time() - state.session_pause_started_at)))
-                if state.session_pause_started_at else 0
-            ),
-            "recurring_delay_sec": int(state.recurring_delay),
-            # Length of the pause in progress (streak reset has its own delay).
-            "pause_total_sec": int(state.session_pause_total),
-            "streak_reset_losses": state.streak_reset_losses,
-            "streak_reset_delay_sec": int(state.streak_reset_delay),
-            "status": state.status,
-            "last_error": state.last_error,
-            "updated_at": datetime.now().isoformat(),
-        }
+        data = _state_snapshot()
         fd = os.open(STATE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
+        return data
     except Exception:
-        pass
+        return None
 
 def _cleanup_state_file():
     for p in (STATE_PATH, PID_PATH):
@@ -7811,9 +7885,10 @@ def main():
                 pass
         # v2.27.0: drain the async bet-writer so no queued rows are lost.
         _stop_bet_writer(timeout=5.0)
-        _stop_events()
         _db_save_session()
         _save_state_file()
+        _emit_session_end()
+        _stop_events()
         _cleanup_state_file()
         # Phase 5a: session summary before exit (best-effort; never blocks save path)
         try:
@@ -7887,14 +7962,15 @@ def main():
         try:
             while state.running:
                 time.sleep(2)
-                _save_state_file()
+                _events_tick(_save_state_file())
         except KeyboardInterrupt:
             pass
         state.running = False
         _stop_bet_writer(timeout=5.0)   # v2.27.0: drain async writer
-        _stop_events()
         _db_save_session()
         _save_state_file()
+        _emit_session_end()
+        _stop_events()
         _cleanup_state_file()
         logger.warning("DAEMON EXIT  session=%d  bets=%d  profit=%+.8f  reason=%s",
                        state.session_id, state.total_bets, state.profit, state.status)
@@ -7924,6 +8000,7 @@ def main():
             sys.stdout.write("\033[H")  # cursor home
             sys.stdout.write(build_dashboard_screen())
             sys.stdout.flush()
+            _events_tick()
             time.sleep(0.5)
 
         # Final render
@@ -7954,8 +8031,9 @@ def main():
         sys.stdout.flush()
 
     _stop_bet_writer(timeout=5.0)   # v2.27.0: drain async writer
-    _stop_events()
     _db_save_session()
+    _emit_session_end()
+    _stop_events()
     _cleanup_state_file()
     _print_summary()
 

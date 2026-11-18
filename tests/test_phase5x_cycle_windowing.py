@@ -135,7 +135,7 @@ def test_efficiency_falls_back_to_session_when_cycle_window_empty():
 
 # ── State-file emits new keys ────────────────────────────
 def test_state_file_source_emits_new_keys():
-    src = inspect.getsource(wb._save_state_file)
+    src = inspect.getsource(wb._state_snapshot)
     assert '"cycle_p50_ms"' in src
     assert '"cycle_p99_ms"' in src
     assert '"cycle_sample_count"' in src
@@ -168,4 +168,4 @@ def test_cmd_diagnose_source_has_efficiency_over_100_flag():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.39.0"
+    assert wb.VERSION == "2.40.0"

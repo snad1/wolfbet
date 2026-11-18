@@ -1,7 +1,7 @@
-"""Phase 5q tests — session-uptime freezes during recurring pause (v2.28.4).
+"""Phase 5q tests - session-uptime freezes during recurring pause (v2.28.4).
 
 Bug: `wolfctl status` showed a session's `Uptime` as ~1 h 5 min when only
-5 min of that was actual betting — the rest was the `recurring_delay=3600`
+5 min of that was actual betting - the rest was the `recurring_delay=3600`
 sleep. `state.session_start` was set once at session start and time.time()
 kept ticking during the sleep, so uptime and DB `ended_at` both drifted.
 
@@ -31,7 +31,7 @@ import wolfbet as wb  # noqa: E402
 
 # ── Defaults ──────────────────────────────────────────────
 def test_default_bet_ended_at_is_none():
-    """Fresh state must have no frozen bet-end — session is actively betting."""
+    """Fresh state must have no frozen bet-end - session is actively betting."""
     s = wb.BotState()
     assert s.session_bet_ended_at is None
     assert s.session_pause_started_at is None
@@ -92,7 +92,7 @@ def _write_state_and_read(monkeypatch, tmp_path,
         now - pause_started_offset if pause_started_offset is not None else None
     )
     wb.state.recurring_delay = recurring_delay
-    # v2.32.0 — the pause in progress records its own length (streak reset
+    # v2.32.0 - the pause in progress records its own length (streak reset
     # can use a different delay than recurring_delay).
     wb.state.session_pause_total = recurring_delay
     wb._save_state_file()
@@ -172,7 +172,7 @@ def test_db_save_session_uses_frozen_ended_at(monkeypatch, tmp_path):
         if os.path.exists(db_path):
             os.remove(db_path)
 
-    # ended_at must be the frozen bet-end, NOT "now" — 58 min in the past.
+    # ended_at must be the frozen bet-end, NOT "now" - 58 min in the past.
     from datetime import datetime as _dt
     ended_at = _dt.fromisoformat(ended_at_str)
     delta = time.time() - ended_at.timestamp()
@@ -236,6 +236,6 @@ def test_state_file_always_has_pause_fields():
     """Even when not paused, the keys exist so downstream renderers can
     key off them without KeyError."""
     import inspect
-    src = inspect.getsource(wb._save_state_file)
+    src = inspect.getsource(wb._state_snapshot)
     assert '"pause_remaining_sec"' in src
     assert '"recurring_delay_sec"' in src

@@ -43,7 +43,7 @@ def _reset_metric_state():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.39.0"
+    assert wb.VERSION == "2.40.0"
 
 
 # ── Defect A: overhead stable across single-sample perturbation ─
@@ -168,5 +168,5 @@ def test_manual_game_ceiling_still_meaningful():
 # ── State-file writes new field consistently ─────────────
 def test_save_state_file_still_writes_theoretical_max_bps():
     """Preserve backward compat: `theoretical_max_bps` state-file key survives."""
-    src = inspect.getsource(wb._save_state_file)
+    src = inspect.getsource(wb._state_snapshot)
     assert '"theoretical_max_bps"' in src

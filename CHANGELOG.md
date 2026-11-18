@@ -1,5 +1,16 @@
 # Changelog
 
+## CLI v2.40.0 - status and event log for the live dashboard (2026-11-18)
+
+With events on, the dashboard now gets the bot's status and a log of what it did. With events off nothing changes.
+
+- A `state` event every 2 s carries the same fields as the state file `--status` reads. The dict is now built once by `_state_snapshot()`; the file is written from it unchanged.
+- Lifecycle events: `start` (version, lane, config summary) and `session_open` when the publisher starts; `pause` / `resume` within 2 s of any pause (signal, hotkey); `reload` with the fields `config-set` changed, proxy masked; on a recurring or streak-reset restart `session_close` (old totals), `cycle` (reason, delay) and `session_open` (new id); on stop `error` (insufficient balance only), `session_close` and `stop` with the stop reason.
+- Signal handlers still only set flags: pause and resume are sent from the main loop.
+- On every exit path the publisher now stops after the final session save, so the closing events are flushed.
+
+**Tests**: `tests/test_phase11d_state_events.py` (9). Five older tests now read the state keys from `_state_snapshot`.
+
 ## CLI v2.39.0 - bet events for the live dashboard (2026-11-18)
 
 Each saved bet can now also go to a Redis stream for the live dashboard. It is off by default; with it off the bot behaves exactly as before.
