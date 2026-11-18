@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-lanes-status-v1.json",
+  "title": "wolfbet.py --lanes-status --json",
+  "description": "One entry per lane state file (state null when unreadable) and the totals the table prints.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "lanes",
+        "totals"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "lane",
+              "alive",
+              "paused",
+              "state"
+            ],
+            "properties": {
+              "lane": {
+                "type": "integer"
+              },
+              "alive": {
+                "type": "boolean"
+              },
+              "paused": {
+                "type": "boolean"
+              },
+              "state": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "pid",
+                      "session_id"
+                    ],
+                    "properties": {
+                      "pid": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "session_id": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "profit": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "total_bets": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "uptime_sec": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "bets_per_second": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "additionalProperties": true,
+                    "description": "The lane's state file exactly as the daemon writes it (no secrets in it)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "totals": {
+          "type": "object",
+          "required": [
+            "bps",
+            "profit",
+            "live",
+            "count"
+          ],
+          "properties": {
+            "bps": {
+              "type": "number"
+            },
+            "profit": {
+              "type": "number"
+            },
+            "live": {
+              "type": "integer"
+            },
+            "count": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "no_session"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

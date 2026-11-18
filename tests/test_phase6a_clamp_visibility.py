@@ -30,7 +30,7 @@ import wolfbet as wb  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.41.2"
+    assert wb.VERSION == "2.42.0"
 
 
 # ── recurring_delay accepts values previously clamped ────

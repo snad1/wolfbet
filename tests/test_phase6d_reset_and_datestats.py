@@ -32,7 +32,7 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.41.2"
+    assert wb.VERSION == "2.42.0"
 
 
 def test_wolfctl_version_constant_3_9():
@@ -200,7 +200,7 @@ def test_stats_no_filter_unchanged(monkeypatch, tmp_path, capsys):
 
 
 def test_stats_filtered_limit_bumps_to_50():
-    src = inspect.getsource(wb.cmd_stats)
+    src = inspect.getsource(wb._stats_data)
     assert "limit = 50" in src
 
 
@@ -208,7 +208,7 @@ def test_stats_filtered_limit_bumps_to_50():
 def test_argparse_has_since_until():
     src = inspect.getsource(wb)
     assert '"--since"' in src and '"--until"' in src
-    assert "cmd_stats(since=args.since, until=args.until, lane=args.lane)" in src
+    assert "cmd_stats(since=args.since, until=args.until, lane=args.lane, as_json=args.json)" in src
 
 
 def test_since_until_are_modifiers_not_commands():

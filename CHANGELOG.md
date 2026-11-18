@@ -1,5 +1,17 @@
 # Changelog
 
+## CLI v2.42.0 - JSON output for the read commands (2026-11-18)
+
+`--json` prints one JSON document to stdout for `--status`, `--lanes-status`, `--config-show`, `--stats`, `--analytics`, `--last-bets N` and `--session-bets ID`, so the dashboard agent never has to parse the tables.
+
+- Each document carries `"v": 1` and follows its schema in `casino-dashboard/contracts/schemas/wolfbet-cli-*-v1.json`. `--since`, `--until` and `--lane` filter the JSON the same way they filter the tables.
+- Numbers come out unformatted and times as stored. The terminal view now reads from the same data, so both show the same figures. Without `--json` the output is unchanged.
+- Nothing else reaches stdout: under `--json` every other message goes to stderr. Empty or failed states print `{"v":1,"error":{"code":...,"message":...}}` with the exit code the command already used (`no_database`, `no_session`, `state_unreadable`, `no_config`, `invalid_window`, `session_not_found`).
+- `--config-show --json` never prints a secret: the API key appears only as its masked form plus a set flag, and the proxy and events URL appear as scheme, host and port only, in base config and in lane overrides.
+- `--json` with any other command exits 2 and prints which commands support it.
+
+**Tests**: `tests/test_phase11g_json_outputs.py` (34): snapshots of the terminal output taken before the change, schema validation of every document, the analytics numbers against the terminal view, filters, masking, error documents and exit codes, the real CLI entry point, checksums of the schema copies. `requirements-dev.txt` adds `jsonschema` for the tests only.
+
 ## CLI v2.41.2 - event sender waits up to 1 s for Redis to answer (2026-11-18)
 
 - The event sender now waits up to 1 s for Redis to confirm a batch instead of 100 ms; connecting still gives up after 100 ms. On the live host Redis once answered late after it had already stored the batch, so a delivered event was counted as dropped. The wait runs on the sender thread only and never holds the betting thread.

@@ -1,0 +1,31 @@
+───────────────────────────────────────────────────────────────── WolfBet Session #4  RUNNING ──────────────────────────────────────────────────────────────────
+  Uptime             1:00:00
+  Running for        2h 0m 0s
+  Currency           USDT
+  Strategy           Martingale  2.0x  over  (loss mult: 2.0x)
+  Base / Current     0.00020000 / 0.00040000
+  Highest Bet        0.00080000
+  Balance            1.00020000 → 1.00110000
+  Peak / Low         1.00120000 / 1.00000000
+  Profit             +0.00090000
+  Wagered            0.00200000
+  Avg P/L            +0.00009000 per bet
+  Bets               10
+  Wins / Losses      6 / 4
+  Win Rate           60.0%
+  Current Streak     L-2
+  Best Streaks       W+3  L-2
+  Best Win           +0.00030000
+  Worst Loss         -0.00020000
+  Speed              0.2/s  10/m  Range: 1-4/s  60-240/m
+  Rate Limit         900/1000
+  Stop Conditions    Profit ≥ 0.01 | Loss ≥ 0.005
+  Profit Bump        +0.00010000 every 0.001 run profit
+  Run Profit         +0.00150000  (since #1, 1 bump(s), next at +0.00200000)
+  API                p50 40ms  · p99 120ms  · peak 300ms
+  Cycle              55ms/bet (overhead 5ms)  → 18.18 BPS ceiling
+  Efficiency         92% of theoretical
+  Events             on  · sent 120  · dropped 1  · connected yes
+  Last Status        Betting
+  Updated            2026-11-12 13:00:00
+

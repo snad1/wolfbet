@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-analytics-v1.json",
+  "title": "wolfbet.py --analytics --json",
+  "description": "Aggregates over the sessions in the window: totals, by game / strategy / lane, top 5 each way.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "window",
+        "lifetime",
+        "span",
+        "by_game",
+        "by_strategy",
+        "by_lane",
+        "top_best",
+        "top_worst"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "window": {
+          "type": "object",
+          "required": [
+            "since",
+            "until",
+            "lane"
+          ],
+          "properties": {
+            "since": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "until": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lane": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "lifetime": {
+          "type": "object",
+          "required": [
+            "sessions_total",
+            "bets_total",
+            "wins_total",
+            "losses_total",
+            "wagered_total",
+            "profit_total",
+            "best_profit",
+            "worst_profit",
+            "sessions_in_profit",
+            "sessions_in_loss",
+            "win_rate_pct"
+          ],
+          "properties": {
+            "sessions_total": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "bets_total": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "wins_total": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "losses_total": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "wagered_total": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "profit_total": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "best_profit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "worst_profit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sessions_in_profit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sessions_in_loss": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "win_rate_pct": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "span": {
+          "type": "object",
+          "required": [
+            "first",
+            "last",
+            "span_sec",
+            "bet_sec"
+          ],
+          "properties": {
+            "first": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "span_sec": {
+              "type": "number"
+            },
+            "bet_sec": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "by_game": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "game",
+              "sessions",
+              "bets",
+              "wins",
+              "losses",
+              "profit",
+              "wagered"
+            ],
+            "properties": {
+              "game": {
+                "type": "string"
+              },
+              "sessions": {
+                "type": "integer"
+              },
+              "bets": {
+                "type": "number"
+              },
+              "wins": {
+                "type": "number"
+              },
+              "losses": {
+                "type": "number"
+              },
+              "profit": {
+                "type": "number"
+              },
+              "wagered": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "by_strategy": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "strategy",
+              "sessions",
+              "bets",
+              "wins",
+              "losses",
+              "profit",
+              "wagered"
+            ],
+            "properties": {
+              "strategy": {
+                "type": "string"
+              },
+              "sessions": {
+                "type": "integer"
+              },
+              "bets": {
+                "type": "number"
+              },
+              "wins": {
+                "type": "number"
+              },
+              "losses": {
+                "type": "number"
+              },
+              "profit": {
+                "type": "number"
+              },
+              "wagered": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "by_lane": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "lane",
+              "sessions",
+              "bets",
+              "wins",
+              "losses",
+              "profit",
+              "wagered"
+            ],
+            "properties": {
+              "lane": {
+                "type": "string"
+              },
+              "sessions": {
+                "type": "integer"
+              },
+              "bets": {
+                "type": "number"
+              },
+              "wins": {
+                "type": "number"
+              },
+              "losses": {
+                "type": "number"
+              },
+              "profit": {
+                "type": "number"
+              },
+              "wagered": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "top_best": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "game",
+              "strategy",
+              "bets",
+              "wins",
+              "losses",
+              "profit",
+              "wagered",
+              "started_at"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "game": {
+                "type": "string"
+              },
+              "strategy": {
+                "type": "string"
+              },
+              "bets": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "wins": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "losses": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "profit": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "wagered": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "top_worst": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "game",
+              "strategy",
+              "bets",
+              "wins",
+              "losses",
+              "profit",
+              "wagered",
+              "started_at"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "game": {
+                "type": "string"
+              },
+              "strategy": {
+                "type": "string"
+              },
+              "bets": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "wins": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "losses": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "profit": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "wagered": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "no_database",
+                "invalid_window"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

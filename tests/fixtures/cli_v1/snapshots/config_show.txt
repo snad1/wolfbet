@@ -1,0 +1,63 @@
+                                                               WolfBet AutoBot: Current Config                                                                
+┏━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Field                   ┃ Value                                   ┃ Description                                                                            ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ api_key                 │ wb_live_...9876 (SET)                   │ API bearer token (set via WOLFBET_API_KEY env var)                                     │
+│ currency                │ usdt                                    │ Betting currency                                                                       │
+│ game                    │ dice                                    │ Game (dice / limbo / dice-auto / limbo-auto / ...)                                     │
+│ rule                    │ over                                    │ Dice rule (over / under)                                                               │
+│ multiplier              │ 2                                       │ Payout multiplier                                                                      │
+│ bet_value               │ 50.49000000                             │ Threshold value on the dice roll                                                       │
+│ strategy                │ Martingale                              │ Strategy name                                                                          │
+│ strategy_key            │ 2                                       │ Strategy key (1-8)                                                                     │
+│ base_bet                │ 0.00003333  (live 0.00020000, +1 bumps) │ Base bet amount                                                                        │
+│ loss_mult               │ 2                                       │ Loss multiplier (Martingale)                                                           │
+│ win_mult                │ 1                                       │ Win multiplier (Paroli / Anti-M)                                                       │
+│ delay_martin_threshold  │ 3                                       │ Delay Martingale N-loss threshold                                                      │
+│ bet_delay               │ 0                                       │ Seconds between bets (0 = full speed)                                                  │
+│ max_profit              │ 0.01000000                              │ Stop when profit ≥ this                                                                │
+│ max_loss                │ 0.00500000                              │ Stop when loss ≥ this                                                                  │
+│ max_bets                │ off                                     │ Stop after this many bets                                                              │
+│ max_wins                │ off                                     │ Stop after this many wins                                                              │
+│ stop_on_balance         │ off                                     │ Stop when balance floor reached                                                        │
+│ balance_goal            │ off                                     │ Stop the bot when the balance reaches this                                             │
+│ hard_cap                │ off                                     │ Never place a bet that would pass max_loss or the balance floor                        │
+│ restart_after_loss      │ off                                     │ New session after a capped loss (needs recurring, hard_cap, max_loss, stop_on_balance) │
+│ hybrid_recover_at       │ off                                     │ Session loss that switches to the recovery strategy                                    │
+│ hybrid_recover_strategy │ 2                                       │ Recovery strategy key (1-7)                                                            │
+│ hybrid_recover_bet      │ 1                                       │ First recovery bet, as a multiple of base_bet                                          │
+│ hybrid_press_at         │ off                                     │ Session profit that switches to the press strategy                                     │
+│ hybrid_press_floor      │ 0.00000000                              │ Profit at which press hands back to the opening strategy                               │
+│ hybrid_press_strategy   │ 5                                       │ Press strategy key (1-7)                                                               │
+│ hybrid_press_bet        │ 1                                       │ First press bet, as a multiple of base_bet                                             │
+│ profit_increment        │ off                                     │ Bump base_bet by this at every profit milestone                                        │
+│ profit_threshold        │ off                                     │ Profit interval between increments                                                     │
+│ profit_increment_scope  │ session                                 │ session = each session's profit · run = total since run start (wolfctl run-reset)      │
+│ recurring               │ on                                      │ Auto-restart cycle on non-loss stop                                                    │
+│ recurring_delay         │ 60                                      │ Seconds to pause between recurring cycles (0 = back-to-back)                           │
+│ streak_reset_losses     │ off                                     │ Restart session on first win after N losses in a row (profit ≥ 0)                      │
+│ streak_reset_delay      │ 600                                     │ Seconds to pause before the streak-reset restart                                       │
+│ basebet_pct             │ 0                                       │ Base bet as % of balance (0 = off)                                                     │
+│ streak_delay_loss       │ 3:5.0                                   │ Extra pause after N losses in a row  (N:sec)                                           │
+│ streak_delay_win        │ off                                     │ Extra pause after N wins in a row  (N:sec)                                             │
+│ streak_delay_bets       │ off                                     │ Extra pause every N bets  (N:sec)                                                      │
+│ streakbet_loss          │ off                                     │ Bet reduction after N losses  (N:factor)                                               │
+│ milestone_bets          │ 100                                     │ Milestone every N bets (0 = off)                                                       │
+│ milestone_wins          │ 0                                       │ Milestone every N wins (0 = off)                                                       │
+│ milestone_losses        │ 0                                       │ Milestone every N losses (0 = off)                                                     │
+│ milestone_profit        │ 0.00000000                              │ Milestone every X profit crossed (0 = off)                                             │
+│ pipeline_depth          │ 1                                       │ Pipelined betting depth (1 = serial, Flat-only)                                        │
+│ proxy                   │ http://10.0.0.1:8080                    │ HTTP/HTTPS/SOCKS5 proxy URL (credentials masked)                                       │
+│ purge_days              │ 3                                       │ Bet-row retention window in days (1-30)                                                │
+│ db_write_mode           │ async                                   │ Bet DB writer: async (default, batched) or sync (legacy, per-bet fsync)                │
+│ events_enabled          │ on                                      │ Send bets, status and lifecycle events to Redis for the dashboard                      │
+│ events_url              │ redis://127.0.0.1:6379                  │ Redis URL for events (set via config-set or WOLFBET_EVENTS_URL)                        │
+│ custom_rules_text       │                                         │ Rule-Based custom rules (JSON per line)                                                │
+└─────────────────────────┴─────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────┘
+
+Lanes: 3  split: bet  (base bet ÷ lanes)
+  lane2 overrides: multiplier=3, streak_delay_loss=2:4.0
+  lane3 overrides: max_loss=0.00200000
+
+Config file: config.json  mode=0o600  size=601B
+Tweak with: python3 wolfbet.py --config-set KEY=VALUE ...

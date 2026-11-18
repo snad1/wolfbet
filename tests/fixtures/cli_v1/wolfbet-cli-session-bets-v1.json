@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-session-bets-v1.json",
+  "title": "wolfbet.py --session-bets ID --json",
+  "description": "One session's row, uptime, win/loss streak lengths (length -> times seen) and its last 50 bets.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "session",
+        "uptime_sec",
+        "streaks",
+        "bets"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "session": {
+          "type": "object",
+          "required": [
+            "id",
+            "started_at",
+            "ended_at",
+            "currency",
+            "strategy",
+            "base_bet",
+            "multiplier",
+            "total_bets",
+            "wins",
+            "losses",
+            "profit",
+            "wagered",
+            "start_balance",
+            "end_balance",
+            "max_win_streak",
+            "max_loss_streak",
+            "highest_balance",
+            "lowest_balance",
+            "highest_win",
+            "biggest_loss",
+            "bets_per_minute",
+            "bets_per_second",
+            "peak_bps",
+            "low_bps",
+            "peak_bpm",
+            "low_bpm"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "started_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ended_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "strategy": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "base_bet": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "multiplier": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "total_bets": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "wins": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "losses": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "profit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "wagered": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "start_balance": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "end_balance": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_win_streak": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_loss_streak": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "highest_balance": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "lowest_balance": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "highest_win": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "biggest_loss": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "bets_per_minute": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "bets_per_second": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "peak_bps": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "low_bps": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "peak_bpm": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "low_bpm": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "uptime_sec": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "streaks": {
+          "type": "object",
+          "required": [
+            "win",
+            "loss"
+          ],
+          "properties": {
+            "win": {
+              "type": "object",
+              "patternProperties": {
+                "^[0-9]+$": {
+                  "type": "integer"
+                }
+              },
+              "additionalProperties": false
+            },
+            "loss": {
+              "type": "object",
+              "patternProperties": {
+                "^[0-9]+$": {
+                  "type": "integer"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "bets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "time",
+              "amount",
+              "result_value",
+              "state",
+              "profit",
+              "balance_after"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "time": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "amount": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "result_value": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "profit": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "balance_after": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "no_database",
+                "session_not_found"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-status-v1.json",
+  "title": "wolfbet.py --status --json",
+  "description": "This lane's live state and whether its daemon pid is alive.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "running",
+        "state"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "object",
+          "required": [
+            "pid",
+            "session_id"
+          ],
+          "properties": {
+            "pid": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "profit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "total_bets": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "uptime_sec": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "bets_per_second": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": true,
+          "description": "The lane's state file exactly as the daemon writes it (no secrets in it)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "no_session",
+                "state_unreadable"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

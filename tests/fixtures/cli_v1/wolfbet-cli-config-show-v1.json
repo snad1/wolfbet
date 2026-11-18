@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wolfbet-cli-config-show-v1.json",
+  "title": "wolfbet.py --config-show --json",
+  "description": "Saved config with secrets masked, the live base bet, lanes and overrides.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ok"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "ok": {
+      "type": "object",
+      "required": [
+        "v",
+        "api_key",
+        "config",
+        "live_base_bet",
+        "run_bumps",
+        "lanes",
+        "lane_split",
+        "lane_overrides",
+        "config_file"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "api_key": {
+          "type": "object",
+          "required": [
+            "set",
+            "masked"
+          ],
+          "properties": {
+            "set": {
+              "type": "boolean"
+            },
+            "masked": {
+              "type": "string",
+              "maxLength": 15
+            }
+          },
+          "additionalProperties": false
+        },
+        "config": {
+          "type": "object",
+          "required": [
+            "proxy",
+            "events_url"
+          ],
+          "properties": {
+            "proxy": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[^@]*$",
+              "description": "scheme://host[:port] only; userinfo is never printed"
+            },
+            "events_url": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[^@]*$",
+              "description": "scheme://host[:port] only; userinfo is never printed"
+            }
+          },
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null",
+              "array"
+            ]
+          }
+        },
+        "live_base_bet": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "run_bumps": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lanes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lane_split": {
+          "enum": [
+            "none",
+            "budget",
+            "bet",
+            "both"
+          ]
+        },
+        "lane_overrides": {
+          "type": "object",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "type": "object",
+              "properties": {
+                "proxy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[^@]*$",
+                  "description": "scheme://host[:port] only; userinfo is never printed"
+                },
+                "events_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^[^@]*$",
+                  "description": "scheme://host[:port] only; userinfo is never printed"
+                }
+              },
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null",
+                  "array"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "config_file": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "path",
+                "mode",
+                "size"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "v",
+        "error"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "no_config"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

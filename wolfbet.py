@@ -938,7 +938,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.41.2"
+VERSION      = "2.42.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -6297,6 +6297,60 @@ def cmd_monitor():
 
 
 # ══════════════════════════════════════════════════════════
+#  --json OUTPUT for the read commands
+# ══════════════════════════════════════════════════════════
+CLI_JSON_VERSION = 1
+_JSON_COMMANDS = ("status", "lanes_status", "config_show", "stats", "analytics",
+                  "last_bets", "session_bets")
+
+
+class _CliError(Exception):
+    """Empty or failed state of a read command: a stable code, the message, its Rich style and exit code."""
+
+    def __init__(self, code: str, message: str, style: str = "yellow",
+                 hint: Optional[str] = None, exit_code: Optional[int] = None):
+        super().__init__(message)
+        self.code, self.message, self.style = code, message, style
+        self.hint, self.exit_code = hint, exit_code
+
+
+def _print_json(doc: dict) -> None:
+    """Write one JSON document to stdout. Under --json it is the only stdout output."""
+    sys.stdout.write(json.dumps({"v": CLI_JSON_VERSION, **doc}, default=str) + "\n")
+    sys.stdout.flush()
+
+
+def _cli_fail(err: _CliError, as_json: bool) -> None:
+    """Report a read command's empty or failed state, as JSON or Rich, then exit with its code."""
+    if as_json:
+        _print_json({"error": {"code": err.code, "message": err.message}})
+    else:
+        console.print(f"[{err.style}]{err.message}[/]")
+        if err.hint:
+            console.print(f"[dim]{err.hint}[/]")
+    if err.exit_code is not None:
+        sys.exit(err.exit_code)
+
+
+def _json_window(since, until, lane) -> dict:
+    return {"since": _normalize_window_bound(since), "until": _normalize_window_bound(until),
+            "lane": int(lane) if lane else None}
+
+
+def _span_dict(first, last, span_sec, bet_sec) -> dict:
+    return {"first": first.isoformat() if first else None,
+            "last": last.isoformat() if last else None,
+            "span_sec": span_sec, "bet_sec": bet_sec}
+
+
+def _span_range(span: dict) -> tuple:
+    """(first, last) datetimes back from a _span_dict, for the Rich renderers."""
+    if not span["first"]:
+        return None, None
+    return datetime.fromisoformat(span["first"]), datetime.fromisoformat(span["last"])
+
+
+# ══════════════════════════════════════════════════════════
 #  --status COMMAND
 # ══════════════════════════════════════════════════════════
 def _read_lane_states() -> list:
@@ -6323,27 +6377,48 @@ def _read_lane_states() -> list:
     return out
 
 
-def cmd_lanes_status():
-    """v2.35.0: one row per lane + totals (wolfctl status when lanes > 1)."""
+def _lanes_status_data() -> dict:
+    """Every lane's state file (None when unreadable), whether it runs or pauses, and the totals."""
     rows = _read_lane_states()
     if not rows:
-        console.print("[yellow]No lane state files found.[/]")
+        raise _CliError("no_session", "No lane state files found.")
+    lanes = []
+    tot_bps = tot_profit = 0.0
+    for k, d, alive in rows:
+        paused = bool(alive and d is not None and int(d.get("pause_remaining_sec", 0) or 0) > 0)
+        lanes.append({"lane": k, "alive": alive, "paused": paused, "state": d})
+        if d is None:
+            continue
+        tot_profit += float(d.get("profit", 0) or 0)
+        tot_bps += float(d.get("bets_per_second", 0) or 0) if alive else 0.0
+    return {"lanes": lanes, "totals": {"bps": tot_bps, "profit": tot_profit,
+                                       "live": sum(1 for r in lanes if r["alive"]),
+                                       "count": len(lanes)}}
+
+
+def cmd_lanes_status(as_json: bool = False):
+    """v2.35.0: one row per lane + totals (wolfctl status when lanes > 1)."""
+    try:
+        data = _lanes_status_data()
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if as_json:
+        _print_json(data)
         return
     t = Table(title="Parallel lanes", title_style="bold cyan", box=box.SIMPLE)
     for col in ("Lane", "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps", "Pace"):
         t.add_column(col, justify="right" if col not in ("State",) else "left")
-    tot_bps = tot_profit = 0.0
-    for k, d, alive in rows:
+    for row in data["lanes"]:
+        k, d, alive = row["lane"], row["state"], row["alive"]
         if d is None:
             t.add_row(str(k), "[red]unreadable[/]", *["-"] * 7)
             continue
         p = float(d.get("profit", 0) or 0)
         bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
         eq = d.get("lane_equity")
-        tot_profit += p
-        tot_bps += bps
         st = "[green]LIVE[/]" if alive else "[red]STOPPED[/]"
-        if alive and int(d.get("pause_remaining_sec", 0) or 0) > 0:
+        if row["paused"]:
             st = "[cyan]PAUSED[/]"
         t.add_row(str(k), st, f"#{d.get('session_id', '?')}",
                   str(timedelta(seconds=int(d.get("uptime_sec", 0) or 0))),
@@ -6353,9 +6428,10 @@ def cmd_lanes_status():
                   f"{bps:.1f}",
                   f"{float(d.get('soft_pace_delay', 0) or 0) * 1000:.0f}ms")
     console.print(t)
-    console.print(f"  [dim]Total:[/] [bold]{tot_bps:.1f}[/] bps   "
-                  f"[dim]session P/L[/] [{'green' if tot_profit >= 0 else 'red'}]{tot_profit:+.8f}[/]   "
-                  f"[dim]lanes live[/] {sum(1 for _, _, a in rows if a)}/{len(rows)}")
+    tot = data["totals"]
+    console.print(f"  [dim]Total:[/] [bold]{tot['bps']:.1f}[/] bps   "
+                  f"[dim]session P/L[/] [{'green' if tot['profit'] >= 0 else 'red'}]{tot['profit']:+.8f}[/]   "
+                  f"[dim]lanes live[/] {tot['live']}/{tot['count']}")
 
 
 def _fmt_events_row(ev: Optional[dict]) -> str:
@@ -6395,25 +6471,29 @@ def cmd_events_check() -> None:
         console.print(f"  Events: Redis unreachable at {shown} ({type(e).__name__})")
 
 
-def cmd_status():
+def _status_data() -> dict:
+    """This lane's state file as the daemon wrote it, and whether its pid is alive."""
     if not os.path.exists(STATE_PATH):
-        console.print("[yellow]No running session found.[/]")
-        sys.exit(0)
+        raise _CliError("no_session", "No running session found.", exit_code=0)
     try:
         with open(STATE_PATH) as f:
             d = json.load(f)
     except Exception:
-        console.print("[red]Could not read state file.[/]")
-        sys.exit(1)
+        raise _CliError("state_unreadable", "Could not read state file.",
+                        style="red", exit_code=1) from None
+    return {"running": bool(_monitor_get_pid(d)), "state": d}
 
-    pid = d.get("pid")
-    alive = False
-    if pid:
-        try:
-            os.kill(pid, 0)
-            alive = True
-        except OSError:
-            pass
+
+def cmd_status(as_json: bool = False):
+    try:
+        data = _status_data()
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if as_json:
+        _print_json(data)
+        return
+    d, alive = data["state"], data["running"]
 
     status = "[bold green]RUNNING[/]" if alive else "[bold red]STOPPED[/]"
     p = d.get("profit", 0)
@@ -6718,61 +6798,100 @@ def _fmt_config_value(field: str, val) -> str:
     return str(val)
 
 
-def cmd_config_show():
-    """Render the current saved config as a Rich table. No wizard, no side effects."""
-    from rich.table import Table   # local import: avoids top-level cost when unused
+def _config_show_value(field: str, val):
+    """A config value safe to print or send: proxy and events URL without credentials."""
+    if field == "proxy":
+        return _mask_proxy(val) if val else None
+    if field == "events_url":
+        return _redact_url(val) if val else None
+    if field in _STREAK_TUPLE_KEYS and isinstance(val, str):
+        return parse_streak_delay(val)
+    return val
+
+
+def _config_show_data() -> dict:
+    """Saved config (secrets masked), the running daemon's live base bet, lanes and the file's metadata."""
     if not load_config():
-        console.print("[yellow]No config saved yet: run the wizard first.[/]")
-        console.print("[dim]  Try: python3 wolfbet.py --setup-only[/]")
-        sys.exit(1)
+        raise _CliError("no_config", "No config saved yet: run the wizard first.",
+                        hint="  Try: python3 wolfbet.py --setup-only", exit_code=1)
+    config = {}
+    for field, _ in _CONFIG_SHOW_FIELDS:
+        try:
+            config[field] = _config_show_value(field, getattr(state, field))
+        except AttributeError:
+            continue
+    live = _monitor_read_state()
+    if not (live and _monitor_get_pid(live)):
+        live = None
+    try:
+        with open(CONFIG_PATH) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        raw = {}
+    overrides = {}
+    for lane in range(2, LANES_MAX + 1):
+        ov = _lane_overrides(raw, lane)
+        if ov:
+            overrides[str(lane)] = {k: _config_show_value(k, v) for k, v in sorted(ov.items())}
+    try:
+        st = os.stat(CONFIG_PATH)
+        config_file = {"path": CONFIG_PATH, "mode": oct(st.st_mode & 0o777), "size": st.st_size}
+    except OSError:
+        config_file = None
+    return {
+        "api_key": {"set": bool(state.api_key), "masked": _mask_key(state.api_key)},
+        "config": config,
+        "live_base_bet": (float(live["base_bet"])
+                          if live and live.get("base_bet") is not None else None),
+        "run_bumps": int(live.get("run_bumps") or 0) if live else None,
+        "lanes": _lanes_count(raw),
+        "lane_split": _lane_split(raw),
+        "lane_overrides": overrides,
+        "config_file": config_file,
+    }
+
+
+def cmd_config_show(as_json: bool = False):
+    """Render the current saved config as a Rich table, or as JSON. No wizard, no side effects."""
+    from rich.table import Table   # local import: avoids top-level cost when unused
+    try:
+        data = _config_show_data()
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if as_json:
+        _print_json(data)
+        return
     tbl = Table(title="WolfBet AutoBot: Current Config",
                 title_style="bold cyan", show_lines=False)
     tbl.add_column("Field",       style="bold yellow", no_wrap=True)
     tbl.add_column("Value",       style="cyan")
     tbl.add_column("Description", style="dim")
 
-    key_state = "[bold green](SET)[/]" if state.api_key else "[bold red](NOT SET)[/]"
-    tbl.add_row("api_key", f"[dim]{_mask_key(state.api_key)}[/] {key_state}",
+    key_state = "[bold green](SET)[/]" if data["api_key"]["set"] else "[bold red](NOT SET)[/]"
+    tbl.add_row("api_key", f"[dim]{data['api_key']['masked']}[/] {key_state}",
                 "API bearer token (set via WOLFBET_API_KEY env var)")
-    live = _monitor_read_state()
-    if not (live and _monitor_get_pid(live)):
-        live = None
+    live_base = data["live_base_bet"]
     for field, desc in _CONFIG_SHOW_FIELDS:
-        try:
-            val = getattr(state, field)
-        except AttributeError:
+        if field not in data["config"]:
             continue
+        val = data["config"][field]
         shown = _fmt_config_value(field, val)
-        if field == "base_bet" and live and live.get("base_bet") is not None:
-            live_base = float(live["base_bet"])
-            if abs(live_base - float(val)) > 1e-12:
-                shown = (f"{shown}  [dim](live {live_base:.8f}, "
-                         f"+{int(live.get('run_bumps') or 0)} bumps)[/]")
+        if field == "base_bet" and live_base is not None and abs(live_base - float(val)) > 1e-12:
+            shown = (f"{shown}  [dim](live {live_base:.8f}, "
+                     f"+{data['run_bumps']} bumps)[/]")
         tbl.add_row(field, shown, desc)
     console.print(tbl)
-    # v2.35.0: parallel lanes: count + per-lane overrides
-    try:
-        with open(CONFIG_PATH) as f:
-            _raw = json.load(f)
-    except (OSError, ValueError):
-        _raw = {}
-    n_lanes = _lanes_count(_raw)
-    _mode = _lane_split(_raw)
+    n_lanes, _mode = data["lanes"], data["lane_split"]
     console.print(f"\n[dim]Lanes:[/] [bold]{n_lanes}[/]  [dim]split:[/] [bold]{_mode}[/]"
                   + (f"  [dim]({_LANE_SPLIT_HELP[_mode]})[/]" if n_lanes > 1 else ""))
-    for lane in range(2, LANES_MAX + 1):
-        ov = _lane_overrides(_raw, lane)
-        if ov:
-            parts = ", ".join(f"{k}={_fmt_config_value(k, parse_streak_delay(v) if k in _STREAK_TUPLE_KEYS else v)}"
-                              for k, v in sorted(ov.items()))
-            console.print(f"  [magenta]lane{lane}[/] overrides: {parts}")
-    try:
-        st = os.stat(CONFIG_PATH)
-        mode = oct(st.st_mode & 0o777)
-        console.print(f"\n[dim]Config file:[/] [cyan]{CONFIG_PATH}[/]  "
-                      f"[dim]mode={mode}  size={st.st_size}B[/]")
-    except OSError:
-        pass
+    for lane, ov in data["lane_overrides"].items():
+        parts = ", ".join(f"{k}={_fmt_config_value(k, v)}" for k, v in ov.items())
+        console.print(f"  [magenta]lane{lane}[/] overrides: {parts}")
+    cf = data["config_file"]
+    if cf:
+        console.print(f"\n[dim]Config file:[/] [cyan]{cf['path']}[/]  "
+                      f"[dim]mode={cf['mode']}  size={cf['size']}B[/]")
     console.print(f"[dim]Tweak with:[/] "
                   f"[cyan]python3 wolfbet.py --config-set KEY=VALUE ...[/]")
 
@@ -7575,19 +7694,45 @@ def _print_top_sessions_table(title: str, rows: list):
     console.print(t)
 
 
-def cmd_analytics(since: str = None, until: str = None, lane: int = None):
-    """Analytics report: aggregates over all saved sessions, optionally
-    restricted to a started_at date window (v2.31.0)."""
+def _analytics_data(since: str = None, until: str = None, lane: int = None) -> dict:
+    """Aggregates over the sessions in the window: totals, time span, by game / strategy / lane, top 5 each way."""
     if not os.path.exists(DB_PATH):
-        console.print("[yellow]No database found: run a session first.[/]")
-        return
+        raise _CliError("no_database", "No database found: run a session first.")
     migrate_db(DB_PATH)  # v2.35.0: lane column on DBs the bot hasn't opened yet
     try:
-        where, wparams, wlabel = _stats_date_window(since, until, lane)
+        where, wparams, _ = _stats_date_window(since, until, lane)
     except ValueError as e:
-        console.print(f"[red]{e}[/]")
+        raise _CliError("invalid_window", str(e), style="red") from None
+    conn = _db_conn()
+    try:
+        span = _span_dict(*_sessions_time_span(conn, where, wparams))
+    finally:
+        conn.close()
+    return {
+        "window": _json_window(since, until, lane),
+        "lifetime": _analytics_lifetime(where, wparams),
+        "span": span,
+        "by_game": _analytics_by_game(where, wparams),
+        "by_strategy": _analytics_by_strategy(where, wparams),
+        "by_lane": _analytics_by_lane(where, wparams),
+        "top_best": _analytics_top_sessions("profit_desc", 5, where, wparams),
+        "top_worst": _analytics_top_sessions("profit_asc", 5, where, wparams),
+    }
+
+
+def cmd_analytics(since: str = None, until: str = None, lane: int = None, as_json: bool = False):
+    """Analytics report: aggregates over all saved sessions, optionally
+    restricted to a started_at date window (v2.31.0)."""
+    try:
+        data = _analytics_data(since, until, lane)
+    except _CliError as e:
+        _cli_fail(e, as_json)
         return
-    lifetime = _analytics_lifetime(where, wparams)
+    if as_json:
+        _print_json(data)
+        return
+    wlabel = _stats_date_window(since, until, lane)[2]
+    lifetime = data["lifetime"]
     if lifetime["sessions_total"] == 0:
         console.print("[yellow]No sessions in the DB yet: run a session first.[/]")
         return
@@ -7604,11 +7749,8 @@ def cmd_analytics(since: str = None, until: str = None, lane: int = None):
     ps = '+' if p >= 0 else ''
     grid = Table.grid(padding=(0, 2))
     grid.add_row("Total sessions:",     f"{lifetime['sessions_total']:,}")
-    _conn = _db_conn()
-    try:
-        a_first, a_last, a_span, a_bet = _sessions_time_span(_conn, where, wparams)
-    finally:
-        _conn.close()
+    a_first, a_last = _span_range(data["span"])
+    a_span, a_bet = data["span"]["span_sec"], data["span"]["bet_sec"]
     if a_first:
         grid.add_row("Time range:", f"{a_first.isoformat(' ', 'seconds')} → "
                                     f"{a_last.isoformat(' ', 'seconds')}")
@@ -7624,16 +7766,13 @@ def cmd_analytics(since: str = None, until: str = None, lane: int = None):
     grid.add_row("Worst session:",      f"{lifetime['worst_profit']:.8f}")
     console.print(Panel(grid, title="[bold]💰 Overall[/]", border_style=pc))
 
-    _print_analytics_table("[bold]🎲 By game[/]",     _analytics_by_game(where, wparams),     "game",     "Game")
-    _print_analytics_table("[bold]🎯 By strategy[/]", _analytics_by_strategy(where, wparams), "strategy", "Strategy")
-    _by_lane = _analytics_by_lane(where, wparams)
-    if len(_by_lane) > 1:
-        _print_analytics_table("[bold]🛣 By lane[/]", _by_lane, "lane", "Lane")
+    _print_analytics_table("[bold]🎲 By game[/]",     data["by_game"],     "game",     "Game")
+    _print_analytics_table("[bold]🎯 By strategy[/]", data["by_strategy"], "strategy", "Strategy")
+    if len(data["by_lane"]) > 1:
+        _print_analytics_table("[bold]🛣 By lane[/]", data["by_lane"], "lane", "Lane")
 
-    _print_top_sessions_table("[bold]🏆 Top 5 best sessions[/]",
-                              _analytics_top_sessions("profit_desc", 5, where, wparams))
-    _print_top_sessions_table("[bold]🔻 Top 5 worst sessions[/]",
-                              _analytics_top_sessions("profit_asc", 5, where, wparams))
+    _print_top_sessions_table("[bold]🏆 Top 5 best sessions[/]", data["top_best"])
+    _print_top_sessions_table("[bold]🔻 Top 5 worst sessions[/]", data["top_worst"])
 
     console.print("\n[dim]  Use --stats for recent 20 sessions in detail, "
                   "or --session-bets ID to drill into one.[/]\n")
@@ -7737,45 +7876,90 @@ def _normalize_window_bound(value):
     return v
 
 
-def cmd_stats(since: str = None, until: str = None, lane: int = None):
-    """Show session statistics, optionally filtered to a date window."""
+_STATS_SESSION_COLS = (
+    "id", "started_at", "ended_at", "currency", "strategy", "multiplier", "base_bet",
+    "total_bets", "wins", "losses", "profit", "wagered", "start_balance", "end_balance",
+    "max_win_streak", "max_loss_streak", "highest_balance", "lowest_balance",
+    "highest_win", "biggest_loss", "bets_per_minute", "bets_per_second",
+    "peak_bps", "low_bps", "peak_bpm", "low_bpm", "lane")
+_STATS_TOTAL_COLS = (
+    "sessions", "bets", "wins", "losses", "profit", "wagered",
+    "best_win_streak", "best_loss_streak", "best_profit", "worst_profit",
+    "max_bets", "avg_bets", "peak_balance", "best_win", "worst_loss", "avg_bpm",
+    "peak_bps", "peak_bpm", "avg_bps", "max_wins", "avg_wins", "max_losses", "avg_losses")
+
+
+def _stats_data(since: str = None, until: str = None, lane: int = None) -> dict:
+    """Recent sessions in the window (20, or 50 for a date range), the window's totals and time span."""
     if not os.path.exists(DB_PATH):
-        console.print("[yellow]No database found.[/]")
-        return
+        raise _CliError("no_database", "No database found.")
     migrate_db(DB_PATH)  # v2.35.0: lane column on DBs the bot hasn't opened yet
     try:
-        where, params, window_label = _stats_date_window(since, until, lane)
+        where, params, _ = _stats_date_window(since, until, lane)
     except ValueError as e:
-        console.print(f"[red]{e}[/]")
-        return
-    conn = _db_conn()
+        raise _CliError("invalid_window", str(e), style="red") from None
     # v2.30.9: range reviews want more rows than the default 20.
     limit = 50 if (since or until) else 20
+    conn = _db_conn()
+    try:
+        rows = conn.execute(f"""
+            SELECT id, started_at AS started, ended_at AS ended,
+                   UPPER(currency) AS cur, strategy, multiplier, base_bet,
+                   total_bets, wins, losses, profit, wagered,
+                   start_balance, end_balance,
+                   max_win_streak, max_loss_streak,
+                   COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+                   COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+                   COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+                   COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+                   COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
+                   COALESCE(lane, 1)
+            FROM sessions{where} ORDER BY id DESC LIMIT ?
+        """, (*params, limit)).fetchall()
+        span = _span_dict(*_sessions_time_span(conn, where, params))
+        totals = conn.execute(f"""
+            SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
+                   COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
+                   COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
+                   COALESCE(MAX(profit),0), COALESCE(MIN(profit),0),
+                   COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0),
+                   COALESCE(MAX(highest_balance),0), COALESCE(MAX(highest_win),0),
+                   COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
+                   COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
+                   COALESCE(AVG(bets_per_second),0),
+                   COALESCE(MAX(wins),0), COALESCE(AVG(wins),0),
+                   COALESCE(MAX(losses),0), COALESCE(AVG(losses),0)
+            FROM sessions{where}
+        """, tuple(params)).fetchone()
+    finally:
+        conn.close()
+    return {"window": _json_window(since, until, lane), "limit": limit,
+            "sessions": [dict(zip(_STATS_SESSION_COLS, r)) for r in rows],
+            "totals": dict(zip(_STATS_TOTAL_COLS, totals)), "span": span}
 
-    # session list: fetch all columns
-    rows = conn.execute(f"""
-        SELECT id, started_at AS started, ended_at AS ended,
-               UPPER(currency) AS cur, strategy, multiplier, base_bet,
-               total_bets, wins, losses, profit, wagered,
-               start_balance, end_balance,
-               max_win_streak, max_loss_streak,
-               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
-               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
-               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
-               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
-               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0),
-               COALESCE(lane, 1)
-        FROM sessions{where} ORDER BY id DESC LIMIT ?
-    """, (*params, limit)).fetchall()
+
+def cmd_stats(since: str = None, until: str = None, lane: int = None, as_json: bool = False):
+    """Show session statistics, optionally filtered to a date window."""
+    try:
+        data = _stats_data(since, until, lane)
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if as_json:
+        _print_json(data)
+        return
+    window_label = _stats_date_window(since, until, lane)[2]
+    limit = data["limit"]
 
     console.print(Rule(f"[bold cyan]Session History (last {limit})[/]{window_label}"))
 
     # Print each session as a detailed block
-    for r in rows:
+    for s in data["sessions"]:
         sid, started, ended, cur, strat, mult, base, bets, wins, losses, \
             profit, wagered, start_bal, end_bal, mws, mls, \
             hi_bal, lo_bal, hi_win, big_loss, \
-            bpm, bps, s_peak_bps, s_low_bps, s_peak_bpm, s_low_bpm, s_lane = r
+            bpm, bps, s_peak_bps, s_low_bps, s_peak_bpm, s_low_bpm, s_lane = \
+            (s[c] for c in _STATS_SESSION_COLS)
         lane_tag = f" [magenta]\\[L{s_lane}][/]" if s_lane and s_lane > 1 else ""
         bets = bets or 0
         wins = wins or 0
@@ -7828,28 +8012,14 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
         console.print()
 
     # totals: v2.30.9: honor the same date window as the listing.
-    span_first, span_last, span_sec, bet_sec = _sessions_time_span(conn, where, params)
-    totals = conn.execute(f"""
-        SELECT COUNT(*), COALESCE(SUM(total_bets),0), COALESCE(SUM(wins),0),
-               COALESCE(SUM(losses),0), COALESCE(SUM(profit),0), COALESCE(SUM(wagered),0),
-               COALESCE(MAX(max_win_streak),0), COALESCE(MAX(max_loss_streak),0),
-               COALESCE(MAX(profit),0), COALESCE(MIN(profit),0),
-               COALESCE(MAX(total_bets),0), COALESCE(AVG(total_bets),0),
-               COALESCE(MAX(highest_balance),0), COALESCE(MAX(highest_win),0),
-               COALESCE(MAX(biggest_loss),0), COALESCE(AVG(bets_per_minute),0),
-               COALESCE(MAX(peak_bps),0), COALESCE(MAX(peak_bpm),0),
-               COALESCE(AVG(bets_per_second),0),
-               COALESCE(MAX(wins),0), COALESCE(AVG(wins),0),
-               COALESCE(MAX(losses),0), COALESCE(AVG(losses),0)
-        FROM sessions{where}
-    """, tuple(params)).fetchone()
-    conn.close()
-
+    span_first, span_last = _span_range(data["span"])
+    span_sec, bet_sec = data["span"]["span_sec"], data["span"]["bet_sec"]
     sessions, tot_bets, tot_wins, tot_losses, tot_profit, tot_wagered, \
         best_ws, best_ls, best_profit, worst_profit, max_bets, avg_bets, \
         all_hi_bal, all_hi_win, all_big_loss, avg_bpm, \
         all_peak_bps, all_peak_bpm, avg_bps, \
-        max_wins_s, avg_wins_s, max_losses_s, avg_losses_s = totals
+        max_wins_s, avg_wins_s, max_losses_s, avg_losses_s = \
+        (data["totals"][c] for c in _STATS_TOTAL_COLS)
     pc = "green" if tot_profit >= 0 else "red"
     ps = "+" if tot_profit >= 0 else ""
     wr = f"{tot_wins/tot_bets*100:.1f}%" if tot_bets > 0 else "-"
@@ -7879,18 +8049,37 @@ def cmd_stats(since: str = None, until: str = None, lane: int = None):
     console.print(f"  [dim]Losses/Session:[/] Max {max_losses_s}  Avg {avg_losses_s:.1f}")
     console.print()
 
-def cmd_last_bets(n: int):
-    """Show last N bets from database."""
+_LAST_BETS_COLS = ("id", "session_id", "timestamp", "amount", "result_value",
+                   "state", "profit", "balance_after")
+
+
+def _last_bets_data(n: int) -> dict:
+    """The newest N bets across all sessions, newest first."""
     if not os.path.exists(DB_PATH):
-        console.print("[yellow]No database found.[/]")
-        return
+        raise _CliError("no_database", "No database found.")
     conn = _db_conn()
-    rows = conn.execute("""
-        SELECT b.id, b.session_id, substr(b.timestamp,1,19) AS dt,
-               b.amount, b.result_value, b.state, b.profit, b.balance_after
-        FROM bets b ORDER BY b.id DESC LIMIT ?
-    """, (n,)).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute("""
+            SELECT b.id, b.session_id, substr(b.timestamp,1,19) AS dt,
+                   b.amount, b.result_value, b.state, b.profit, b.balance_after
+            FROM bets b ORDER BY b.id DESC LIMIT ?
+        """, (n,)).fetchall()
+    finally:
+        conn.close()
+    return {"bets": [dict(zip(_LAST_BETS_COLS, r)) for r in rows]}
+
+
+def cmd_last_bets(n: int, as_json: bool = False):
+    """Show last N bets from database."""
+    try:
+        data = _last_bets_data(n)
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if as_json:
+        _print_json(data)
+        return
+    rows = [tuple(b[c] for c in _LAST_BETS_COLS) for b in data["bets"]]
 
     if not rows:
         console.print("[yellow]No bets found.[/]")
@@ -7950,37 +8139,76 @@ def _compute_streak_distribution(conn, session_id: int) -> dict:
     return dist
 
 
-def cmd_session_bets(session_id: int):
-    """Show full detailed stats and bets for a specific session."""
+_SESSION_BETS_COLS = (
+    "id", "started_at", "ended_at", "currency", "strategy", "base_bet", "multiplier",
+    "total_bets", "wins", "losses", "profit", "wagered", "start_balance", "end_balance",
+    "max_win_streak", "max_loss_streak", "highest_balance", "lowest_balance",
+    "highest_win", "biggest_loss", "bets_per_minute", "bets_per_second",
+    "peak_bps", "low_bps", "peak_bpm", "low_bpm")
+_SESSION_BET_ROW_COLS = ("id", "time", "amount", "result_value", "state", "profit", "balance_after")
+
+
+def _session_uptime_sec(started, ended):
+    """Seconds from started_at to ended_at (to now while running), or None when unparseable."""
+    try:
+        t0 = datetime.fromisoformat(started) if started else None
+        t1 = datetime.fromisoformat(ended) if ended else datetime.now()
+        return int((t1 - t0).total_seconds()) if t0 else None
+    except Exception:
+        return None
+
+
+def _session_bets_data(session_id: int) -> dict:
+    """One session's row, its uptime, its win and loss streak lengths, and its last 50 bets."""
     if not os.path.exists(DB_PATH):
-        console.print("[yellow]No database found.[/]")
-        return
+        raise _CliError("no_database", "No database found.")
     conn = _db_conn()
-
-    # session info: fetch all columns
-    sess = conn.execute("""
-        SELECT id, started_at, ended_at,
-               UPPER(currency), strategy, base_bet, multiplier,
-               total_bets, wins, losses, profit, wagered,
-               start_balance, end_balance,
-               max_win_streak, max_loss_streak,
-               COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
-               COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
-               COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
-               COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
-               COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
-        FROM sessions WHERE id = ?
-    """, (session_id,)).fetchone()
-
-    if not sess:
-        console.print(f"[red]Session #{session_id} not found.[/]")
+    try:
+        sess = conn.execute("""
+            SELECT id, started_at, ended_at,
+                   UPPER(currency), strategy, base_bet, multiplier,
+                   total_bets, wins, losses, profit, wagered,
+                   start_balance, end_balance,
+                   max_win_streak, max_loss_streak,
+                   COALESCE(highest_balance, 0), COALESCE(lowest_balance, 0),
+                   COALESCE(highest_win, 0), COALESCE(biggest_loss, 0),
+                   COALESCE(bets_per_minute, 0), COALESCE(bets_per_second, 0),
+                   COALESCE(peak_bps, 0), COALESCE(low_bps, 0),
+                   COALESCE(peak_bpm, 0), COALESCE(low_bpm, 0)
+            FROM sessions WHERE id = ?
+        """, (session_id,)).fetchone()
+        if not sess:
+            raise _CliError("session_not_found", f"Session #{session_id} not found.", style="red")
+        streaks = _compute_streak_distribution(conn, session_id)
+        bets = conn.execute("""
+            SELECT id, substr(timestamp,12,8), amount, result_value, state, profit, balance_after
+            FROM bets WHERE session_id = ? ORDER BY id DESC LIMIT 50
+        """, (session_id,)).fetchall()
+    finally:
         conn.close()
+    session = dict(zip(_SESSION_BETS_COLS, sess))
+    return {"session": session,
+            "uptime_sec": _session_uptime_sec(session["started_at"], session["ended_at"]),
+            "streaks": streaks,
+            "bets": [dict(zip(_SESSION_BET_ROW_COLS, r)) for r in bets]}
+
+
+def cmd_session_bets(session_id: int, as_json: bool = False):
+    """Show full detailed stats and bets for a specific session."""
+    try:
+        data = _session_bets_data(session_id)
+    except _CliError as e:
+        _cli_fail(e, as_json)
+        return
+    if as_json:
+        _print_json(data)
         return
 
     sid, started, ended, cur, strat, base, mult, bets, wins, losses, \
         profit, wagered, start_bal, end_bal, mws, mls, \
         hi_bal, lo_bal, hi_win, big_loss, \
-        bpm, bps, s_pk_bps, s_lw_bps, s_pk_bpm, s_lw_bpm = sess
+        bpm, bps, s_pk_bps, s_lw_bps, s_pk_bpm, s_lw_bpm = \
+        (data["session"][c] for c in _SESSION_BETS_COLS)
 
     # safe defaults
     bets = bets or 0; wins = wins or 0; losses = losses or 0
@@ -8000,18 +8228,11 @@ def cmd_session_bets(session_id: int):
     avg_c = "green" if avg_pnl >= 0 else "red"
     avg_s = "+" if avg_pnl >= 0 else ""
 
-    # compute uptime
     uptime_str = "-"
-    try:
-        t0 = datetime.fromisoformat(started) if started else None
-        t1 = datetime.fromisoformat(ended) if ended else datetime.now()
-        if t0:
-            delta = int((t1 - t0).total_seconds())
-            h, rem = divmod(max(delta, 0), 3600)
-            m, s = divmod(rem, 60)
-            uptime_str = f"{h}h {m}m {s}s"
-    except Exception:
-        pass
+    if data["uptime_sec"] is not None:
+        h, rem = divmod(max(data["uptime_sec"], 0), 3600)
+        m, s = divmod(rem, 60)
+        uptime_str = f"{h}h {m}m {s}s"
 
     console.print(Rule(f"[bold cyan]Session #{sid}: Full Stats[/]"))
     console.print(f"  [dim]Started:[/]       {(started or '?').replace('T', ' ')}")
@@ -8032,7 +8253,7 @@ def cmd_session_bets(session_id: int):
     console.print()
     console.print(Rule("[bold cyan]Streak Distribution[/]"))
 
-    dist = _compute_streak_distribution(conn, session_id)
+    dist = data["streaks"]
 
     # Loss streaks
     loss_dist = dist["loss"]
@@ -8073,11 +8294,7 @@ def cmd_session_bets(session_id: int):
         console.print("  [dim]No win streaks recorded[/]")
 
     # ── Recent Bets ──────────────────────────────────
-    rows = conn.execute("""
-        SELECT id, substr(timestamp,12,8), amount, result_value, state, profit, balance_after
-        FROM bets WHERE session_id = ? ORDER BY id DESC LIMIT 50
-    """, (session_id,)).fetchall()
-    conn.close()
+    rows = [tuple(b[c] for c in _SESSION_BET_ROW_COLS) for b in data["bets"]]
 
     if rows:
         console.print()
@@ -8160,6 +8377,7 @@ Examples:
     wolfbet.py --list-presets         # list named presets
     wolfbet.py --stats                # last 20 sessions in detail
     wolfbet.py --analytics            # lifetime aggregates + top 5
+    wolfbet.py --analytics --json     # same data as one JSON document (also --status, --stats, ...)
     wolfbet.py --benchmark 20         # standalone API-latency probe (no bets)
     wolfbet.py --diagnose             # analyse running session's bottleneck
 
@@ -8276,8 +8494,19 @@ def main():
                              "Non-Flat strategies and auto-bet games are auto-coerced to 1.")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable debug logging (dev mode)")
+    parser.add_argument("--json", action="store_true",
+                        help="With --status, --lanes-status, --config-show, --stats, --analytics, "
+                             "--last-bets or --session-bets: print one JSON document to stdout "
+                             "(secrets masked, exit codes unchanged)")
 
     args = parser.parse_args()
+
+    if args.json:
+        if not any(getattr(args, c) not in (None, False) for c in _JSON_COMMANDS):
+            sys.stderr.write("--json works with " + ", ".join(
+                "--" + c.replace("_", "-") for c in _JSON_COMMANDS) + "\n")
+            sys.exit(2)
+        console.file = sys.stderr   # stdout carries only the JSON document
 
     # v2.35.0: lane identity first: every command below (status, monitor,
     # stop, the daemon itself) then reads/writes this lane's state + pid files.
@@ -8320,10 +8549,10 @@ def main():
         _run_backtest(args)
         return
     if args.status:
-        cmd_status()
+        cmd_status(as_json=args.json)
         return
     if args.lanes_status:
-        cmd_lanes_status()
+        cmd_lanes_status(as_json=args.json)
         return
     if args.stop:
         cmd_stop()
@@ -8335,19 +8564,19 @@ def main():
         cmd_list_presets()
         return
     if args.stats:
-        cmd_stats(since=args.since, until=args.until, lane=args.lane)
+        cmd_stats(since=args.since, until=args.until, lane=args.lane, as_json=args.json)
         return
     if args.analytics:
-        cmd_analytics(since=args.since, until=args.until, lane=args.lane)
+        cmd_analytics(since=args.since, until=args.until, lane=args.lane, as_json=args.json)
         return
     if args.last_bets:
-        cmd_last_bets(args.last_bets)
+        cmd_last_bets(args.last_bets, as_json=args.json)
         return
     if args.session_bets is not None:
-        cmd_session_bets(args.session_bets)
+        cmd_session_bets(args.session_bets, as_json=args.json)
         return
     if args.config_show:
-        cmd_config_show()
+        cmd_config_show(as_json=args.json)
         return
     if args.config_set:
         cmd_config_set(args.config_set)

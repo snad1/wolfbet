@@ -27,7 +27,7 @@ import tg  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.41.2"
+    assert wb.VERSION == "2.42.0"
 
 
 def test_tg_version():
@@ -135,7 +135,7 @@ def test_cmd_analytics_no_filter_lifetime_label(monkeypatch, capsys):
 
 def test_dispatch_threads_args():
     src = inspect.getsource(wb)
-    assert "cmd_analytics(since=args.since, until=args.until, lane=args.lane)" in src
+    assert "cmd_analytics(since=args.since, until=args.until, lane=args.lane, as_json=args.json)" in src
 
 
 def test_analytics_combines_with_since_functional():
