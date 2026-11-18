@@ -1,5 +1,16 @@
 # Changelog
 
+## wolfctl v3.14 - pause, resume and reload, and no command waits for a terminal (2026-11-18)
+
+- New `wolfctl pause [K|all]`, `wolfctl resume [K|all]` and `wolfctl reload [K|all]` (default: every running lane). They send SIGUSR1, SIGUSR2 or SIGHUP to the lane's daemon, which pauses betting, resumes it, or re-reads the saved config. A lane is signalled only when its pid file holds a number and that pid's command line is `wolfbet.py`, so a stale pid file never reaches another program. Exit 1 when no running lane matched, 2 for a bad K.
+- `reset`, `run-reset` and `doctor --fix` still ask before acting, but without a terminal they now refuse with exit 3 ("re-run with --yes") instead of hanging on an open pipe or exiting silently. `--yes` / `-y` skips the question as before.
+- `lanes N`, `update`, `cleanup` and `stop-all` never ask anything; they now accept `--yes` / `-y` too, so scripts can pass it everywhere. `cleanup --yes 7` keeps the 7.
+- `wolfctl status --json` and `wolfctl lanes --json` print only the JSON from `wolfbet.py --status --json` / `--lanes-status --json`.
+- `wolfctl lanes --split MODE` without N now prints the usage instead of showing the lanes.
+- Usage lists the new verbs, `--yes`, `--json` and the exit codes (0 ok, 1 failed or no lane matched, 2 bad arguments, 3 needs --yes).
+
+**Tests**: `tests/test_phase11i_wolfctl_verbs.py` (25): real child processes stand in for the lane daemons and record each signal; a fake /proc, a stub python3 and stub systemctl/sqlite3 keep the run away from the host.
+
 ## CLI v2.43.0 - config schema, config-set dry run, no partial config writes (2026-11-18)
 
 - `--config-schema` prints every key `--config-set` accepts as one JSON document: type, choices or min/max (and whether out-of-range input is clamped), whether `off` is accepted, aliases, default, whether it reloads live, whether a lane may override it, and its help text. It is built from the tables config-set validates with, and the clamp bounds and the `db_write_mode` choices now live in that one table, so the two cannot drift. Schema: `casino-dashboard/contracts/schemas/wolfbet-cli-config-schema-v1.json`.

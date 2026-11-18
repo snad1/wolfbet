@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.13
+# WolfBet AutoBot - Unified Management Command v3.14
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -14,6 +14,8 @@ WEB_SERVICE="wolfbet-web"
 # v3.11 - wolfctl lanes N --split none|budget|bet|both
 # v3.12 - wolfctl run-reset (new run total for profit_increment_scope=run)
 # v3.13 - doctor checks the dashboard event stream (wolfbet.py --events-check)
+# v3.14 - pause / resume / reload [K|all]; prompts refuse with exit 3 without a
+#         terminal unless --yes; --json on status and lanes
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -21,25 +23,29 @@ PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_NAME="wolfctl"
+PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # v3.9 - surface installed-vs-repo drift so operators stuck on an old
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.13
+WOLFCTL_VERSION=3.14
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.13"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.14"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
     echo "    wolfctl start         Start CLI bot as daemon"
     echo "    wolfctl stop          Stop CLI bot"
     echo "    wolfctl restart       Restart CLI bot"
-    echo "    wolfctl status        Show CLI bot status"
+    echo "    wolfctl status        Show CLI bot status (--json: session state only)"
     echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
     echo "    wolfctl lanes N       Run N parallel lanes (1 = classic single bot)"
     echo "      --split MODE        none (default: full bet, no lane budget) | budget | bet | both"
+    echo "    wolfctl pause [K|all]   Pause betting on lane K or every running lane (default all)"
+    echo "    wolfctl resume [K|all]  Resume betting"
+    echo "    wolfctl reload [K|all]  Re-read the saved config into the running lanes"
     echo "    wolfctl logs          Stream CLI bot logs"
     echo "    wolfctl logs-full     Show last 200 log lines"
     echo ""
@@ -88,6 +94,13 @@ usage() {
     echo "    wolfctl update              Pull latest + reinstall (git repo required)"
     echo "    wolfctl version             Show CLI + wolfctl versions"
     echo ""
+    echo "  SCRIPTING:"
+    echo "    --yes / -y   answers the prompt of reset, run-reset and doctor --fix;"
+    echo "                 lanes, update, cleanup and stop-all never prompt and accept it too"
+    echo "    --json       status and lanes (without N) print one JSON document"
+    echo "    Exit codes: 0 ok, 1 failed or no running lane matched, 2 bad arguments,"
+    echo "                3 needs confirmation and there is no terminal (re-run with --yes)"
+    echo ""
     echo "  WEB ADMIN:"
     echo "    wolfctl web install         Install web admin dashboard"
     echo "    wolfctl web start           Start web app"
@@ -103,6 +116,21 @@ usage() {
 cmd_setup() {
     echo "Running setup wizard..."
     "$PYTHON" "$BOT" --setup-only
+}
+
+# Ask a y/N question (callers skip it under --yes). With no terminal there is
+# nobody to ask, so refuse with exit 3 instead of hanging or failing silently on read.
+confirm() {
+    local question="$1" reply
+    if [ ! -t 0 ]; then
+        echo "This needs confirmation and there is no terminal; re-run with --yes" >&2
+        exit 3
+    fi
+    read -r -p "$question [y/N] " reply
+    case "$reply" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # ── v3.10 - parallel lanes ─────────────────────────────
@@ -190,15 +218,25 @@ except Exception:
 }
 
 cmd_lanes() {
-    local n="${1:-}" split=""
-    shift || true
+    local n="" split="" json=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --split) split="${2:-}"; shift 2 || { echo "Usage: wolfctl lanes N --split none|budget|bet|both"; exit 1; } ;;
             --split=*) split="${1#--split=}"; shift ;;
-            *) echo "Unknown option: $1"; exit 1 ;;
+            --json) json=1; shift ;;
+            --yes|-y) shift ;;
+            -*) echo "Unknown option: $1"; exit 1 ;;
+            *) [ -z "$n" ] || { echo "Unknown option: $1"; exit 1; }; n="$1"; shift ;;
         esac
     done
+    if [ "$json" = "1" ]; then
+        [ -z "$n" ] && [ -z "$split" ] || { echo "--json works with 'wolfctl lanes' alone" >&2; exit 2; }
+        "$PYTHON" "$BOT" --lanes-status --json
+        return
+    fi
+    if [ -z "$n" ] && [ -n "$split" ]; then
+        echo "Usage: wolfctl lanes N --split none|budget|bet|both"; exit 1
+    fi
     if [ -n "$split" ]; then
         case "$split" in none|budget|bet|both) ;; *) echo "--split must be none, budget, bet or both"; exit 1 ;; esac
     fi
@@ -263,6 +301,57 @@ cmd_start() {
     fi
 }
 
+# v3.14 - pause / resume / reload for the dashboard. Pid files can outlive their
+# process and the pid can be reused, so a lane is signalled only when its pid's
+# command line is wolfbet.py.
+lane_pid_file() {
+    if [ "$1" -le 1 ]; then
+        echo "$HOME/.wolfbet_autobot.pid"
+    else
+        echo "$HOME/.wolfbet_autobot.lane$1.pid"
+    fi
+}
+
+cmd_signal() {
+    local verb="$1" sig="$2" target="${3:-all}" lanes k pid pidfile cmdline matched=0
+    case "$target" in
+        all) lanes=$(seq 1 "$LANES_MAX") ;;
+        ''|*[!0-9]*) echo "Usage: wolfctl $verb [K|all]  (K = 1-$LANES_MAX)" >&2; exit 2 ;;
+        *)
+            if [ "$target" -lt 1 ] || [ "$target" -gt "$LANES_MAX" ]; then
+                echo "Usage: wolfctl $verb [K|all]  (K = 1-$LANES_MAX)" >&2; exit 2
+            fi
+            lanes="$target" ;;
+    esac
+    for k in $lanes; do
+        pidfile=$(lane_pid_file "$k")
+        [ -f "$pidfile" ] || continue
+        pid=$(tr -d '[:space:]' < "$pidfile")
+        case "$pid" in
+            ''|*[!0-9]*) echo "lane $k: pid file holds no pid, skipped" >&2; continue ;;
+        esac
+        if [ ! -r "$PROC_DIR/$pid/cmdline" ]; then
+            echo "lane $k: not running (stale pid $pid)" >&2
+            continue
+        fi
+        cmdline=$(tr '\0' ' ' < "$PROC_DIR/$pid/cmdline")
+        case "$cmdline" in
+            *wolfbet.py*) ;;
+            *) echo "lane $k: pid $pid is not wolfbet.py, refused" >&2; continue ;;
+        esac
+        if kill -s "$sig" -- "$pid" 2>/dev/null; then
+            echo "lane $k: $verb sent (pid $pid)"
+            matched=$((matched + 1))
+        else
+            echo "lane $k: could not signal pid $pid" >&2
+        fi
+    done
+    if [ "$matched" -eq 0 ]; then
+        echo "No running lane matched." >&2
+        exit 1
+    fi
+}
+
 cmd_stop() {
     stop_all_lanes
     systemctl --user stop "$SERVICE"
@@ -280,6 +369,10 @@ cmd_restart() {
 }
 
 cmd_status() {
+    if [ "${1:-}" = "--json" ]; then
+        "$PYTHON" "$BOT" --status --json
+        return
+    fi
     echo ""
     echo "── CLI Bot Service ──"
     systemctl --user status "$SERVICE" --no-pager 2>/dev/null || echo "  Not running"
@@ -377,7 +470,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.13"
+    echo "  wolfctl v3.14"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -432,7 +525,10 @@ cmd_preset() {
 
 # v2.26.0 - bet-row retention purge (delegates to CLI's --cleanup).
 cmd_cleanup() {
-    local days="${1:-}"
+    local days="" arg
+    for arg in "$@"; do
+        case "$arg" in --yes|-y) ;; *) days="$arg" ;; esac
+    done
     if [ -z "$days" ]; then
         "$PYTHON" "$BOT" --cleanup
     else
@@ -470,11 +566,7 @@ cmd_reset() {
         echo "  archive  → ~/.wolfbet_autobot-<timestamp>.db"
         echo "  config   → untouched (~/.wolfbet_autobot.json)"
         [ "$was_running" = "1" ] && echo "  daemon   → will be stopped (not restarted)"
-        read -r -p "Proceed? [y/N] " reply
-        case "$reply" in
-            y|Y|yes|YES) ;;
-            *) echo "Aborted."; return ;;
-        esac
+        confirm "Proceed?" || { echo "Aborted."; return; }
     fi
     if [ "$was_running" = "1" ]; then
         stop_all_lanes
@@ -507,11 +599,7 @@ cmd_run_reset() {
         echo "  base_bet   → back to the config value (run bumps dropped)"
         echo "  statistics → untouched"
         [ "$was_running" = "1" ] && echo "  lanes      → restarted (each running chain is saved and ended)"
-        read -r -p "Proceed? [y/N] " reply
-        case "$reply" in
-            y|Y|yes|YES) ;;
-            *) echo "Aborted."; return ;;
-        esac
+        confirm "Proceed?" || { echo "Aborted."; return; }
     fi
     if [ "$was_running" = "1" ]; then
         stop_all_lanes
@@ -698,11 +786,7 @@ cmd_doctor() {
         _doctor_run_fix() {
             local desc="$1" cmd="$2"
             if [ "$do_yes" = "0" ]; then
-                read -r -p "  $desc - apply? [y/N] " reply
-                case "$reply" in
-                    y|Y|yes|YES) ;;
-                    *) echo "    skipped." ; return ;;
-                esac
+                confirm "  $desc - apply?" || { echo "    skipped."; return; }
             fi
             echo "  \$ $cmd"
             eval "$cmd"
@@ -1082,7 +1166,10 @@ case "${1:-}" in
     start)        cmd_start ;;
     stop)         cmd_stop ;;
     restart)      cmd_restart ;;
-    status)       cmd_status ;;
+    status)       shift; cmd_status "$@" ;;
+    pause)        cmd_signal pause USR1 "${2:-all}" ;;
+    resume)       cmd_signal resume USR2 "${2:-all}" ;;
+    reload)       cmd_signal reload HUP "${2:-all}" ;;
     monitor)      cmd_monitor "${2:-}" ;;
     lanes)        shift; cmd_lanes "$@" ;;
     logs)         cmd_logs ;;
@@ -1103,7 +1190,7 @@ case "${1:-}" in
     pipeline)     cmd_pipeline "${2:-}" ;;
     backtest)     shift; cmd_backtest "$@" ;;
     preset)       cmd_preset "${2:-}" ;;
-    cleanup)      cmd_cleanup "${2:-}" ;;
+    cleanup)      shift; cmd_cleanup "$@" ;;
     benchmark)    shift; cmd_benchmark "$@" ;;
     diagnose)     cmd_diagnose ;;
     doctor)       shift; cmd_doctor "$@" ;;

@@ -37,8 +37,8 @@ def test_wolfbet_version():
 
 def test_wolfctl_version_constant_3_9():
     src = _wolfctl_src()
-    assert re.search(r"^WOLFCTL_VERSION=3\.13\b", src, re.MULTILINE)
-    assert "Management Command v3.13" in src
+    assert re.search(r"^WOLFCTL_VERSION=3\.14\b", src, re.MULTILINE)
+    assert "Management Command v3.14" in src
 
 
 # ── wolfctl reset: archive-first design ─────────────────
@@ -59,7 +59,7 @@ def test_reset_archives_never_deletes():
     reset_body = re.search(r"cmd_reset\(\)\s*\{.*?^\}", src, re.DOTALL | re.MULTILINE).group(0)
     assert "mv \"$db\" \"$archive\"" in reset_body
     # rm only allowed for the stale live-state / run files, never the DB.
-    rm_lines = [l for l in reset_body.splitlines() if "rm " in l]
+    rm_lines = [l for l in reset_body.splitlines() if re.search(r"\brm ", l)]
     assert all("wolfbet_autobot_live.json" in l or "wolfbet_run.json" in l for l in rm_lines), \
         f"rm must only target stale live-state, got: {rm_lines}"
 
@@ -73,7 +73,7 @@ def test_reset_clears_stale_live_state():
 def test_reset_confirmation_with_counts_and_yes_bypass():
     src = _wolfctl_src()
     reset_body = re.search(r"cmd_reset\(\)\s*\{.*?^\}", src, re.DOTALL | re.MULTILINE).group(0)
-    assert "Proceed? [y/N]" in reset_body
+    assert 'confirm "Proceed?"' in reset_body and "[y/N]" in src
     assert "--yes" in reset_body
     assert "SELECT COUNT(*) FROM sessions" in reset_body
 
