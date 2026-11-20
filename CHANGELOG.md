@@ -1,5 +1,14 @@
 # Changelog
 
+## wolfctl v3.16 - dash: run the dashboard from wolfctl (2026-11-20)
+
+- New `wolfctl dash status|logs [SERVICE|agent]|start|stop|update` for the casino dashboard, which runs as a Coolify Docker Compose resource next to the bots. It reads `~/.config/casino-dashboard/dash.env`, written by `casino-dashboard/deploy/install.sh`; without it every subcommand says to run the installer and exits 2.
+- `status` shows whether the `casino-agent` unit runs, `docker compose -p <coolify app> ps` and the answer of `https://<host>/api/healthz`. `logs` follows one service (`api`, `caddy`, `ingest`, `mailer`, `migrate`, `redis`, `timescale`), the whole stack, or the agent's journal; any other name exits 2.
+- `start` and `stop` start or stop the stack's containers and the agent. They never touch the `wolfbet*` units.
+- `update` fast-forwards `~/casino-dashboard` (or `WOLFCTL_DASH_DIR`), re-runs the agent installer and asks Coolify to deploy the app. The Coolify token is sent from a 0600 header file, never on the command line. It refuses a checkout with local changes (exit 4, files listed), and without a saved token it says to redeploy in Coolify.
+
+**Tests**: `tests/test_phase11k_wolfctl_dash.py` (11): stubbed docker, systemctl, journalctl and curl with real git against a temp origin: each subcommand's exact calls, the bots never touched, a missing install or app, an unknown service, update pulling, updating the agent and deploying, the token kept off the command line, a dirty checkout refused with nothing run, a refused deploy.
+
 ## wolfctl v3.15 - branch deploys and the deployed branch in status (2026-11-18)
 
 - `wolfctl update --branch NAME`, run in the repo checkout, moves the checkout to NAME and then runs the normal update (copy, dependencies, restarts). It only fetches `origin`, switches (creating NAME to track `origin/NAME` the first time) and fast-forwards; it never resets or forces. Exit 4 with the changed files listed when the checkout has local changes (untracked files included), exit 2 for a name `git check-ref-format` rejects, a name starting with `-`, a branch that exists nowhere or a run outside a checkout, exit 1 when fetch or the fast-forward fails (for example after the branch was rewritten on origin).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.15
+# WolfBet AutoBot - Unified Management Command v3.16
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -18,6 +18,7 @@ WEB_SERVICE="wolfbet-web"
 #         terminal unless --yes; --json on status and lanes
 # v3.15 - update --branch NAME (fetch + switch + fast-forward, refuses a dirty
 #         checkout); status shows the deployed branch
+# v3.16 - dash status|logs|start|stop|update for the dashboard (Coolify stack + agent)
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -30,11 +31,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.15
+WOLFCTL_VERSION=3.16
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.15"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.16"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -114,6 +115,12 @@ usage() {
     echo "    wolfctl web status          Show web app status"
     echo "    wolfctl web logs            Stream web app logs"
     echo "    wolfctl web update          Update web app files"
+    echo ""
+    echo "  DASHBOARD (casino-dashboard on Coolify, set up by its deploy/install.sh):"
+    echo "    wolfctl dash status         Agent, containers and health check"
+    echo "    wolfctl dash logs [SVC]     Follow container logs (api, caddy, ...) or: agent"
+    echo "    wolfctl dash start|stop     Start or stop the stack and the agent (bots untouched)"
+    echo "    wolfctl dash update         Pull ~/casino-dashboard, update the agent, deploy in Coolify"
     echo ""
 }
 
@@ -478,7 +485,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.15"
+    echo "  wolfctl v3.16"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1241,6 +1248,128 @@ cmd_web() {
     esac
 }
 
+# ── Dashboard (casino-dashboard on Coolify) ──────────
+DASH_CONF="$HOME/.config/casino-dashboard"
+AGENT_UNIT="casino-agent"
+DASH_SERVICES=" timescale redis api ingest mailer migrate caddy "
+
+dash_usage() {
+    echo "Usage: wolfctl dash status|logs [SERVICE|agent]|start|stop|update" >&2
+    exit 2
+}
+
+dash_load() {
+    if [ ! -f "$DASH_CONF/dash.env" ]; then
+        echo "Dashboard not installed: run casino-dashboard/deploy/install.sh" >&2
+        exit 2
+    fi
+    DASH_DIR="" DASH_PROJECT="" DASH_HOST="" COOLIFY_URL=""
+    # shellcheck disable=SC1091
+    . "$DASH_CONF/dash.env"
+    DASH_DIR="${WOLFCTL_DASH_DIR:-${DASH_DIR:-$HOME/casino-dashboard}}"
+}
+
+dash_need_project() {
+    if [ -z "$DASH_PROJECT" ]; then
+        echo "No Coolify app set: re-run install.sh with --coolify-app UUID" >&2
+        exit 2
+    fi
+}
+
+dash_compose() {
+    docker compose -p "$DASH_PROJECT" "$@"
+}
+
+dash_update() {
+    if [ ! -d "$DASH_DIR/.git" ]; then
+        echo "No casino-dashboard checkout at $DASH_DIR (set WOLFCTL_DASH_DIR)" >&2
+        exit 2
+    fi
+    local dirty
+    dirty=$(git -C "$DASH_DIR" status --porcelain)
+    if [ -n "$dirty" ]; then
+        echo "The checkout has local changes; commit or stash them first:" >&2
+        echo "$dirty" >&2
+        exit 4
+    fi
+    echo "Pulling $DASH_DIR..."
+    git -C "$DASH_DIR" pull --ff-only || { echo "git pull failed." >&2; exit 1; }
+    echo "Updating the host agent..."
+    CASINO_AGENT_API_UID=10001 bash "$DASH_DIR/agent/install.sh" || exit 1
+    if [ -n "$COOLIFY_URL" ] && [ -n "$DASH_PROJECT" ] && [ -f "$DASH_CONF/coolify.header" ]; then
+        echo "Deploying in Coolify..."
+        if ! curl -fsS --max-time 30 -H "@$DASH_CONF/coolify.header" \
+            "$COOLIFY_URL/api/v1/deploy?uuid=$DASH_PROJECT&force=false" >/dev/null; then
+            echo "Coolify did not accept the deploy; check the token and the app UUID." >&2
+            exit 1
+        fi
+        echo "Deploy queued; follow it in Coolify, then run: wolfctl dash status"
+    else
+        echo "Redeploy in Coolify to update the containers (no Coolify token saved;"
+        echo "install.sh --coolify-token-prompt adds one)."
+    fi
+}
+
+cmd_dash() {
+    local action="${1:-status}"
+    case "$action" in
+        status|logs|start|stop|update) ;;
+        *) dash_usage ;;
+    esac
+    dash_load
+    case "$action" in
+        status)
+            echo ""
+            echo "── Dashboard Status ──"
+            if systemctl --user is-active --quiet "$AGENT_UNIT"; then
+                echo "  Agent:  running"
+            else
+                echo "  Agent:  stopped"
+            fi
+            if [ -n "$DASH_PROJECT" ]; then
+                dash_compose ps
+            else
+                echo "  Stack:  no Coolify app set"
+            fi
+            if [ -n "$DASH_HOST" ]; then
+                if curl -fsS --max-time 5 "https://$DASH_HOST/api/healthz" >/dev/null 2>&1; then
+                    echo "  Health: ok (https://$DASH_HOST)"
+                else
+                    echo "  Health: no answer from https://$DASH_HOST/api/healthz"
+                fi
+            fi
+            ;;
+        logs)
+            local svc="${2:-}"
+            if [ "$svc" = "agent" ]; then
+                journalctl --user -u "$AGENT_UNIT" -f --no-pager
+                return
+            fi
+            if [ -n "$svc" ] && [[ "$DASH_SERVICES" != *" $svc "* ]]; then
+                echo "Unknown service: $svc" >&2
+                dash_usage
+            fi
+            dash_need_project
+            dash_compose logs -f --tail 200 ${svc:+"$svc"}
+            ;;
+        start)
+            dash_need_project
+            systemctl --user start "$AGENT_UNIT"
+            dash_compose start
+            echo "Dashboard started."
+            ;;
+        stop)
+            dash_need_project
+            dash_compose stop
+            systemctl --user stop "$AGENT_UNIT"
+            echo "Dashboard stopped. The bots keep running."
+            ;;
+        update)
+            dash_update
+            ;;
+    esac
+}
+
 # ── Dispatch ─────────────────────────────────────────
 case "${1:-}" in
     setup)        cmd_setup ;;
@@ -1279,6 +1408,7 @@ case "${1:-}" in
     update)       shift; cmd_update "$@" ;;
     tg)           cmd_tg "${2:-}" ;;
     web)          cmd_web "${@:2}" ;;
+    dash)         cmd_dash "${@:2}" ;;
     start-all)    cmd_start_all ;;
     stop-all)     cmd_stop_all ;;
     status-all)   cmd_status_all ;;
