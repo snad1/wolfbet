@@ -1,5 +1,34 @@
 # Changelog
 
+## TG v1.23.0 - control socket for the dashboard's host agent (2026-11-21)
+
+- New, off by default: with `WOLFBET_TG_CONTROL=on` the bot listens on `<data dir>/control.sock` (`WOLFBET_TG_CONTROL_SOCKET`). It accepts `start`, `stop`, `pause`, `resume`, `set` and `status` for one Telegram user at a time (`uid`, plus `slot` when the user runs several sessions).
+- Same protocol as the casino agent:
+  - JSON lines signed with HMAC-SHA256 over the canonical JSON;
+  - a 30 s timestamp window and one-time ids;
+  - a closed request shape and a fixed command table;
+  - generic error codes (`bad_request`, `not_found`, `unauthorized`, `replayed`, `busy`, `internal`). The reason is logged only in the bot, and never a token or a setting value.
+- Only the bot's own uid may connect (add more with `WOLFBET_TG_CONTROL_ALLOW_UIDS`). The socket is 0600.
+- The token is `<data dir>/control.token` (`WOLFBET_TG_CONTROL_TOKEN_FILE`). The bot creates it once with 0600 and never overwrites it. The bot refuses the token, and the socket stays off, if group or others can read it or it is too short or simple. The bot itself keeps running.
+- A command only touches the named user's sessions:
+  - a slot that belongs to someone else, or no running session, gives `not_found`;
+  - several sessions and no slot gives `bad_request`.
+- No logic is duplicated:
+  - `start` runs `/bet`'s new `start_session`;
+  - `set` runs `/set`'s new `apply_setting` (same rules, same messages);
+  - `stop` runs `/stop`'s new `stop_slot`;
+  - pause and resume call the engine as `/pause` and `/resume` do;
+  - `status` returns the same snapshots as the state events.
+- The Telegram replies of `/bet`, `/set` and `/stop` are unchanged.
+
+**Tests**: `tests/test_phase11p_tg_control.py` (37):
+- the wire format matches the dashboard's golden fixtures in `tests/fixtures/agent_proto_v1` (SHA-256 pinned);
+- per-user scoping, and `/set` rules with nothing saved on refusal;
+- the start path, every refusal code and the token file rules;
+- a real unix socket: owner-only mode, a refused peer, and never replacing a non-socket file.
+
+`tg.VERSION` `1.22.0` -> `1.23.0`.
+
 ## TG v1.22.0 - dashboard events from every Telegram user's engine (2026-11-21)
 
 - New, off by default: with `WOLFBET_TG_EVENTS=on` and `WOLFBET_EVENTS_URL` (the same Redis URL the CLI daemon uses) in the TG environment, the bot starts one event publisher for the whole process when it starts, and flushes it on shutdown.

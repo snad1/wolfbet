@@ -1,0 +1,4 @@
+{"id":"fixture-0001","ok":true,"data":{"slots":[1]}}
+{"id":"fixture-0002","ok":true,"data":{"message":"Set `streakdelay_loss` = `5:1.0` → every 5 losses"}}
+{"id":"fixture-0003","ok":false,"error":{"code":"not_found"}}
+{"id":null,"ok":false,"error":{"code":"unauthorized"}}

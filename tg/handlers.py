@@ -102,6 +102,13 @@ def _resolve_engine(user_id: int, args: list) -> tuple:
     return None, None, f"Multiple sessions running ({slots}). Specify slot number."
 
 
+def stop_slot(user_id: int, slot: int, engine: BettingEngine) -> None:
+    """Stop one session as the user asked, without restarting it if recurring is on."""
+    _cancel_recurring_for_slot(user_id, slot)
+    engine.stop_reason = "Stopped by user"
+    engine.stop()
+
+
 def _alloc_slot(user_id: int) -> int:
     """Allocate the next available slot for a user."""
     slot = _next_slot.get(user_id, 1)
@@ -625,16 +632,24 @@ def _finite(value, cast=float):
 
 
 # ── /set ─────────────────────────────────────────────────
-async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "Usage: /set <param> <value>\nSee /help for parameters.",
-            parse_mode="Markdown")
-        return
+class SettingError(Exception):
+    """A /set value was refused; ``text`` is the reply and ``markdown`` its parse mode."""
 
-    param = context.args[0].lower()
-    value = " ".join(context.args[1:]).replace(",", "")
+    def __init__(self, text: str, markdown: bool = False):
+        super().__init__(text)
+        self.text = text
+        self.markdown = markdown
+
+
+def apply_setting(user_id: int, param: str, value: str) -> tuple:
+    """Validate and save one /set parameter for ``user_id``.
+
+    Returns (reply text, markdown). Raises SettingError with the reply when the
+    parameter or value is refused, and nothing is saved then. /set and the
+    control socket both use it, so both apply exactly the same rules.
+    """
+    param = param.lower()
+    value = value.replace(",", "")
     config = load_user_config(user_id)
 
     try:
@@ -647,47 +662,40 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 normalized = validate_proxy(value)
             except ValueError:
-                await update.message.reply_text(
+                raise SettingError(
                     "Proxy format: `http://user:pass@ip:port` or `socks5://user:pass@ip:port`\n"
                     "Use `/set proxy off` to disable.",
-                    parse_mode="Markdown")
-                return
+                    markdown=True)
             config["proxy"] = normalized
             if normalized is None:
-                await update.message.reply_text(
-                    "Proxy disabled: using direct connection.", parse_mode="Markdown")
                 save_user_config(user_id, config)
-                return
+                return "Proxy disabled: using direct connection.", True
         elif param in ("streakdelay_loss", "sdloss"):
             if value.lower() == "off":
                 config["streak_delay_loss"] = None
             elif ":" not in value:
-                await update.message.reply_text("Format: `/set streakdelay_loss 5:1.0` (every 5 losses → 1s delay)\nUse `off` to disable.", parse_mode="Markdown")
-                return
+                raise SettingError("Format: `/set streakdelay_loss 5:1.0` (every 5 losses → 1s delay)\nUse `off` to disable.", markdown=True)
             else:
                 config["streak_delay_loss"] = value
         elif param in ("streakdelay_win", "sdwin"):
             if value.lower() == "off":
                 config["streak_delay_win"] = None
             elif ":" not in value:
-                await update.message.reply_text("Format: `/set streakdelay_win 10:0.5` (every 10 wins → 0.5s delay)\nUse `off` to disable.", parse_mode="Markdown")
-                return
+                raise SettingError("Format: `/set streakdelay_win 10:0.5` (every 10 wins → 0.5s delay)\nUse `off` to disable.", markdown=True)
             else:
                 config["streak_delay_win"] = value
         elif param in ("streakdelay_bets", "sdbets"):
             if value.lower() == "off":
                 config["streak_delay_bets"] = None
             elif ":" not in value:
-                await update.message.reply_text("Format: `/set streakdelay_bets 100:0.5` (every 100 bets → 0.5s delay)\nUse `off` to disable.", parse_mode="Markdown")
-                return
+                raise SettingError("Format: `/set streakdelay_bets 100:0.5` (every 100 bets → 0.5s delay)\nUse `off` to disable.", markdown=True)
             else:
                 config["streak_delay_bets"] = value
         elif param in ("streakbet_loss", "sbloss"):
             if value.lower() == "off":
                 config["streakbet_loss"] = None
             elif ":" not in value:
-                await update.message.reply_text("Format: `/set streakbet_loss 10:0.5` (every 10 losses → halve bet)\nUse `off` to disable.", parse_mode="Markdown")
-                return
+                raise SettingError("Format: `/set streakbet_loss 10:0.5` (every 10 losses → halve bet)\nUse `off` to disable.", markdown=True)
             else:
                 config["streakbet_loss"] = value
         elif param in ("basebet_pct", "bbpct"):
@@ -697,42 +705,36 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     val = _finite(value)
                 except ValueError:
-                    await update.message.reply_text("basebet_pct must be a fraction (e.g. `0.001` = 0.1% of balance)", parse_mode="Markdown")
-                    return
+                    raise SettingError("basebet_pct must be a fraction (e.g. `0.001` = 0.1% of balance)", markdown=True)
                 if val < 0 or val > 1:
-                    await update.message.reply_text("basebet_pct must be between 0 and 1.")
-                    return
+                    raise SettingError("basebet_pct must be between 0 and 1.")
                 config["basebet_pct"] = val
         elif param in ("purgedays", "purge_days"):
             val = _finite(value, int)
             if val < 1 or val > 30:
-                await update.message.reply_text("Purge days must be 1-30.")
-                return
+                raise SettingError("Purge days must be 1-30.")
             config["purge_days"] = val
         elif param == "pipeline":
             val = _finite(value, int)
             if val < 1 or val > 50:
-                await update.message.reply_text("Pipeline must be 1-50. Only works with auto-bet games.")
-                return
+                raise SettingError("Pipeline must be 1-50. Only works with auto-bet games.")
             config["pipeline"] = val
             strategy_key = config.get("strategy_key", "2")
             if val > 1 and strategy_key != "1":
-                await update.message.reply_text(
+                save_user_config(user_id, config)
+                return (
                     f"Set `pipeline` = `{val}`\n\n"
                     f"Pipeline > 1 only works correctly with **Flat** strategy.\n"
                     f"Your current strategy is sequential: pipeline will be forced to 1 at start.\n"
                     f"Use `/set strategy flat` first, then `/set pipeline {val}`.",
-                    parse_mode="Markdown")
-                save_user_config(user_id, config)
-                return
+                    True,
+                )
         elif param == "game":
             from .engine import GAME_LABELS
             g = value.lower()
             if g not in GAME_LABELS:
-                await update.message.reply_text(
-                    f"Unknown game. Available: {', '.join(GAME_LABELS.keys())}",
-                    parse_mode="Markdown")
-                return
+                raise SettingError(
+                    f"Unknown game. Available: {', '.join(GAME_LABELS.keys())}", markdown=True)
             config["game"] = g
         elif param == "strategy":
             name = value.lower().replace("-", "").replace(" ", "").replace("_", "")
@@ -746,17 +748,14 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if value in STRATEGIES:
                     key = value
                 else:
-                    await update.message.reply_text(
-                        "Unknown strategy. Use /strategies to see options.",
-                        parse_mode="Markdown")
-                    return
+                    raise SettingError(
+                        "Unknown strategy. Use /strategies to see options.", markdown=True)
             config["strategy_key"] = key
             config["strategy"] = STRATEGY_NAMES[key]
         elif param == "multiplier":
             mult = _finite(value)
             if mult <= 1.0:
-                await update.message.reply_text("Multiplier must be > 1.0")
-                return
+                raise SettingError("Multiplier must be > 1.0")
             config["multiplier"] = mult
             wc = 99.0 / mult
             rule = config.get("rule", "over")
@@ -764,14 +763,11 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param == "basebet":
             val = _finite(value)
             if val < 0:
-                await update.message.reply_text("Base bet must be >= 0.")
-                return
+                raise SettingError("Base bet must be >= 0.")
             config["base_bet"] = val
         elif param == "rule":
             if value.lower() not in ("over", "under"):
-                await update.message.reply_text(
-                    "Rule must be `over` or `under`", parse_mode="Markdown")
-                return
+                raise SettingError("Rule must be `over` or `under`", markdown=True)
             config["rule"] = value.lower()
             mult = config.get("multiplier", 2.01)
             wc = 99.0 / mult
@@ -779,27 +775,23 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif param == "lossmult":
             val = _finite(value)
             if val <= 0:
-                await update.message.reply_text("Loss multiplier must be > 0.")
-                return
+                raise SettingError("Loss multiplier must be > 0.")
             config["loss_mult"] = val
         elif param == "winmult":
             val = _finite(value)
             if val <= 0:
-                await update.message.reply_text("Win multiplier must be > 0.")
-                return
+                raise SettingError("Win multiplier must be > 0.")
             config["win_mult"] = val
         elif param == "delay":
             val = _finite(value)
             if val < 0:
-                await update.message.reply_text("Delay must be >= 0.")
-                return
+                raise SettingError("Delay must be >= 0.")
             config["bet_delay"] = val
         elif param == "maxprofit":
             if value.lower() != "off":
                 val = _finite(value)
                 if val <= 0:
-                    await update.message.reply_text("Max profit must be > 0.")
-                    return
+                    raise SettingError("Max profit must be > 0.")
                 config["max_profit"] = val
             else:
                 config["max_profit"] = None
@@ -807,8 +799,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if value.lower() != "off":
                 val = _finite(value)
                 if val <= 0:
-                    await update.message.reply_text("Max loss must be > 0.")
-                    return
+                    raise SettingError("Max loss must be > 0.")
                 config["max_loss"] = val
             else:
                 config["max_loss"] = None
@@ -816,8 +807,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if value.lower() != "off":
                 val = _finite(value, int)
                 if val <= 0:
-                    await update.message.reply_text("Max bets must be > 0.")
-                    return
+                    raise SettingError("Max bets must be > 0.")
                 config["max_bets"] = val
             else:
                 config["max_bets"] = None
@@ -825,8 +815,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if value.lower() != "off":
                 val = _finite(value, int)
                 if val <= 0:
-                    await update.message.reply_text("Max wins must be > 0.")
-                    return
+                    raise SettingError("Max wins must be > 0.")
                 config["max_wins"] = val
             else:
                 config["max_wins"] = None
@@ -834,8 +823,7 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if value.lower() != "off":
                 val = _finite(value)
                 if val < 0:
-                    await update.message.reply_text("Min balance must be >= 0.")
-                    return
+                    raise SettingError("Min balance must be >= 0.")
                 config["stop_on_balance"] = val
             else:
                 config["stop_on_balance"] = None
@@ -853,21 +841,17 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # v1.21.0: off / none / 0 all mean off (ends a run total too).
             val = None if value.lower() in ("off", "none") else _finite(value)
             if val is not None and val < 0:
-                await update.message.reply_text("Profit threshold must be > 0 (or 'off').")
-                return
+                raise SettingError("Profit threshold must be > 0 (or 'off').")
             config["profit_threshold"] = val or None
         elif param in ("profitincrement", "pi"):
             val = None if value.lower() in ("off", "none") else _finite(value)
             if val is not None and val < 0:
-                await update.message.reply_text("Profit increment must be > 0 (or 'off').")
-                return
+                raise SettingError("Profit increment must be > 0 (or 'off').")
             config["profit_increment"] = val or None
         elif param in ("piscope", "pscope", "profitincrementscope"):
             v = value.lower()
             if v not in ("session", "run"):
-                await update.message.reply_text("piscope must be `session` or `run`.",
-                                                parse_mode="Markdown")
-                return
+                raise SettingError("piscope must be `session` or `run`.", markdown=True)
             config["profit_increment_scope"] = v
         elif param == "recurring":
             if value.lower() in ("on", "true", "yes", "1"):
@@ -875,13 +859,11 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif value.lower() in ("off", "false", "no", "0"):
                 config["recurring"] = False
             else:
-                await update.message.reply_text("Use: `/set recurring on` or `/set recurring off`", parse_mode="Markdown")
-                return
+                raise SettingError("Use: `/set recurring on` or `/set recurring off`", markdown=True)
         elif param in ("recurringdelay", "recdelay"):
             val = _finite(value, int)
             if val < 5:
-                await update.message.reply_text("Recurring delay must be >= 5 seconds.")
-                return
+                raise SettingError("Recurring delay must be >= 5 seconds.")
             config["recurring_delay"] = val
         elif param in ("streakreset", "srloss"):
             if value.lower() in ("off", "none", "0"):
@@ -889,25 +871,38 @@ async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 val = _finite(value, int)
                 if val < 1:
-                    await update.message.reply_text("Streak reset must be >= 1 losses (or 'off').")
-                    return
+                    raise SettingError("Streak reset must be >= 1 losses (or 'off').")
                 config["streak_reset_losses"] = val
         elif param in ("streakresetdelay", "srdelay"):
             val = _finite(value, int)
             if val < 5 or val > 86400:
-                await update.message.reply_text("Streak reset delay must be 5-86400 seconds.")
-                return
+                raise SettingError("Streak reset delay must be 5-86400 seconds.")
             config["streak_reset_delay"] = val
         else:
-            await update.message.reply_text(
-                f"Unknown parameter: `{param}`\nSee /help", parse_mode="Markdown")
-            return
+            raise SettingError(f"Unknown parameter: `{param}`\nSee /help", markdown=True)
 
         save_user_config(user_id, config)
-        await update.message.reply_text(f"Set `{param}` = `{value}`", parse_mode="Markdown")
+        return f"Set `{param}` = `{value}`", True
     except ValueError:
+        raise SettingError(f"Invalid value for `{param}`: `{value}`", markdown=True) from None
+
+
+async def cmd_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if len(context.args) < 2:
         await update.message.reply_text(
-            f"Invalid value for `{param}`: `{value}`", parse_mode="Markdown")
+            "Usage: /set <param> <value>\nSee /help for parameters.",
+            parse_mode="Markdown")
+        return
+
+    try:
+        text, markdown = apply_setting(user_id, context.args[0], " ".join(context.args[1:]))
+    except SettingError as e:
+        text, markdown = e.text, e.markdown
+    if markdown:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text)
 
 
 # ── /strategies ──────────────────────────────────────────
@@ -920,14 +915,26 @@ async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── /bet ─────────────────────────────────────────────────
-async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+class StartError(Exception):
+    """A session could not start; ``text`` is the reason shown to the user."""
 
+    def __init__(self, text: str, connected: bool = False):
+        super().__init__(text)
+        self.text = text
+        self.connected = connected
+
+
+async def start_session(user_id: int, chat_id: int, app, on_connecting=None) -> tuple:
+    """Start a new betting session for ``user_id`` from the saved config.
+
+    Returns (slot, engine, config). Notifications go to ``chat_id``. ``on_connecting``
+    is awaited just before contacting WolfBet. Raises StartError with the user-facing
+    reason; ``connected`` tells whether the failure came after that point. /bet and
+    the control socket both start sessions here.
+    """
     config = load_user_config(user_id)
     if not config.get("api_key"):
-        await update.message.reply_text(
-            "Set your API key first: /setkey <token>", parse_mode="Markdown")
-        return
+        raise StartError("Set your API key first: /setkey <token>")
 
     # Apply tier rate limit
     tier = get_user_tier(user_id)
@@ -940,14 +947,11 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         engine = BettingEngine(user_id, db_path, config["api_key"], config)
     except Exception as e:
         logger.error("cmd_start config error: %s", e, exc_info=True)
-        msg = f"Config error: `{e}`" if APP_ENV != "production" else "Configuration error. Please check your settings."
-        await update.message.reply_text(msg, parse_mode="Markdown")
-        return
+        raise StartError(
+            f"Config error: `{e}`" if APP_ENV != "production"
+            else "Configuration error. Please check your settings.") from None
 
     slot = _alloc_slot(user_id)
-
-    chat_id = update.effective_chat.id
-    app = context.application
 
     def _make_on_stop(cid, uid, s):
         def on_stop(reason):
@@ -971,12 +975,12 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine.on_milestone = _make_on_milestone(chat_id)
     engine.on_error = _make_on_error(chat_id)
 
-    msg = await update.message.reply_text("Connecting to WolfBet...")
+    if on_connecting is not None:
+        await on_connecting()
 
     if not await engine.start():
         detail = f": {engine.last_error}" if APP_ENV != "production" else ""
-        await msg.edit_text(f"Failed to start{detail}. Check /config and try again.")
-        return
+        raise StartError(f"Failed to start{detail}. Check /config and try again.", connected=True)
 
     active_engines.setdefault(user_id, {})[slot] = engine
     _engine_chat_ids[user_id] = chat_id
@@ -991,6 +995,26 @@ async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "timer_task": None,
         "app": app,
     }
+    return slot, engine, config
+
+
+async def cmd_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    msg = None
+
+    async def connecting():
+        nonlocal msg
+        msg = await update.message.reply_text("Connecting to WolfBet...")
+
+    try:
+        slot, engine, config = await start_session(
+            user_id, update.effective_chat.id, context.application, on_connecting=connecting)
+    except StartError as e:
+        if e.connected:
+            await msg.edit_text(e.text)
+        else:
+            await update.message.reply_text(e.text, parse_mode="Markdown")
+        return
 
     from .engine import GAME_LABELS, GAME_ENDPOINTS
     game_label = GAME_LABELS.get(engine.game, engine.game)
@@ -1335,9 +1359,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if err:
             await _reply(update, err + "\nUse `/stop all` to stop all.", parse_mode="Markdown")
             return
-        _cancel_recurring_for_slot(user_id, slot)
-        engine.stop_reason = "Stopped by user"
-        engine.stop()
+        stop_slot(user_id, slot, engine)
         return
 
     # Clean up zombie sessions (no active engine but DB says running)

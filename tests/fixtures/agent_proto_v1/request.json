@@ -1,0 +1,14 @@
+{
+  "token": "fixture-token-not-a-secret-9f3c2a7b51e04d68",
+  "request": {
+    "proto": 1,
+    "id": "fixture-0001",
+    "cmd": "pause",
+    "args": {
+      "uid": 42,
+      "slot": 1
+    },
+    "ts": 1795200000000,
+    "mac": "204980ff17a2afeb92e352022caaa0215a6b89e134ae8bd423bf4acb1c1dcb50"
+  }
+}

@@ -12,7 +12,11 @@ from telegram import BotCommand
 from telegram.error import RetryAfter, NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-from .config import BOT_TOKEN, DATA_DIR, logger
+from .config import (
+    BOT_TOKEN, CONTROL_ALLOW_UIDS, CONTROL_ENABLED, CONTROL_SOCKET, CONTROL_TOKEN_FILE,
+    DATA_DIR, logger,
+)
+from .control_socket import ControlError, ControlServer, parse_uids, read_token
 from . import VERSION
 from .handlers import (
     cmd_start, cmd_help, cmd_setkey, cmd_benchmark, cmd_balance, cmd_seed, cmd_update, cmd_config,
@@ -26,6 +30,30 @@ from .handlers import (
     save_resume_state, load_resume_state,
 )
 from .engine import start_events, stop_events
+
+_control = None
+
+
+async def _start_control(application) -> None:
+    """Open the agent's control socket when WOLFBET_TG_CONTROL is on; a bad setup only logs."""
+    global _control
+    if not CONTROL_ENABLED:
+        return
+    try:
+        server = ControlServer(read_token(CONTROL_TOKEN_FILE), CONTROL_SOCKET, application,
+                               allow_uids=parse_uids(CONTROL_ALLOW_UIDS))
+        await server.start()
+    except (ControlError, OSError) as e:
+        logger.error("Control socket off: %s", e)
+        return
+    _control = server
+
+
+async def _stop_control() -> None:
+    global _control
+    server, _control = _control, None
+    if server is not None:
+        await server.close()
 
 _resume_saved = False
 HEARTBEAT_FILE = "/tmp/wolfbet-tg.heartbeat"
@@ -113,12 +141,14 @@ def main():
         # Start watchdog heartbeat
         asyncio.create_task(_heartbeat_loop())
         start_events()
+        await _start_control(application)
         # Resume any engines saved from graceful shutdown
         await load_resume_state(application)
 
     async def post_shutdown(application):
         _save_once()
         stop_events()
+        await _stop_control()
 
     app = (
         Application.builder()

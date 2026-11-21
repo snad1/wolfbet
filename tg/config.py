@@ -15,6 +15,14 @@ WEB_SECRET = os.environ.get("WOLFBET_WEB_SECRET_KEY", "")   # must match web app
 EVENTS_ENABLED = os.environ.get("WOLFBET_TG_EVENTS", "").strip().lower() in ("1", "on", "true", "yes")
 EVENTS_URL     = os.environ.get("WOLFBET_EVENTS_URL", "")      # same Redis the CLI daemon uses
 
+# ── Control socket for the dashboard's host agent: off unless WOLFBET_TG_CONTROL is on ──
+CONTROL_ENABLED    = os.environ.get("WOLFBET_TG_CONTROL", "").strip().lower() in ("1", "on", "true", "yes")
+CONTROL_SOCKET     = os.path.expanduser(os.environ.get("WOLFBET_TG_CONTROL_SOCKET")
+                                        or os.path.join(DATA_DIR, "control.sock"))
+CONTROL_TOKEN_FILE = os.path.expanduser(os.environ.get("WOLFBET_TG_CONTROL_TOKEN_FILE")
+                                        or os.path.join(DATA_DIR, "control.token"))
+CONTROL_ALLOW_UIDS = os.environ.get("WOLFBET_TG_CONTROL_ALLOW_UIDS", "")   # extra uids; own uid always
+
 # ── Rate limit tiers: seconds between bets ───────────────
 TIERS = {
     "free":  1.0,    # 1 bet/sec
