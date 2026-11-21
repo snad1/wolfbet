@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.17
+# WolfBet AutoBot - Unified Management Command v3.18
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -20,6 +20,7 @@ WEB_SERVICE="wolfbet-web"
 #         checkout); status shows the deployed branch
 # v3.16 - dash status|logs|start|stop|update for the dashboard (Coolify stack + agent)
 # v3.17 - web retire|restore: the old web gives way to the dashboard; stop-all stops it too
+# v3.18 - the old web is removed; web remove clears a leftover unit (its data dir is kept)
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -32,11 +33,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.17
+WOLFCTL_VERSION=3.18
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.17"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.18"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -108,16 +109,8 @@ usage() {
     echo "                3 needs confirmation and there is no terminal (re-run with --yes),"
     echo "                4 the checkout has local changes (update --branch)"
     echo ""
-    echo "  WEB ADMIN (retired: the dashboard replaces it):"
-    echo "    wolfctl web retire          Stop + disable the old web (files kept)"
-    echo "    wolfctl web restore         Enable + start it again (rollback)"
-    echo "    wolfctl web install         Install web admin dashboard"
-    echo "    wolfctl web start           Start web app"
-    echo "    wolfctl web stop            Stop web app"
-    echo "    wolfctl web restart         Restart web app"
-    echo "    wolfctl web status          Show web app status"
-    echo "    wolfctl web logs            Stream web app logs"
-    echo "    wolfctl web update          Update web app files"
+    echo "  OLD WEB (removed: the dashboard replaces it):"
+    echo "    wolfctl web remove          Stop, disable and delete a leftover old-web unit"
     echo ""
     echo "  DASHBOARD (casino-dashboard on Coolify, set up by its deploy/install.sh):"
     echo "    wolfctl dash status         Agent, containers and health check"
@@ -488,7 +481,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.17"
+    echo "  wolfctl v3.18"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -983,7 +976,7 @@ cmd_update() {
     # `wolfctl stop` and monitor's [S] stay stopped instead of triggering a
     # systemd respawn. Idempotent: subsequent runs find no match and skip.
     local _sd_reload=0
-    for _unit in wolfbet.service wolfbet-tg.service wolfbet-web.service; do
+    for _unit in wolfbet.service wolfbet-tg.service; do
         local _unit_path="$HOME/.config/systemd/user/$_unit"
         [ -f "$_unit_path" ] || continue
         if grep -q '^Restart=always$' "$_unit_path"; then
@@ -1010,20 +1003,6 @@ cmd_update() {
 
     # Re-install deps
     "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
-
-    # Update web app if installed
-    if [ -d "$WEB_DIR" ] && [ -d "web" ]; then
-        mkdir -p "$WEB_DIR/web"
-        cp -r web/* "$WEB_DIR/web/" 2>/dev/null || true
-        [ -f "web/requirements.txt" ] && cp web/requirements.txt "$WEB_DIR/requirements.txt"
-        "$WEB_DIR/venv/bin/pip" install --quiet -r "$WEB_DIR/requirements.txt" 2>/dev/null || true
-        if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
-            systemctl --user restart "$WEB_SERVICE"
-            echo "Web admin updated + restarted."
-        elif web_retired; then
-            echo "Old web retired; files updated for rollback only."
-        fi
-    fi
 
     # Auto-restart TG bot if running
     if systemctl --user is-active --quiet "$TG_SERVICE" 2>/dev/null; then
@@ -1173,12 +1152,8 @@ cmd_status_all() {
         echo "  Telegram Bot: ○ stopped"
     fi
 
-    if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
-        echo "  Web Admin:    ● RUNNING (retired: wolfctl web retire)"
-    elif web_retired; then
-        echo "  Web Admin:    ○ retired (wolfctl web restore to bring it back)"
-    else
-        echo "  Web Admin:    ○ stopped"
+    if web_installed; then
+        echo "  Old web:      leftover unit (wolfctl web remove)"
     fi
 
     echo ""
@@ -1186,10 +1161,6 @@ cmd_status_all() {
 
 web_installed() {
     [ -f "$SYSTEMD_DIR/$WEB_SERVICE.service" ]
-}
-
-web_retired() {
-    web_installed && [ "$(systemctl --user is-enabled "$WEB_SERVICE" 2>/dev/null)" = "disabled" ]
 }
 
 # The dashboard's address from the file install.sh writes; empty when it is not installed.
@@ -1203,111 +1174,31 @@ dash_url() {
     return 0
 }
 
-web_deprecation() {
+web_pointer() {
     local url
     url=$(dash_url)
     if [ -n "$url" ]; then
-        echo "The old web is retired: use the dashboard at $url (Telegram users: send /web to the bot)."
+        echo "The old web was removed: use the dashboard at $url (Telegram users: send /web to the bot)."
     else
-        echo "The old web is retired: install the dashboard (casino-dashboard/deploy/install.sh)."
+        echo "The old web was removed: install the dashboard (casino-dashboard/deploy/install.sh)."
     fi
 }
 
 cmd_web() {
-    local action="${1:-status}"
-    web_deprecation
-    case "$action" in
-        retire)
-            if ! web_installed; then
-                echo "The old web is not installed; nothing to retire."
-                return 0
-            fi
-            systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
-            systemctl --user disable "$WEB_SERVICE" 2>/dev/null || true
-            echo "Old web stopped and disabled; its files stay for rollback."
-            echo "Bring it back with: wolfctl web restore"
-            ;;
-        restore)
-            if ! web_installed; then
-                echo "The old web is not installed; install it with: wolfctl web install"
-                exit 1
-            fi
-            systemctl --user enable --now "$WEB_SERVICE"
-            sleep 1
-            if systemctl --user is-active --quiet "$WEB_SERVICE"; then
-                echo "Old web restored and running."
-            else
-                echo "Failed to start. Check: wolfctl web logs"
-                exit 1
-            fi
-            ;;
-        install)
-            if [ -f "web/install.sh" ]; then
-                bash web/install.sh --repo "$(pwd)" "${@:2}"
-            else
-                echo "web/install.sh not found. Run from the repo directory."
-                exit 1
-            fi
-            ;;
-        start)
-            systemctl --user start "$WEB_SERVICE"
-            sleep 1
-            if systemctl --user is-active --quiet "$WEB_SERVICE"; then
-                echo "Web admin started."
-            else
-                echo "Failed to start. Check: wolfctl web logs"
-                exit 1
-            fi
-            ;;
-        stop)
-            systemctl --user stop "$WEB_SERVICE"
-            echo "Web admin stopped."
-            ;;
-        restart)
-            systemctl --user restart "$WEB_SERVICE"
-            sleep 1
-            if systemctl --user is-active --quiet "$WEB_SERVICE"; then
-                echo "Web admin restarted."
-            else
-                echo "Failed to restart. Check: wolfctl web logs"
-                exit 1
-            fi
-            ;;
-        status)
-            echo ""
-            echo "── Web Admin Status ──"
-            systemctl --user status "$WEB_SERVICE" --no-pager 2>/dev/null || echo "  Service not running"
-            ;;
-        logs)
-            journalctl --user -u "$WEB_SERVICE" -f --no-pager
-            ;;
-        logs-full)
-            journalctl --user -u "$WEB_SERVICE" -n 200 --no-pager
-            ;;
-        update)
-            if [ -d "web" ]; then
-                echo "Updating web app files..."
-                mkdir -p "$WEB_DIR/web"
-                cp -r web/* "$WEB_DIR/web/" 2>/dev/null || true
-                [ -f "web/requirements.txt" ] && cp web/requirements.txt "$WEB_DIR/requirements.txt"
-                [ -f "$WEB_DIR/.env" ] || cp "$WEB_DIR/.env.example" "$WEB_DIR/.env" 2>/dev/null || true
-                "$WEB_DIR/venv/bin/pip" install --quiet -r "$WEB_DIR/requirements.txt" 2>/dev/null || true
-                if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
-                    systemctl --user restart "$WEB_SERVICE"
-                    sleep 1
-                    echo "Web admin updated + restarted."
-                else
-                    echo "Web admin updated. Start with: wolfctl web start"
-                fi
-            else
-                echo "No web/ directory found."
-                exit 1
-            fi
-            ;;
-        *)
-            echo "Usage: wolfctl web [retire|restore|install|start|stop|restart|status|logs|logs-full|update]"
-            ;;
-    esac
+    web_pointer
+    [ "${1:-}" = "remove" ] || return 0
+    if ! web_installed; then
+        echo "The old web is not installed; nothing to remove."
+        return 0
+    fi
+    systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
+    systemctl --user disable "$WEB_SERVICE" 2>/dev/null || true
+    rm -f "$SYSTEMD_DIR/$WEB_SERVICE.service"
+    systemctl --user daemon-reload 2>/dev/null || true
+    echo "Old web unit stopped, disabled and deleted."
+    if [ -d "$WEB_DIR" ]; then
+        echo "Its data stays in $WEB_DIR; delete it by hand once you no longer need it."
+    fi
 }
 
 # ── Dashboard (casino-dashboard on Coolify) ──────────

@@ -1,5 +1,20 @@
 # Changelog
 
+## wolfctl v3.18 / TG v1.25.0 - the old web is removed (2026-11-21)
+
+- `web/` is deleted: the FastAPI app, its `install.sh`, its requirements and its three test files. The dashboard serves its pages (`casino-dashboard/docs/parity/old-web.md` lists where each one went). `casino-shared/web` stays, because the five other bots still import `shared.web`.
+- `wolfctl web remove` stops, disables and deletes a leftover `wolfbet-web` unit, and keeps `~/wolfbet-web` (its database and `.env`) for you to delete by hand. Every other `wolfctl web ...` only prints where the dashboard is.
+- `status-all` lists the old web only while its unit file still exists. `stop-all` still stops it. `wolfctl update` no longer copies or restarts any web files.
+- TG `/web` sends the dashboard sign-in link only. Without `WOLFBET_DASHBOARD_URL` and a good `WOLFBET_TG_DASHBOARD_SECRET`, it replies "The web dashboard isn't set up yet." and logs what is missing. The old-web JWT link, `WOLFBET_WEB_URL` and `WOLFBET_WEB_SECRET_KEY` are gone, and so is `python-jose`.
+- **Rollback:** revert this commit and run `wolfctl update`. `wolfctl web restore` no longer exists.
+
+**Tests**:
+- `tests/test_phase11r_wolfctl_web_remove.py` (10) replaces the retire tests;
+- the `/web` tests expect the "isn't set up yet" reply;
+- the version pins are updated.
+
+`WOLFCTL_VERSION` `3.17` -> `3.18`, `tg.VERSION` `1.24.0` -> `1.25.0`.
+
 ## wolfctl v3.17 - retire the old web (2026-11-21)
 
 - `wolfctl web retire` stops and disables `wolfbet-web`. Its unit and files stay, so `wolfctl web restore` (enable and start) is the rollback. With no web unit installed, retire says so and exits 0.

@@ -1,4 +1,4 @@
-"""/web signs a one-time dashboard link the dashboard can verify; the old web link stays the fallback.
+"""/web signs a one-time dashboard link the dashboard can verify, and says when it isn't set up.
 
 Run: APP_ENV=testing .venv-test/bin/python -m pytest wolfbet/tests/test_phase11q_tg_dashboard_link.py -q
 """
@@ -93,14 +93,12 @@ def test_web_sends_the_dashboard_link_when_configured(monkeypatch):
 
 
 @pytest.mark.parametrize("url,secret", [("", SECRET), ("https://d", ""), ("https://d", "weak")])
-def test_web_falls_back_to_the_old_web_when_not_configured(monkeypatch, url, secret):
+def test_web_says_it_is_not_set_up_and_sends_no_link(monkeypatch, url, secret):
     monkeypatch.setattr(tg_config, "DASHBOARD_URL", url)
     monkeypatch.setattr(tg_config, "DASHBOARD_SECRET", secret)
-    monkeypatch.setattr(tg_config, "WEB_URL", "")
-    monkeypatch.setattr(tg_config, "WEB_SECRET", "")
     update, message = _update()
     asyncio.run(tg_handlers.cmd_web(update, None))
-    assert message.replies[0].startswith("Web dashboard not configured.")
+    assert message.replies == ["The web dashboard isn't set up yet."]
 
 
 # ── config: the saved settings, never the API key or proxy ──

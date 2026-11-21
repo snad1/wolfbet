@@ -1673,60 +1673,28 @@ def _parse_callback_slot(data: str) -> tuple:
 
 
 # ── /web: generate dashboard login link ─────────────────
+NOT_SET_UP = "The web dashboard isn't set up yet."
+
+
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from .config import DASHBOARD_SECRET, DASHBOARD_URL, WEB_SECRET, WEB_URL
-    if DASHBOARD_URL and DASHBOARD_SECRET:
-        problem = dashboard_link.secret_problem(DASHBOARD_SECRET)
-        if problem is None:
-            link = dashboard_link.login_url(DASHBOARD_URL, DASHBOARD_SECRET, update.effective_user.id)
-            await update.message.reply_text(
-                f"🌐 *Web Dashboard*\n\n"
-                f"[Open Dashboard]({link})\n\n"
-                f"_Link expires in 5 minutes and works once._",
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-            return
-        logger.warning("WOLFBET_TG_DASHBOARD_SECRET %s; /web sends the old web link", problem)
-    if not WEB_URL or not WEB_SECRET:
-        await update.message.reply_text(
-            "Web dashboard not configured.\n"
-            "Set `WOLFBET_WEB_URL` and `WOLFBET_WEB_SECRET_KEY` in the bot environment.",
-            parse_mode="Markdown")
+    from .config import DASHBOARD_SECRET, DASHBOARD_URL
+    if not (DASHBOARD_URL and DASHBOARD_SECRET):
+        logger.warning("/web: set WOLFBET_DASHBOARD_URL and WOLFBET_TG_DASHBOARD_SECRET to send sign-in links")
+        await update.message.reply_text(NOT_SET_UP)
         return
-
-    user_id = update.effective_user.id
-    username = update.effective_user.username or ""
-
-    try:
-        import uuid
-        from datetime import datetime, timedelta, timezone
-        from jose import jwt as jose_jwt
-
-        expire = datetime.now(timezone.utc) + timedelta(minutes=5)
-        jti = str(uuid.uuid4())
-        token = jose_jwt.encode(
-            {"sub": f"tg:{user_id}", "role": "tg_user", "jti": jti, "username": username, "exp": expire},
-            WEB_SECRET,
-            algorithm="HS256",
-        )
-        link = f"{WEB_URL.rstrip('/')}/auth/telegram?token={token}"
-        await update.message.reply_text(
-            f"🌐 *Web Dashboard*\n\n"
-            f"[Open Dashboard]({link})\n\n"
-            f"_Link expires in 5 minutes._",
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-    except ImportError:
-        await update.message.reply_text(
-            "python-jose not installed. Install it in the bot venv:\n"
-            "`pip install python-jose[cryptography]`",
-            parse_mode="Markdown")
-    except Exception as e:
-        logger.error("cmd_web error: %s", e, exc_info=True)
-        msg = f"Error generating link: {e}" if APP_ENV != "production" else "Could not generate web link. Please try again."
-        await update.message.reply_text(msg)
+    problem = dashboard_link.secret_problem(DASHBOARD_SECRET)
+    if problem is not None:
+        logger.warning("/web: WOLFBET_TG_DASHBOARD_SECRET %s; no sign-in link sent", problem)
+        await update.message.reply_text(NOT_SET_UP)
+        return
+    link = dashboard_link.login_url(DASHBOARD_URL, DASHBOARD_SECRET, update.effective_user.id)
+    await update.message.reply_text(
+        f"🌐 *Web Dashboard*\n\n"
+        f"[Open Dashboard]({link})\n\n"
+        f"_Link expires in 5 minutes and works once._",
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
