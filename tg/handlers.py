@@ -22,7 +22,7 @@ from core.net_helpers import validate_proxy, mask_proxy
 from core.validation import finite_float
 from core.diagnostics import percentile, benchmark_verdict
 
-from . import VERSION
+from . import VERSION, dashboard_link
 from .config import APP_ENV, CONFIG_KEYS, DATA_DIR, TIERS, get_user_tier, logger
 from .database import (
     user_db_path, load_user_config, save_user_config,
@@ -100,6 +100,15 @@ def _resolve_engine(user_id: int, args: list) -> tuple:
             pass
     slots = ", ".join(f"#{s}" for s in sorted(running))
     return None, None, f"Multiple sessions running ({slots}). Specify slot number."
+
+
+PRIVATE_CONFIG_KEYS = frozenset({"api_key", "proxy"})
+
+
+def read_config(user_id):
+    """The user's saved settings without the API key and proxy (a proxy URL can hold a password)."""
+    config = load_user_config(user_id)
+    return {k: config[k] for k in CONFIG_KEYS if k in config and k not in PRIVATE_CONFIG_KEYS}
 
 
 def stop_slot(user_id: int, slot: int, engine: BettingEngine) -> None:
@@ -1665,7 +1674,20 @@ def _parse_callback_slot(data: str) -> tuple:
 
 # ── /web: generate dashboard login link ─────────────────
 async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from .config import WEB_URL, WEB_SECRET
+    from .config import DASHBOARD_SECRET, DASHBOARD_URL, WEB_SECRET, WEB_URL
+    if DASHBOARD_URL and DASHBOARD_SECRET:
+        problem = dashboard_link.secret_problem(DASHBOARD_SECRET)
+        if problem is None:
+            link = dashboard_link.login_url(DASHBOARD_URL, DASHBOARD_SECRET, update.effective_user.id)
+            await update.message.reply_text(
+                f"🌐 *Web Dashboard*\n\n"
+                f"[Open Dashboard]({link})\n\n"
+                f"_Link expires in 5 minutes and works once._",
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+            return
+        logger.warning("WOLFBET_TG_DASHBOARD_SECRET %s; /web sends the old web link", problem)
     if not WEB_URL or not WEB_SECRET:
         await update.message.reply_text(
             "Web dashboard not configured.\n"

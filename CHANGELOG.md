@@ -1,5 +1,22 @@
 # Changelog
 
+## TG v1.24.0 - /web signs in to the dashboard (2026-11-21)
+
+- `/web` sends a dashboard sign-in link once `WOLFBET_DASHBOARD_URL` and `WOLFBET_TG_DASHBOARD_SECRET` are set. Until then, or if the secret is weak (under 32 bytes, too few distinct characters, or a placeholder), it sends the old web link as before.
+- The link is `<dashboard>/tg/login#token=...`:
+  - valid for 5 minutes, for one sign-in, for the sender's own Telegram user only;
+  - the token sits in the URL fragment, so it never reaches a server log or a Referer header;
+  - it is `base64url(payload).base64url(HMAC-SHA256)` over compact JSON `{exp, id, uid, v}`, signed with the dashboard's `tg_login_secret` (`tg/dashboard_link.py`).
+- New control socket command `config`: the user's saved settings without the API key and the proxy, for the dashboard's read-only settings view.
+
+**Tests**: `tests/test_phase11q_tg_dashboard_link.py` (13):
+- the signer reproduces the dashboard's golden token in `tests/fixtures/tg_login_v1` (SHA-256 pinned);
+- the link shape and its five minutes, and two links never sharing an id;
+- weak secrets refused, and `/web` falling back to the old web link;
+- `config` scoped per user and never returning the API key or proxy.
+
+`tg.VERSION` `1.23.0` -> `1.24.0`.
+
 ## TG v1.23.0 - control socket for the dashboard's host agent (2026-11-21)
 
 - New, off by default: with `WOLFBET_TG_CONTROL=on` the bot listens on `<data dir>/control.sock` (`WOLFBET_TG_CONTROL_SOCKET`). It accepts `start`, `stop`, `pause`, `resume`, `set` and `status` for one Telegram user at a time (`uid`, plus `slot` when the user runs several sessions).

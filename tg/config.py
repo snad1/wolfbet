@@ -11,6 +11,10 @@ API_BASE   = os.environ.get("WOLFBET_API_BASE", "https://wolfbet.com/api")
 WEB_URL    = os.environ.get("WOLFBET_WEB_URL", "")          # e.g. http://IP:8002
 WEB_SECRET = os.environ.get("WOLFBET_WEB_SECRET_KEY", "")   # must match web app
 
+# ── Dashboard sign-in for /web: the old web's link is used until both are set ──
+DASHBOARD_URL    = os.environ.get("WOLFBET_DASHBOARD_URL", "")          # e.g. https://wolfbet.example.com
+DASHBOARD_SECRET = os.environ.get("WOLFBET_TG_DASHBOARD_SECRET", "")    # the dashboard's tg_login_secret
+
 # ── Dashboard events: off unless WOLFBET_TG_EVENTS is on ──
 EVENTS_ENABLED = os.environ.get("WOLFBET_TG_EVENTS", "").strip().lower() in ("1", "on", "true", "yes")
 EVENTS_URL     = os.environ.get("WOLFBET_EVENTS_URL", "")      # same Redis the CLI daemon uses

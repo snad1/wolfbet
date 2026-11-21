@@ -171,6 +171,7 @@ class ControlServer:
         "resume": {"uid", "slot"},
         "set": {"uid", "key", "value"},
         "status": {"uid"},
+        "config": {"uid"},
     }
 
     def __init__(self, token: bytes, socket_path: str, app, allow_uids=frozenset(),
@@ -317,6 +318,8 @@ class ControlServer:
         if cmd == "status":
             running = handlers._get_running(uid)
             return {"sessions": [dict(e._state_snapshot(), slot=s) for s, e in sorted(running.items())]}
+        if cmd == "config":
+            return {"config": await asyncio.to_thread(handlers.read_config, uid)}
         if cmd == "set":
             key = _str(args, "key", _KEY, max_len=32)
             value = _str(args, "value")
