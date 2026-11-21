@@ -363,7 +363,7 @@ def test_wolfctl_lane_commands():
     assert '"$PYTHON" "$BOT" --monitor --lane "$k"' in s
     assert "--lanes-status" in s
     assert "stop_all_lanes" in s and "sync_lanes" in s
-    assert "WOLFCTL_VERSION=3.16" in s
+    assert "WOLFCTL_VERSION=3.17" in s
 
 
 def test_install_writes_lane_template():

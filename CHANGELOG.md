@@ -1,5 +1,17 @@
 # Changelog
 
+## wolfctl v3.17 - retire the old web (2026-11-21)
+
+- `wolfctl web retire` stops and disables `wolfbet-web`. Its unit and files stay, so `wolfctl web restore` (enable and start) is the rollback. With no web unit installed, retire says so and exits 0.
+- Every `wolfctl web ...` first prints that the old web is retired, with the dashboard URL from `~/.config/casino-dashboard/dash.env` (`DASH_HOST`). Without that file, it prints how to install the dashboard.
+- `status-all` shows the web as retired once it is disabled, and flags it when it still runs. `stop-all` now stops it too; `start-all` still never starts it.
+- `wolfctl update` keeps copying the web files, so a restore runs current code, but never restarts a retired web.
+- Nothing changes on the host until `wolfctl web retire` is run.
+
+**Tests**: `tests/test_phase11r_wolfctl_web_retire.py` (7), with a stubbed `systemctl`: retire and restore, a failed restore, retire with nothing installed, the dashboard line on every web command, `status-all`, `stop-all` and `start-all`.
+
+`WOLFCTL_VERSION` `3.16` -> `3.17`.
+
 ## TG v1.24.0 - /web signs in to the dashboard (2026-11-21)
 
 - `/web` sends a dashboard sign-in link once `WOLFBET_DASHBOARD_URL` and `WOLFBET_TG_DASHBOARD_SECRET` are set. Until then, or if the secret is weak (under 32 bytes, too few distinct characters, or a placeholder), it sends the old web link as before.

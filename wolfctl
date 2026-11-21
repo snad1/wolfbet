@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.16
+# WolfBet AutoBot - Unified Management Command v3.17
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -19,6 +19,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.15 - update --branch NAME (fetch + switch + fast-forward, refuses a dirty
 #         checkout); status shows the deployed branch
 # v3.16 - dash status|logs|start|stop|update for the dashboard (Coolify stack + agent)
+# v3.17 - web retire|restore: the old web gives way to the dashboard; stop-all stops it too
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -31,11 +32,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.16
+WOLFCTL_VERSION=3.17
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.16"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.17"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -62,7 +63,7 @@ usage() {
     echo ""
     echo "  ALL SERVICES:"
     echo "    wolfctl start-all     Start both CLI + Telegram bots"
-    echo "    wolfctl stop-all      Stop both bots"
+    echo "    wolfctl stop-all      Stop both bots and the old web"
     echo "    wolfctl status-all    Show status of all services"
     echo ""
     echo "  SHORTCUTS:"
@@ -107,7 +108,9 @@ usage() {
     echo "                3 needs confirmation and there is no terminal (re-run with --yes),"
     echo "                4 the checkout has local changes (update --branch)"
     echo ""
-    echo "  WEB ADMIN:"
+    echo "  WEB ADMIN (retired: the dashboard replaces it):"
+    echo "    wolfctl web retire          Stop + disable the old web (files kept)"
+    echo "    wolfctl web restore         Enable + start it again (rollback)"
     echo "    wolfctl web install         Install web admin dashboard"
     echo "    wolfctl web start           Start web app"
     echo "    wolfctl web stop            Stop web app"
@@ -485,7 +488,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.16"
+    echo "  wolfctl v3.17"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1017,6 +1020,8 @@ cmd_update() {
         if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
             systemctl --user restart "$WEB_SERVICE"
             echo "Web admin updated + restarted."
+        elif web_retired; then
+            echo "Old web retired; files updated for rollback only."
         fi
     fi
 
@@ -1145,6 +1150,7 @@ cmd_stop_all() {
     echo "Stopping all services..."
     systemctl --user stop "$SERVICE" 2>/dev/null || true
     systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
+    systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
     echo "All services stopped."
 }
 
@@ -1168,7 +1174,9 @@ cmd_status_all() {
     fi
 
     if systemctl --user is-active --quiet "$WEB_SERVICE" 2>/dev/null; then
-        echo "  Web Admin:    ● RUNNING"
+        echo "  Web Admin:    ● RUNNING (retired: wolfctl web retire)"
+    elif web_retired; then
+        echo "  Web Admin:    ○ retired (wolfctl web restore to bring it back)"
     else
         echo "  Web Admin:    ○ stopped"
     fi
@@ -1176,9 +1184,63 @@ cmd_status_all() {
     echo ""
 }
 
+web_installed() {
+    [ -f "$SYSTEMD_DIR/$WEB_SERVICE.service" ]
+}
+
+web_retired() {
+    web_installed && [ "$(systemctl --user is-enabled "$WEB_SERVICE" 2>/dev/null)" = "disabled" ]
+}
+
+# The dashboard's address from the file install.sh writes; empty when it is not installed.
+dash_url() {
+    local DASH_HOST=""
+    if [ -f "$DASH_CONF/dash.env" ]; then
+        # shellcheck disable=SC1091
+        DASH_HOST=$(. "$DASH_CONF/dash.env" >/dev/null 2>&1; echo "${DASH_HOST:-}")
+    fi
+    [ -n "$DASH_HOST" ] && echo "https://$DASH_HOST"
+    return 0
+}
+
+web_deprecation() {
+    local url
+    url=$(dash_url)
+    if [ -n "$url" ]; then
+        echo "The old web is retired: use the dashboard at $url (Telegram users: send /web to the bot)."
+    else
+        echo "The old web is retired: install the dashboard (casino-dashboard/deploy/install.sh)."
+    fi
+}
+
 cmd_web() {
     local action="${1:-status}"
+    web_deprecation
     case "$action" in
+        retire)
+            if ! web_installed; then
+                echo "The old web is not installed; nothing to retire."
+                return 0
+            fi
+            systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
+            systemctl --user disable "$WEB_SERVICE" 2>/dev/null || true
+            echo "Old web stopped and disabled; its files stay for rollback."
+            echo "Bring it back with: wolfctl web restore"
+            ;;
+        restore)
+            if ! web_installed; then
+                echo "The old web is not installed; install it with: wolfctl web install"
+                exit 1
+            fi
+            systemctl --user enable --now "$WEB_SERVICE"
+            sleep 1
+            if systemctl --user is-active --quiet "$WEB_SERVICE"; then
+                echo "Old web restored and running."
+            else
+                echo "Failed to start. Check: wolfctl web logs"
+                exit 1
+            fi
+            ;;
         install)
             if [ -f "web/install.sh" ]; then
                 bash web/install.sh --repo "$(pwd)" "${@:2}"
@@ -1243,7 +1305,7 @@ cmd_web() {
             fi
             ;;
         *)
-            echo "Usage: wolfctl web [install|start|stop|restart|status|logs|logs-full|update]"
+            echo "Usage: wolfctl web [retire|restore|install|start|stop|restart|status|logs|logs-full|update]"
             ;;
     esac
 }
