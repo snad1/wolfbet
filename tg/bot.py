@@ -25,6 +25,7 @@ from .handlers import (
     callback_handler,
     save_resume_state, load_resume_state,
 )
+from .engine import start_events, stop_events
 
 _resume_saved = False
 HEARTBEAT_FILE = "/tmp/wolfbet-tg.heartbeat"
@@ -68,6 +69,7 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
     atexit.register(_save_once)
+    atexit.register(stop_events)
     logger.info("WolfBet Telegram Bot v%s starting...", VERSION)
     logger.info("Data dir: %s", DATA_DIR)
     owner = os.environ.get("TG_OWNER_ID", "").strip()
@@ -110,11 +112,13 @@ def main():
         logger.info("Bot commands registered with Telegram")
         # Start watchdog heartbeat
         asyncio.create_task(_heartbeat_loop())
+        start_events()
         # Resume any engines saved from graceful shutdown
         await load_resume_state(application)
 
     async def post_shutdown(application):
         _save_once()
+        stop_events()
 
     app = (
         Application.builder()

@@ -48,7 +48,9 @@ from core.net_helpers import (
     validate_proxy, mask_proxy, classify_auto_stop_reason, parse_streak_delay,
 )
 from core.diagnostics import percentile, benchmark_verdict
+from core.events import EVENTS_URL_SCHEMES as _EVENTS_URL_SCHEMES
 from core.events import EventPublisher
+from core.events import validate_events_url as _validate_events_url
 from core.engine import (
     compute_next_bet as _core_compute_next_bet,
     wolfrider_switch as _core_wolfrider_switch,
@@ -1329,9 +1331,6 @@ def _reload_live_config() -> dict:
     return applied
 
 
-_EVENTS_URL_SCHEMES = ("redis", "rediss", "unix")
-
-
 def _redact_url(url: Optional[str]) -> str:
     """Show an events URL as scheme://host[:port] (unix: the socket path), never credentials."""
     if not url:
@@ -1346,23 +1345,6 @@ def _redact_url(url: Optional[str]) -> str:
         return f"{parts.scheme}://{host}{port}"
     except ValueError:
         return "(invalid url)"
-
-
-def _validate_events_url(url: str) -> str:
-    """Accept redis://, rediss:// or unix:// URLs with a host or socket path; raise ValueError otherwise."""
-    from urllib.parse import urlsplit
-    try:
-        parts = urlsplit(url)
-        ok = parts.scheme in _EVENTS_URL_SCHEMES and (
-            parts.path if parts.scheme == "unix" else parts.hostname)
-        if ok and parts.port is not None and not 0 < parts.port < 65536:
-            ok = False
-    except ValueError:
-        ok = False
-    if not ok:
-        raise ValueError("events_url must be redis://host[:port], rediss://host[:port] "
-                         "or unix:///path/to/socket")
-    return url
 
 
 _RELOAD_MASKS = {

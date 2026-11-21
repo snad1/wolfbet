@@ -1,4 +1,4 @@
-"""BettingEngine — per-user betting instance running as async task."""
+"""BettingEngine: per-user betting instance running as async task."""
 
 import asyncio
 import json
@@ -11,13 +11,15 @@ from datetime import datetime
 from collections import deque
 from typing import Optional, List
 
-from .config import API_BASE, APP_ENV, logger
+from . import VERSION
+from .config import API_BASE, APP_ENV, EVENTS_ENABLED, EVENTS_URL, logger
+from core.events import EventPublisher, validate_events_url
 from core.database import init_db, migrate_db, db_connect, cleanup_old_bets, cleanup_live_bets
 from core.strategy import StrategyRule, load_rules_from_text
 from core.engine import compute_next_bet, wolfrider_switch, apply_action, evaluate_rules
-# v2.28.0 — shared helpers previously duplicated between CLI and TG.
+# v2.28.0: shared helpers previously duplicated between CLI and TG.
 # classify_auto_stop_reason CLOSES TG's max-nonce blind spot: TG previously
-# only matched "session/expired/not exists/betsession" — never "nonce" —
+# only matched "session/expired/not exists/betsession", never "nonce",
 # so every "Max nonce achieved" was treated as a generic API error and
 # never triggered seed rotation. Now identical to CLI's behaviour.
 from core.net_helpers import classify_auto_stop_reason, parse_streak_delay
@@ -33,8 +35,45 @@ BET_BATCH_SIZE     = 50      # flush bets + session stats to DB every N bets
 SESSION_SAVE_SECS  = 30      # fallback: save session stats every N seconds
 REQUEST_TIMEOUT    = httpx.Timeout(15.0, connect=5.0)
 STREAK_RESET_REASON = "Loss streak reset"
-PROFIT_INCREMENT_SCOPES = ("session", "run")   # v1.21.0 — see BettingEngine._init_run
+PROFIT_INCREMENT_SCOPES = ("session", "run")   # v1.21.0: see BettingEngine._init_run
 MAX_TIMEOUT_STREAK = 3       # recreate HTTP session after this many consecutive timeouts
+
+EVENTS_PREFIX = "wolfbet-tg"
+EVENTS_STATE_EVERY_S = 2.0
+_events: Optional[EventPublisher] = None
+
+
+def start_events(enabled: bool = EVENTS_ENABLED, url: str = EVENTS_URL, client=None) -> bool:
+    """Start the one event publisher every engine in this process shares. False when events stay off.
+
+    Events go to wolfbet-tg:<uid>:bets|state|lifecycle; engines only enqueue, so a slow or
+    missing Redis never reaches the betting loops.
+    """
+    global _events
+    if _events is not None:
+        return True
+    if not enabled:
+        return False
+    try:
+        validate_events_url(url)
+    except ValueError:
+        logger.warning("WOLFBET_TG_EVENTS is on but WOLFBET_EVENTS_URL is missing or invalid: "
+                       "events stay off")
+        return False
+    pub = EventPublisher(url, stream_prefix=EVENTS_PREFIX, scoped=True, client=client)
+    if not pub.start():
+        return False
+    _events = pub
+    logger.info("EVENTS publisher started (%s:<uid>:*)", EVENTS_PREFIX)
+    return True
+
+
+def stop_events() -> None:
+    """Flush and stop the shared event publisher if it is running."""
+    global _events
+    pub, _events = _events, None
+    if pub is not None:
+        pub.stop()
 
 
 class BettingEngine:
@@ -72,13 +111,13 @@ class BettingEngine:
         # Format: "N:seconds" e.g. "5:1.0" = after every 5 losses, delay 1s
         self.streak_delay_loss = self._parse_streak_delay(config.get("streak_delay_loss"))
         self.streak_delay_win  = self._parse_streak_delay(config.get("streak_delay_win"))
-        # streak_delay_bets "N:seconds" — every N total bets, delay X seconds (regardless of result)
+        # streak_delay_bets "N:seconds": every N total bets, delay X seconds (regardless of result)
         self.streak_delay_bets = self._parse_streak_delay(config.get("streak_delay_bets"))
 
         # ── adaptive base bet ──
         # basebet_pct: base_bet = balance * pct, recomputed on session start + profit-increment
         self.basebet_pct       = float(config.get("basebet_pct") or 0)
-        # streakbet_loss "N:multiplier" — after every N consecutive losses, current_bet *= multiplier
+        # streakbet_loss "N:multiplier": after every N consecutive losses, current_bet *= multiplier
         self.streakbet_loss    = self._parse_streak_delay(config.get("streakbet_loss"))
 
         # ── rules ──
@@ -131,7 +170,7 @@ class BettingEngine:
         self._bets_this_min  = 0
         self._current_sec    = 0
         self._current_min    = 0
-        # Sliding 60s window — what the bot is doing RIGHT NOW (vs. session average above)
+        # Sliding 60s window: what the bot is doing RIGHT NOW (vs. session average above)
         self.recent_bps      = 0.0
         self.recent_bpm      = 0.0
         self._recent_bet_times: deque = deque(maxlen=2000)
@@ -140,9 +179,9 @@ class BettingEngine:
         self._cycle_overhead_ms: float = 0.0
         self._iter_start_mono: float = 0.0  # set at top of loop iteration
         # Full per-bet cycle time (T_start_N - T_start_N-1), exp-smoothed ms.
-        # This is the bps reciprocal — Cycle*bps ≈ 1000. Honest about scheduler jitter.
+        # This is the bps reciprocal: Cycle*bps ≈ 1000. Honest about scheduler jitter.
         self._cycle_ms: float = 0.0
-        # get_status() cache — milestone notifier + /status are often called within
+        # get_status() cache: milestone notifier + /status are often called within
         # ms of each other; cache the dict briefly to avoid rebuilding 50 fields twice
         self._status_cache: Optional[dict] = None
         self._status_cache_ts: float = 0.0
@@ -162,6 +201,7 @@ class BettingEngine:
         self._consecutive_timeouts = 0
         self.backoff_delay   = 1.0
         self._insufficient_balance = False
+        self._events_next_state    = 0.0
         self._last_api_ms          = 0.0
         self._api_ms_total         = 0.0
         self._api_ms_count         = 0
@@ -177,7 +217,7 @@ class BettingEngine:
         self.profit_increment     = config.get("profit_increment")    # amount to add to base_bet
         self.profit_threshold     = config.get("profit_threshold")    # profit interval that triggers
         self.next_profit_milestone = float(self.profit_threshold) if self.profit_threshold else 0.0
-        # v1.21.0 — run-wide increment (mirrors CLI v2.37.0). scope "run": profit
+        # v1.21.0: run-wide increment (mirrors CLI v2.37.0). scope "run": profit
         # is the user's total across every session (all slots) since the run
         # started; bumps are shared through <user dir>/run.json.
         _scope = str(config.get("profit_increment_scope") or "session").lower()
@@ -246,7 +286,7 @@ class BettingEngine:
         }
 
     def _headers(self, game_key: str = None) -> dict:
-        """Static headers for the HTTP client (no hash — added per-request)."""
+        """Static headers for the HTTP client (no hash: added per-request)."""
         return self._base_headers()
 
     def _request_headers(self, body_str: str = "") -> dict:
@@ -256,7 +296,7 @@ class BettingEngine:
             return {"x-hash-api": h, "x-client-type": "Web-Application"}
         return {}
 
-    # v2.28.0 — delegated to core.net_helpers.parse_streak_delay (shared with CLI).
+    # v2.28.0: delegated to core.net_helpers.parse_streak_delay (shared with CLI).
     # Kept as a static method for backward compat with `self._parse_streak_delay(...)`
     # call sites throughout this class.
     _parse_streak_delay = staticmethod(parse_streak_delay)
@@ -310,7 +350,7 @@ class BettingEngine:
             count, d = self.streak_delay_win
             if streak % count == 0:
                 delay = max(delay, d)
-        # Total bets — every N bets regardless of outcome
+        # Total bets: every N bets regardless of outcome
         if self.streak_delay_bets[0] > 0 and self.total_bets > 0:
             count, d = self.streak_delay_bets
             if self.total_bets % count == 0:
@@ -350,11 +390,11 @@ class BettingEngine:
     async def _auto_start(self) -> bool:
         """Start an auto-bet session on WolfBet, returns True on success.
 
-        Pacing strategy (window length is undocumented — could be 20s or 60s):
+        Pacing strategy (window length is undocumented: could be 20s or 60s):
         1. Enforce a 1s floor between calls.
-        2. As remaining quota drops, scale up the pre-wait — at 0 we wait 6s,
+        2. As remaining quota drops, scale up the pre-wait: at 0 we wait 6s,
            at 1 we wait 4s, at 2 we wait 2s. Spreads bursts across the window.
-        3. On 429, retry with backoffs that span up to ~120s — long enough to
+        3. On 429, retry with backoffs that span up to ~120s: long enough to
            outlast a 60s window, regardless of where in the window we hit it.
         """
         endpoints = AUTO_ENDPOINTS.get(self.game)
@@ -421,8 +461,8 @@ class BettingEngine:
             pass
 
     async def _recover_expired_session(self) -> bool:
-        """Recover from 'Session has ended' — rotate seed, stop dead UUID, start new one."""
-        logger.warning("User %d: Auto-bet session expired — rotating seed + restarting", self.user_id)
+        """Recover from 'Session has ended': rotate seed, stop dead UUID, start new one."""
+        logger.warning("User %d: Auto-bet session expired: rotating seed + restarting", self.user_id)
         await self._rotate_server_seed()
         await self._auto_stop()  # best-effort; UUID is already dead
         return await self._auto_start()
@@ -548,7 +588,7 @@ class BettingEngine:
             elif r.status_code == 429:
                 self.rate_wait = True
                 self.rate_backoff = 2.0
-                self._set_error("Rate limit reached — cooling down")
+                self._set_error("Rate limit reached: cooling down")
             else:
                 body = r.text or ""
                 body_lower = body.lower()
@@ -556,18 +596,18 @@ class BettingEngine:
                     self._set_error("Insufficient balance")
                     self._insufficient_balance = True
                 else:
-                    # v2.28.0 — shared classifier catches "max nonce achieved"
+                    # v2.28.0: shared classifier catches "max nonce achieved"
                     # AS WELL AS session-expired variants. Previously TG only
                     # detected the latter, so max-nonce responses fell through
                     # to the generic "Bet request failed" branch and _recover_
-                    # expired_session never fired — same dashboard-spam bug
+                    # expired_session never fired: same dashboard-spam bug
                     # the CLI shipped a fix for at v2.25.0.
                     reason = classify_auto_stop_reason(body)
                     if reason:
                         self._session_expired = True
-                        friendly = ("Max nonce achieved — rotating server seed"
+                        friendly = ("Max nonce achieved: rotating server seed"
                                     if reason == "max_nonce"
-                                    else "Auto-bet session expired — restarting")
+                                    else "Auto-bet session expired: restarting")
                         self._set_error(friendly,
                                         f"HTTP {r.status_code}: {body[:120]}")
                     else:
@@ -575,9 +615,9 @@ class BettingEngine:
                                         f"HTTP {r.status_code}: {body[:120]}")
         except (httpx.TimeoutException, httpx.ConnectError):
             self._consecutive_timeouts += 1
-            self._set_error("Connection timeout — retrying")
+            self._set_error("Connection timeout: retrying")
             if self._consecutive_timeouts >= MAX_TIMEOUT_STREAK:
-                logger.warning("User %d: %d consecutive timeouts — recreating HTTP client",
+                logger.warning("User %d: %d consecutive timeouts: recreating HTTP client",
                                self.user_id, self._consecutive_timeouts)
                 await self._recreate_http()
                 self._consecutive_timeouts = 0
@@ -602,7 +642,7 @@ class BettingEngine:
             self._db_connection = sqlite3.connect(
                 self.db_path, timeout=5, check_same_thread=False)
             self._db_connection.execute("PRAGMA journal_mode=WAL")
-            # v2.29.0 — mirror CLI's v2.27.0 writer PRAGMAs. Same 30-40 ms
+            # v2.29.0: mirror CLI's v2.27.0 writer PRAGMAs. Same 30-40 ms
             # per-commit fsync savings on typical VPS SSD; WAL-safe.
             self._db_connection.execute("PRAGMA synchronous = NORMAL")
             self._db_connection.execute("PRAGMA busy_timeout = 5000")
@@ -654,7 +694,7 @@ class BettingEngine:
         return json.dumps(snap)
 
     def _db_start_session(self) -> int:
-        # Use a temporary connection — start() runs in the main thread,
+        # Use a temporary connection: start() runs in the main thread,
         # but the persistent connection must be created in the betting thread.
         snapshot = self._build_config_snapshot()
         conn = db_connect(self.db_path)
@@ -674,7 +714,7 @@ class BettingEngine:
         """Queue a bet row for batched insertion.
 
         Flush is intentionally NOT triggered here even when the queue passes
-        BET_BATCH_SIZE — _periodic_save (called from the async loop) handles
+        BET_BATCH_SIZE: _periodic_save (called from the async loop) handles
         flushing via asyncio.to_thread so DB I/O never blocks the event loop.
         Queue growing past 50 between saves is harmless (~6 KB per 50 rows;
         even 1000 queued ≈ 128 KB).
@@ -686,6 +726,102 @@ class BettingEngine:
             float(bet_data.get("result_value", 0)), bet_data.get("state", ""),
             profit, balance,
         ))
+
+    def _emit_bet(self, bet_data: dict, profit: float, balance: float) -> None:
+        """Enqueue the bet event (CLI field order); never waits on Redis."""
+        pub = _events
+        if pub is None or not pub.reserve(self.user_id):
+            return
+        try:
+            pub.emit_bet((
+                self.session_id,
+                float(bet_data.get("amount", 0)),
+                float(bet_data.get("multiplier", 0)),
+                self.rule,
+                float(bet_data.get("bet_value", 0)),
+                float(bet_data.get("result_value", 0)),
+                bet_data.get("state", ""),
+                profit,
+                balance,
+                self.profit,
+                self.total_bets,
+                self.current_streak,
+                self._last_api_ms,
+            ), self.user_id)
+        except Exception:
+            pass
+
+    def _emit_lifecycle(self, kind: str, data: Optional[dict] = None) -> None:
+        pub = _events
+        if pub is not None:
+            pub.emit_lifecycle(kind, data or {}, self.user_id)
+
+    def _emit_session_open(self) -> None:
+        self._emit_lifecycle("session_open", {
+            "session_id": self.session_id, "game": self.game, "currency": self.currency,
+            "strategy": self.strategy, "base_bet": self.base_bet,
+            "multiplier": self.multiplier, "start_balance": self.start_balance,
+        })
+
+    def _emit_start(self, resumed: bool) -> None:
+        self._emit_lifecycle("start", {
+            "version": VERSION, "resumed": resumed, "game": self.game,
+            "currency": self.currency, "strategy": self.strategy,
+            "strategy_key": self.strategy_key, "base_bet": self.base_bet,
+            "multiplier": self.multiplier, "rule": self.rule, "pipeline": self.pipeline,
+        })
+        if self.session_id:
+            self._emit_session_open()
+
+    def _state_snapshot(self) -> dict:
+        """Live session state under the CLI state event's key names."""
+        return {
+            "session_id": self.session_id,
+            "running": self.running,
+            "paused": self.paused,
+            "game": self.game,
+            "currency": self.currency,
+            "strategy": self.strategy,
+            "multiplier": self.multiplier,
+            "base_bet": self.base_bet,
+            "current_bet": self.current_bet,
+            "total_bets": self.total_bets,
+            "wins": self.wins,
+            "losses": self.losses,
+            "profit": self.profit,
+            "wagered": self.wagered,
+            "current_balance": self.current_balance,
+            "start_balance": self.start_balance,
+            "current_streak": self.current_streak,
+            "max_win_streak": self.max_win_streak,
+            "max_loss_streak": self.max_loss_streak,
+            "highest_bet": self.highest_bet,
+            "highest_win": self.highest_win,
+            "biggest_loss": self.biggest_loss,
+            "bets_per_minute": self.bets_per_minute,
+            "bets_per_second": self.bets_per_second,
+            "peak_bps": self.peak_bps,
+            "low_bps": self.low_bps if self.low_bps != float("inf") else 0,
+            "peak_bpm": self.peak_bpm,
+            "low_bpm": self.low_bpm if self.low_bpm != float("inf") else 0,
+            "highest_balance": self.highest_balance,
+            "lowest_balance": (self.lowest_balance if self.lowest_balance != float("inf")
+                               else self.current_balance),
+        }
+
+    def _events_tick(self) -> None:
+        """Enqueue the state snapshot at most every EVENTS_STATE_EVERY_S, from the betting loop."""
+        pub = _events
+        if pub is None:
+            return
+        now = time.monotonic()
+        if now < self._events_next_state:
+            return
+        self._events_next_state = now + EVENTS_STATE_EVERY_S
+        try:
+            pub.emit_state(self._state_snapshot(), self.user_id)
+        except Exception:
+            pass
 
     def _flush_bets(self):
         """Flush all queued bets to DB and save session stats in one go."""
@@ -702,7 +838,7 @@ class BettingEngine:
             self._bet_queue.clear()
         except Exception as e:
             logger.error("User %d: DB flush_bets failed: %s", self.user_id, e)
-        # always save session stats when flushing bets — keeps both in sync
+        # always save session stats when flushing bets: keeps both in sync
         self._db_save_session()
 
     def _db_save_session(self, final: bool = False):
@@ -723,7 +859,7 @@ class BettingEngine:
                         chart_snapshots=?
                     WHERE id=?
                 """, (
-                    # v1.18.0 — freeze ended_at at bet-stop so pause time
+                    # v1.18.0: freeze ended_at at bet-stop so pause time
                     # isn't rolled into session runtime (mirrors CLI v2.28.4).
                     (datetime.fromtimestamp(self.session_bet_ended_at).isoformat()
                      if self.session_bet_ended_at else datetime.now().isoformat()),
@@ -777,16 +913,17 @@ class BettingEngine:
         """Flush bets and save session stats periodically.
 
         DB calls run in a worker thread so the event loop stays free for other
-        engines to keep betting — without this, 6 concurrent sessions
+        engines to keep betting: without this, 6 concurrent sessions
         serialize on each other's flushes and bps collapses to ~1/N.
         """
+        self._events_tick()
         now = time.time()
         if now - self._last_session_save >= SESSION_SAVE_SECS:
             if self._bet_queue:
                 await asyncio.to_thread(self._flush_bets)
             else:
                 await asyncio.to_thread(self._db_save_session)
-            # v1.21.0 — refresh the run total (other slots) after each save.
+            # v1.21.0: refresh the run total (other slots) after each save.
             if self.run_first_session is not None:
                 await asyncio.to_thread(self._run_sync)
         # Live cleanup: purge old bets every hour to prevent DB bloat
@@ -846,7 +983,7 @@ class BettingEngine:
             return True, f"Max wins: {self.wins}"
         if self.stop_on_balance is not None and b <= self.stop_on_balance:
             return True, f"Balance floor: {b:.8f}"
-        # Streak reset — only on the win that broke an N+ loss streak, not in the red.
+        # Streak reset: only on the win that broke an N+ loss streak, not in the red.
         n = self.streak_reset_losses
         if (n and self.current_streak == 1
                 and self.last_broken_loss_streak >= n and p >= 0):
@@ -854,7 +991,7 @@ class BettingEngine:
         return False, ""
 
     def _process_bet_result(self, result: dict) -> str:
-        """Process a bet result — update stats, queue DB write. Returns bet_state."""
+        """Process a bet result: update stats, queue DB write. Returns bet_state."""
         bet_data = result.get("bet", {})
         balance_data = result.get("userBalance", {})
         bet_state = bet_data.get("state", "loss")
@@ -912,7 +1049,19 @@ class BettingEngine:
         self.last_error = ""
 
         self._queue_bet(bet_data, raw_profit, new_balance)
+        self._emit_bet(bet_data, raw_profit, new_balance)
         return bet_state
+
+    def _emit_session_end(self) -> None:
+        """Final events for a stopping engine: terminal error, session totals, stop reason."""
+        if self._insufficient_balance:
+            self._emit_lifecycle("error", {"reason": "Insufficient balance"})
+        self._emit_lifecycle("session_close", {
+            "session_id": self.session_id, "total_bets": self.total_bets,
+            "wins": self.wins, "losses": self.losses, "profit": self.profit,
+            "wagered": self.wagered, "end_balance": self.current_balance,
+        })
+        self._emit_lifecycle("stop", {"reason": self.stop_reason or "Stopped by user"})
 
     async def _session_cleanup(self):
         """Shared cleanup for both betting loops."""
@@ -924,13 +1073,14 @@ class BettingEngine:
         await asyncio.to_thread(self._flush_bets)
         if self.session_id:
             await asyncio.to_thread(self._db_save_session, True)
+        self._emit_session_end()
         self._close_conn()
         if self._http:
             try:
                 await self._http.aclose()
             except Exception:
                 pass
-        logger.info("User %d: Session #%d ended — %s (bets=%d, P/L=%+.8f)",
+        logger.info("User %d: Session #%d ended: %s (bets=%d, P/L=%+.8f)",
                     self.user_id, self.session_id, self.stop_reason or "stopped",
                     self.total_bets, self.profit)
         if self.on_stop:
@@ -940,7 +1090,7 @@ class BettingEngine:
                 pass
 
     def _update_speed_stats(self):
-        """Update BPS/BPM tracking — called after each bet result.
+        """Update BPS/BPM tracking: called after each bet result.
 
         Maintains both:
           - bets_per_second / bets_per_minute: cumulative session average
@@ -952,7 +1102,7 @@ class BettingEngine:
             self.bets_per_second = self.total_bets / elapsed
             self.bets_per_minute = self.bets_per_second * 60
 
-        # Sliding 60s window — drop entries older than 60s and recompute
+        # Sliding 60s window: drop entries older than 60s and recompute
         mono = time.monotonic()
         self._recent_bet_times.append(mono)
         cutoff = mono - 60.0
@@ -1035,22 +1185,23 @@ class BettingEngine:
         if self._apply_basebet_pct():
             logger.info("User %d: basebet_pct=%.6f → base_bet=%.8f (balance=%.8f)",
                         self.user_id, self.basebet_pct, self.base_bet, bal)
-        self._init_run()      # v1.21.0 — restore run bumps before the session row
+        self._init_run()      # v1.21.0: restore run bumps before the session row
         self.session_start   = time.time()
         self._last_session_save = time.time()
         self.session_id      = self._db_start_session()
         self._attach_run(self.session_id)
         self.running         = True
-        self.status          = "Starting…"
+        self.status          = "Starting..."
 
         if self._is_auto_game():
             if not await self._auto_start():
                 return False
 
         self._task = asyncio.create_task(self._betting_loop())
+        self._emit_start(resumed=False)
         return True
 
-    # ── v1.21.0 — run-wide profit increment ───────────────
+    # ── v1.21.0: run-wide profit increment ───────────────
     def _increment_on(self) -> bool:
         try:
             return (self.profit_increment is not None and float(self.profit_increment) > 0
@@ -1100,7 +1251,7 @@ class BettingEngine:
         self.run_bumps = 0
         self._run_others = 0.0
         if had:
-            logger.warning("User %d: RUN ended (%s) — the next run starts fresh",
+            logger.warning("User %d: RUN ended (%s): the next run starts fresh",
                            self.user_id, reason)
 
     def _run_db_sum(self, first_sid: int) -> float:
@@ -1157,7 +1308,7 @@ class BettingEngine:
             pending_resume_fix = False
         run = self._load_run()
         if run and run["first_session"] > self._db_max_session_id() + 1:
-            logger.warning("User %d: RUN file points past the stats DB — starting a new run",
+            logger.warning("User %d: RUN file points past the stats DB: starting a new run",
                            self.user_id)
             run = None
         if run:
@@ -1358,7 +1509,7 @@ class BettingEngine:
             self._set_error("Resume connection failed", f"Resume connection failed: {e}")
             return False
 
-        # v1.21.0 — re-join the run (snapshot base already holds its bumps).
+        # v1.21.0: re-join the run (snapshot base already holds its bumps).
         self._init_run(resumed=True)
         self._attach_run(self.session_id)
 
@@ -1371,7 +1522,7 @@ class BettingEngine:
             self.bets_per_second = self.total_bets / elapsed
             self.bets_per_minute = self.bets_per_second * 60
 
-        # Auto-bet: old UUID is dead after restart — get a new one
+        # Auto-bet: old UUID is dead after restart: get a new one
         if self._is_auto_game():
             self._auto_uuid = None  # clear stale UUID
             if not await self._auto_start():
@@ -1380,6 +1531,7 @@ class BettingEngine:
                 return False
 
         self._task = asyncio.create_task(self._betting_loop())
+        self._emit_start(resumed=True)
         logger.info("User %d: Resumed session #%d", self.user_id, self.session_id)
         return True
 
@@ -1426,7 +1578,7 @@ class BettingEngine:
             else:
                 msgs.append("Basebet pct: off")
 
-        # Stop conditions — instant, checked every bet
+        # Stop conditions: instant, checked every bet
         if "max_profit" in changes:
             v = changes["max_profit"]
             self.max_profit = float(v) if v is not None else None
@@ -1452,7 +1604,7 @@ class BettingEngine:
             self.streak_reset_losses = int(v) if v is not None else None
             msgs.append(f"Streak reset: after {v} losses" if v is not None else "Streak reset: off")
 
-        # Milestone settings — instant
+        # Milestone settings: instant
         if "milestone_bets" in changes:
             self.milestone_bets = int(changes["milestone_bets"])
             msgs.append(f"Milestone bets: {self.milestone_bets}")
@@ -1460,8 +1612,8 @@ class BettingEngine:
             self.milestone_wins = int(changes["milestone_wins"])
             msgs.append(f"Milestone wins: {self.milestone_wins}")
 
-        # Profit increment — instant
-        # v1.21.0 — 0 / ≤ 0 means off (no phantom bumps of 0).
+        # Profit increment: instant
+        # v1.21.0: 0 / ≤ 0 means off (no phantom bumps of 0).
         if "profit_increment" in changes:
             v = changes["profit_increment"]
             self.profit_increment = None if v is None or float(v) <= 0 else float(v)
@@ -1490,7 +1642,7 @@ class BettingEngine:
                 self._pending_restart = True
                 msgs.append(f"Base bet: {self.base_bet:.8f} (restarts on next win)")
             else:
-                # Local strategy: don't kill recovery — applies on next win
+                # Local strategy: don't kill recovery: applies on next win
                 msgs.append(f"Base bet: {self.base_bet:.8f} (applies on next win)")
             needs_restart = False  # don't restart immediately
         if "multiplier" in changes:
@@ -1514,37 +1666,42 @@ class BettingEngine:
         # Auto-bet: defer restart until next win (safe recovery)
         if needs_restart and self._is_auto_game() and self._auto_uuid:
             self._pending_restart = True
-            msgs.append("Changes queued — auto-bet restarts on next win")
+            msgs.append("Changes queued: auto-bet restarts on next win")
 
+        if msgs:
+            self._emit_lifecycle("reload", {"keys": sorted(changes)})
         return "; ".join(msgs) if msgs else "No changes applied"
 
     def pause(self):
-        # v1.18.0 — freeze uptime + start pause clock (mirrors CLI v2.28.4).
+        # v1.18.0: freeze uptime + start pause clock (mirrors CLI v2.28.4).
         if not self.paused:
             now = time.time()
             self.session_bet_ended_at = now
             self.session_pause_started_at = now
+            self._emit_lifecycle("pause")
         self.paused = True
 
     def resume(self):
-        # v1.18.0 — clear freeze so uptime resumes advancing.
+        # v1.18.0: clear freeze so uptime resumes advancing.
+        if self.paused:
+            self._emit_lifecycle("resume")
         self.session_bet_ended_at = None
         self.session_pause_started_at = None
         self.paused = False
 
     def get_status(self) -> dict:
-        # Cache for ~250ms — milestone notifier and /status often fire within ms
+        # Cache for ~250ms: milestone notifier and /status often fire within ms
         # of each other; avoid rebuilding the 50-field dict every time.
         now_mono = time.monotonic()
         if self._status_cache is not None and (now_mono - self._status_cache_ts) < 0.25:
             return self._status_cache
-        # v1.18.0 — freeze uptime at bet-end during pauses (mirrors CLI v2.28.4).
+        # v1.18.0: freeze uptime at bet-end during pauses (mirrors CLI v2.28.4).
         now = time.time()
         ref = self.session_bet_ended_at if self.session_bet_ended_at else now
         elapsed = ref - self.session_start if self.session_start else 0
         h, rem = divmod(int(elapsed), 3600)
         m, s = divmod(rem, 60)
-        wr = f"{self.wins/self.total_bets*100:.1f}%" if self.total_bets > 0 else "—"
+        wr = f"{self.wins/self.total_bets*100:.1f}%" if self.total_bets > 0 else "-"
 
         # stop conditions
         stops = {}
@@ -1644,14 +1801,14 @@ class BettingEngine:
         }
         # API median (p50) and on-target % (api ≤ bet_delay). Explains the
         # Efficiency ceiling: 95% on-target → ~95% efficiency is the upper bound.
-        # v2.28.0 — shared percentile helper (same as CLI's --benchmark).
+        # v2.28.0: shared percentile helper (same as CLI's --benchmark).
         p50 = percentile(sorted(self._api_samples), 0.50) if self._api_samples else 0
         on_target_pct = ((self._on_target_count / self._api_ms_count) * 100
                          if self._api_ms_count > 0 and self.bet_delay > 0 else None)
         status["api_p50_ms"] = p50
         status["on_target_pct"] = on_target_pct
         # Efficiency = recent bps / theoretical max bps (capped at 100%).
-        # theoretical max = 1 / max(bet_delay, api_avg) — whichever bounds the cycle.
+        # theoretical max = 1 / max(bet_delay, api_avg): whichever bounds the cycle.
         api_avg_s = ((self._api_ms_total / self._api_ms_count) / 1000.0) if self._api_ms_count > 0 else 0
         cycle_floor = max(self.bet_delay, api_avg_s)
         theoretical_max_bps = (1.0 / cycle_floor) if cycle_floor > 0 else 0
@@ -1668,9 +1825,9 @@ class BettingEngine:
         WARNING: Only safe with Flat strategy. Sequential strategies (Martingale etc)
         break when bets overlap because each concurrent bet sees different state."""
         depth = self.pipeline
-        # Force pipeline=1 for sequential strategies — they require ordered execution
+        # Force pipeline=1 for sequential strategies: they require ordered execution
         if self.strategy_key != "1":  # not Flat
-            logger.warning("User %d: Pipeline=%d but strategy=%s is sequential — forcing pipeline=1",
+            logger.warning("User %d: Pipeline=%d but strategy=%s is sequential: forcing pipeline=1",
                           self.user_id, depth, self.strategy)
             depth = 1
             self.pipeline = 1
@@ -1689,12 +1846,13 @@ class BettingEngine:
         while self.running and not should_stop:
             if self.paused:
                 self.status = "PAUSED"
+                self._events_tick()
                 await asyncio.sleep(0.3)
                 continue
 
             if self.rate_wait:
                 backoff = self.rate_backoff
-                self.status = f"Rate limit — resuming in {backoff:.0f}s…"
+                self.status = f"Rate limit: resuming in {backoff:.0f}s..."
                 for _ in range(int(backoff * 4)):
                     if not self.running:
                         break
@@ -1713,7 +1871,7 @@ class BettingEngine:
                 self.status = f"STOPPED: {reason}"
                 break
 
-            # bet pacing — minimum interval since the previous batch started
+            # bet pacing: minimum interval since the previous batch started
             if self.bet_delay > 0:
                 wait = (self._last_bet_start_time + self.bet_delay) - time.monotonic()
                 if wait > 0:
@@ -1726,7 +1884,7 @@ class BettingEngine:
                                   + 0.1 * (self._last_bet_start_time - prev_bet_start) * 1000)
 
             # Fire a batch of concurrent requests
-            self.status = f"Betting (pipeline={depth})… #{self.total_bets + 1}"
+            self.status = f"Betting (pipeline={depth})... #{self.total_bets + 1}"
             batch_size = min(depth, 50)  # cap batch size
             tasks = [asyncio.create_task(_one_bet()) for _ in range(batch_size)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1747,7 +1905,7 @@ class BettingEngine:
                         if await self._recover_expired_session():
                             self.consecutive_errors = 0
                             break  # restart loop iteration with fresh UUID
-                        # Recovery failed — keep session alive, retry on next loop
+                        # Recovery failed: keep session alive, retry on next loop
                         logger.warning("User %d: Recovery failed; will retry on next iteration",
                                        self.user_id)
                         await asyncio.sleep(5.0)
@@ -1840,13 +1998,14 @@ class BettingEngine:
         while self.running:
             if self.paused:
                 self.status = "PAUSED"
+                self._events_tick()
                 await asyncio.sleep(0.3)
                 continue
 
             # Watchdog: no successful bet for too long → force-recover or kill
             stale = time.monotonic() - self._last_successful_bet_time
             if self._is_auto_game() and stale > 600:  # 10 min
-                logger.warning("User %d: Watchdog — no bet for %.0fs, forcing recovery",
+                logger.warning("User %d: Watchdog: no bet for %.0fs, forcing recovery",
                                self.user_id, stale)
                 if await self._recover_expired_session():
                     self._last_successful_bet_time = time.monotonic()
@@ -1854,23 +2013,23 @@ class BettingEngine:
                     continue
                 self.running = False
                 self.stop_reason = (
-                    f"Session abandoned — no successful bet for {stale:.0f}s "
+                    f"Session abandoned: no successful bet for {stale:.0f}s "
                     f"and recovery failed")
                 self.status = f"STOPPED: {self.stop_reason}"
                 await asyncio.to_thread(self._flush_bets)
                 await asyncio.to_thread(self._db_save_session, True)
                 break
             elif self._is_auto_game() and stale > 180 and not watchdog_warned:
-                logger.warning("User %d: Watchdog — %.0fs since last bet (still trying)",
+                logger.warning("User %d: Watchdog: %.0fs since last bet (still trying)",
                                self.user_id, stale)
                 watchdog_warned = True
             elif stale < 60 and watchdog_warned:
                 watchdog_warned = False
 
-            # rate limit recovery — wait then resume betting
+            # rate limit recovery: wait then resume betting
             if self.rate_wait:
                 backoff = self.rate_backoff
-                self.status = f"Rate limit — resuming in {backoff:.0f}s…"
+                self.status = f"Rate limit: resuming in {backoff:.0f}s..."
                 # Sleep in small chunks so stop() is responsive
                 for _ in range(int(backoff * 4)):
                     if not self.running:
@@ -1891,7 +2050,7 @@ class BettingEngine:
                 await asyncio.to_thread(self._db_save_session, True)
                 break
 
-            # bet pacing — minimum interval since the previous bet started
+            # bet pacing: minimum interval since the previous bet started
             if self.bet_delay > 0:
                 wait = (self._last_bet_start_time + self.bet_delay) - time.monotonic()
                 if wait > 0:
@@ -1905,7 +2064,7 @@ class BettingEngine:
                                   + 0.1 * (self._last_bet_start_time - prev_bet_start) * 1000)
 
             # place bet
-            self.status = f"Placing bet #{self.total_bets + 1}…"
+            self.status = f"Placing bet #{self.total_bets + 1}..."
             result = await self._api_place_bet(self.current_bet)
 
             if result is None:

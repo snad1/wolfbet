@@ -1,5 +1,26 @@
 # Changelog
 
+## TG v1.22.0 - dashboard events from every Telegram user's engine (2026-11-21)
+
+- New, off by default: with `WOLFBET_TG_EVENTS=on` and `WOLFBET_EVENTS_URL` (the same Redis URL the CLI daemon uses) in the TG environment, the bot starts one event publisher for the whole process when it starts, and flushes it on shutdown.
+- Each user's engine publishes to `wolfbet-tg:<uid>:bets`, `:state` and `:lifecycle`. The envelope is the CLI's schema v1 with `svc` `wolfbet-tg`, and every payload carries `uid`.
+- Bets use the CLI field order. State is a snapshot under the CLI's key names, every 2 s and while paused. Lifecycle covers start (`resumed` true after a restart), session_open, pause, resume, reload, error (insufficient balance), session_close and stop.
+- A reload event lists only the names of the changed settings. Values such as the API key never leave the process.
+- `seq` counts per user, so a gap in one user's stream means that user lost events.
+- Engines only enqueue. A slow, down or refusing Redis drops and counts events and never slows or stops a session. A missing or invalid URL logs one warning and leaves events off.
+- `core/events.py`: `EventPublisher(scoped=True)` serves many users from one sender thread. The unscoped path the CLI uses is unchanged, and the events URL validator moved here from `wolfbet.py` so both bots share it.
+- The dashboard's Redis ACL lets the publisher append to, and the dashboard read, `wolfbet-tg:*` (casino-dashboard).
+
+**Tests**: `tests/test_phase11l_tg_events.py` (15, plus one bench):
+- per-user streams, `uid` in the payload and per-user seq;
+- overflow that uses up only the dropped user's seq;
+- the CLI stream names unchanged;
+- the engine's bet, lifecycle and state events, with no secret in reload;
+- 10,000 bet emits under 100 ms while Redis is stuck;
+- events off imports no redis, and a bad URL gives one warning.
+
+`tg.VERSION` `1.21.4` -> `1.22.0`.
+
 ## wolfctl v3.16 - dash: run the dashboard from wolfctl (2026-11-20)
 
 - New `wolfctl dash status|logs [SERVICE|agent]|start|stop|update` for the casino dashboard, which runs as a Coolify Docker Compose resource next to the bots. It reads `~/.config/casino-dashboard/dash.env`, written by `casino-dashboard/deploy/install.sh`; without it every subcommand says to run the installer and exits 2.

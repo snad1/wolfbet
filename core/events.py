@@ -16,6 +16,11 @@ encodes, so a betting thread never waits behind a whole batch.
 
 Wire format (schema v1): each stream entry has one field, ``data``, holding
 compact JSON ``{"v", "svc", "lane", "pid", "seq", "ts_ms", "type", "payload"}``.
+
+A scoped publisher serves many users from one process and one sender thread
+(the Telegram bot): every event names its user, goes to
+``<prefix>:<uid>:<stream>`` with ``uid`` in the payload, and seq counts per
+user, so a gap in one user's stream still means that user lost events.
 """
 
 import collections
@@ -52,17 +57,37 @@ _LOG_EVERY_S = 60.0
 _CONNECT_TIMEOUT_S = 0.1
 _REPLY_TIMEOUT_S = 1.0
 
+EVENTS_URL_SCHEMES = ("redis", "rediss", "unix")
+
 logger = logging.getLogger("wolfbet.events")
+
+
+def validate_events_url(url: str) -> str:
+    """Accept redis://, rediss:// or unix:// URLs with a host or socket path; raise ValueError otherwise."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+        ok = parts.scheme in EVENTS_URL_SCHEMES and (
+            parts.path if parts.scheme == "unix" else parts.hostname)
+        if ok and parts.port is not None and not 0 < parts.port < 65536:
+            ok = False
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ValueError("events_url must be redis://host[:port], rediss://host[:port] "
+                         "or unix:///path/to/socket")
+    return url
 
 
 class EventPublisher:
     """Bounded, non-blocking event queue with its own Redis sender thread.
 
     ``client`` replaces the Redis client built from ``url``; tests pass a fake.
+    ``scoped`` makes every emit take the user it belongs to (``uid=``).
     """
 
     def __init__(self, url, *, lane=1, stream_prefix="wolfbet", maxlen=None,
-                 queue_max=50_000, client=None):
+                 queue_max=50_000, client=None, scoped=False):
         self.url = url
         self.lane = lane
         self.svc = stream_prefix
@@ -70,8 +95,12 @@ class EventPublisher:
         self._prefix = stream_prefix
         self._maxlen = dict(_DEFAULT_MAXLEN, **(maxlen or {}))
         self._queue = collections.deque()
-        self._queue_max = queue_max * _FRAME_WIDTH["bet"]
+        self._scoped = scoped
+        self._queue_max = queue_max * (_FRAME_WIDTH["bet"] + scoped)
         self._seq = itertools.count()
+        self._seqs = {}
+        if scoped:
+            self._emit = self._emit_scoped
         self._client = client
         self._enabled = False
         self._stop = threading.Event()
@@ -85,7 +114,7 @@ class EventPublisher:
         self._connected = False
         self._last_error = ""
 
-    def reserve(self):
+    def reserve(self, uid=None):
         """True when the next event fits in the queue. When full, count it as lost and return False.
 
         Lets the betting thread skip building an event that would be dropped anyway.
@@ -94,28 +123,36 @@ class EventPublisher:
             return False
         if len(self._queue) < self._queue_max:
             return True
-        next(self._seq)
+        self._next_seq(uid)
         self._overflow += 1
         return False
 
-    def emit_bet(self, fields):
+    def emit_bet(self, fields, uid=None):
         """Queue one bet; ``fields`` follows BET_FIELDS order."""
         if len(fields) != len(BET_FIELDS):
             if self._enabled:
-                next(self._seq)
+                self._next_seq(uid)
                 self._dropped += 1
             return
-        self._emit("bet", fields)
+        self._emit("bet", fields, uid)
 
-    def emit_state(self, state):
+    def emit_state(self, state, uid=None):
         """Queue one state snapshot dict."""
-        self._emit("state", (state,))
+        self._emit("state", (state,), uid)
 
-    def emit_lifecycle(self, kind, data):
+    def emit_lifecycle(self, kind, data, uid=None):
         """Queue one lifecycle event; ``kind`` is one of LIFECYCLE_KINDS."""
-        self._emit("lifecycle", (kind, data))
+        self._emit("lifecycle", (kind, data), uid)
 
-    def _emit(self, kind, values):
+    def _next_seq(self, uid):
+        if not self._scoped:
+            return next(self._seq)
+        counter = self._seqs.get(uid)
+        if counter is None:
+            counter = self._seqs[uid] = itertools.count()
+        return next(counter)
+
+    def _emit(self, kind, values, uid=None):
         if not self._enabled:
             return
         try:
@@ -128,16 +165,33 @@ class EventPublisher:
         except Exception:
             pass
 
+    def _emit_scoped(self, kind, values, uid=None):
+        if not self._enabled:
+            return
+        try:
+            seq = self._next_seq(uid)
+            if len(self._queue) >= self._queue_max:
+                self._overflow += 1
+                return
+            self._queue.extend((kind, uid, seq, time.time_ns() // 1_000_000) + values)
+            self._queued += 1
+        except Exception:
+            pass
+
     def _pop_frame(self):
-        """Take one queued event off the front as (kind, seq, ts_ms, data)."""
+        """Take one queued event off the front as (kind, seq, ts_ms, data), plus uid when scoped."""
         q = self._queue
-        kind, seq, ts_ms = q.popleft(), q.popleft(), q.popleft()
+        kind = q.popleft()
+        uid = q.popleft() if self._scoped else None
+        seq, ts_ms = q.popleft(), q.popleft()
         if kind == "bet":
             data = tuple(q.popleft() for _ in BET_FIELDS)
         elif kind == "lifecycle":
             data = (q.popleft(), q.popleft())
         else:
             data = q.popleft()
+        if self._scoped:
+            return kind, seq, ts_ms, data, uid
         return kind, seq, ts_ms, data
 
     def start(self):
@@ -182,7 +236,7 @@ class EventPublisher:
 
     def encode(self, item):
         """Return (stream key, JSON text) for one queued item."""
-        kind, seq, ts_ms, data = item
+        kind, seq, ts_ms, data, *scope = item
         if kind == "bet":
             if len(data) != len(BET_FIELDS):
                 raise ValueError("bet tuple does not match BET_FIELDS")
@@ -191,12 +245,17 @@ class EventPublisher:
             payload = {"kind": data[0], "data": data[1]}
         else:
             payload = data
+        stream = f"{self._prefix}:{_STREAMS[kind]}"
+        if scope:
+            uid = scope[0]
+            payload = dict(payload, uid=uid)
+            stream = f"{self._prefix}:{uid}:{_STREAMS[kind]}"
         event = {
             "v": SCHEMA_VERSION, "svc": self.svc, "lane": self.lane, "pid": self.pid,
             "seq": seq, "ts_ms": ts_ms, "type": kind, "payload": payload,
         }
         text = json.dumps(event, separators=(",", ":"), allow_nan=False)
-        return f"{self._prefix}:{_STREAMS[kind]}", text
+        return stream, text
 
     def _run(self):
         while not self._stop.wait(self._backoff or _TICK_S):
