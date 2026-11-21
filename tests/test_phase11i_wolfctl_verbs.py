@@ -261,7 +261,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.18" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.19" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():

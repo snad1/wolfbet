@@ -37,8 +37,8 @@ def test_wolfbet_version():
 
 def test_wolfctl_version_constant_3_9():
     src = _wolfctl_src()
-    assert re.search(r"^WOLFCTL_VERSION=3\.18\b", src, re.MULTILINE)
-    assert "Management Command v3.18" in src
+    assert re.search(r"^WOLFCTL_VERSION=3\.19\b", src, re.MULTILINE)
+    assert "Management Command v3.19" in src
 
 
 # ── wolfctl reset: archive-first design ─────────────────

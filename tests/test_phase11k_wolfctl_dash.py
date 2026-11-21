@@ -60,6 +60,9 @@ def host(tmp_path):
             "dash": str(dash), "seed": str(seed)}
 
 
+STACK = "wolfbet-dashboard"
+
+
 def _configure(host, project=UUID, token=True, url="https://coolify.example.com"):
     conf = os.path.join(host["home"], ".config/casino-dashboard")
     _write(os.path.join(conf, "dash.env"),
@@ -106,7 +109,7 @@ def test_status_shows_agent_containers_and_health(host):
     assert "Health: ok (https://wolfbet.example.com)" in result.stdout
     assert _calls(host) == [
         "systemctl --user is-active --quiet casino-agent",
-        f"docker compose -p {UUID} ps",
+        f"docker compose -p {STACK} ps",
         "curl -fsS --max-time 5 https://wolfbet.example.com/api/healthz",
     ]
     down = _wolfctl(host, "status", STUB_AGENT_DOWN="1", STUB_CURL_EXIT="7")
@@ -119,8 +122,8 @@ def test_logs_follow_a_service_the_stack_or_the_agent(host):
     assert _wolfctl(host, "logs").returncode == 0
     assert _wolfctl(host, "logs", "agent").returncode == 0
     assert _calls(host) == [
-        f"docker compose -p {UUID} logs -f --tail 200 api",
-        f"docker compose -p {UUID} logs -f --tail 200",
+        f"docker compose -p {STACK} logs -f --tail 200 api",
+        f"docker compose -p {STACK} logs -f --tail 200",
         "journalctl --user -u casino-agent -f --no-pager",
     ]
     bad = _wolfctl(host, "logs", "wolfbet")
@@ -133,19 +136,29 @@ def test_start_and_stop_touch_only_the_dashboard(host):
     assert _wolfctl(host, "start").returncode == 0
     calls = _calls(host)
     assert calls == [
-        f"docker compose -p {UUID} stop",
+        f"docker compose -p {STACK} stop",
         "systemctl --user stop casino-agent",
         "systemctl --user start casino-agent",
-        f"docker compose -p {UUID} start",
+        f"docker compose -p {STACK} start",
     ]
-    assert not any("wolfbet" in c for c in calls)
+    assert not any(c.startswith("systemctl") and "wolfbet" in c for c in calls)
 
 
-def test_stack_commands_need_the_coolify_app(host):
+def test_stack_commands_use_the_compose_project_not_the_coolify_app(host):
     _configure(host, project="")
-    result = _wolfctl(host, "stop")
-    assert result.returncode == 2 and "--coolify-app" in result.stderr
-    assert _calls(host) == []
+    assert _wolfctl(host, "stop").returncode == 0
+    assert _calls(host)[0] == f"docker compose -p {STACK} stop"
+    status = _wolfctl(host, "status")
+    assert status.returncode == 0 and f"docker compose -p {STACK} ps" in _calls(host)
+
+
+def test_a_compose_project_override_is_honoured(host):
+    _configure(host)
+    conf = os.path.join(host["home"], ".config/casino-dashboard/dash.env")
+    with open(conf, "a") as f:
+        f.write("DASH_COMPOSE_PROJECT=other-stack\n")
+    assert _wolfctl(host, "stop").returncode == 0
+    assert _calls(host)[0] == "docker compose -p other-stack stop"
 
 
 def test_update_pulls_updates_the_agent_and_deploys(host):
@@ -195,5 +208,5 @@ def test_a_refused_deploy_fails(host):
 def test_version_and_usage_mention_dash():
     with open(_WOLFCTL) as f:
         text = f.read()
-    assert "WOLFCTL_VERSION=3.18" in text
+    assert "WOLFCTL_VERSION=3.19" in text
     assert "wolfctl dash status" in text

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.18
+# WolfBet AutoBot - Unified Management Command v3.19
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -21,6 +21,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.16 - dash status|logs|start|stop|update for the dashboard (Coolify stack + agent)
 # v3.17 - web retire|restore: the old web gives way to the dashboard; stop-all stops it too
 # v3.18 - the old web is removed; web remove clears a leftover unit (its data dir is kept)
+# v3.19 - dash uses the compose project name; the Coolify app id is only for deploys
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -33,11 +34,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.18
+WOLFCTL_VERSION=3.19
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.18"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.19"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -481,7 +482,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.18"
+    echo "  wolfctl v3.19"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1216,21 +1217,16 @@ dash_load() {
         echo "Dashboard not installed: run casino-dashboard/deploy/install.sh" >&2
         exit 2
     fi
-    DASH_DIR="" DASH_PROJECT="" DASH_HOST="" COOLIFY_URL=""
+    DASH_DIR="" DASH_PROJECT="" DASH_HOST="" COOLIFY_URL="" DASH_COMPOSE_PROJECT=""
     # shellcheck disable=SC1091
     . "$DASH_CONF/dash.env"
     DASH_DIR="${WOLFCTL_DASH_DIR:-${DASH_DIR:-$HOME/casino-dashboard}}"
-}
-
-dash_need_project() {
-    if [ -z "$DASH_PROJECT" ]; then
-        echo "No Coolify app set: re-run install.sh with --coolify-app UUID" >&2
-        exit 2
-    fi
+    # The compose file names its project; DASH_PROJECT is the Coolify app, used only to deploy.
+    DASH_COMPOSE_PROJECT="${DASH_COMPOSE_PROJECT:-wolfbet-dashboard}"
 }
 
 dash_compose() {
-    docker compose -p "$DASH_PROJECT" "$@"
+    docker compose -p "$DASH_COMPOSE_PROJECT" "$@"
 }
 
 dash_update() {
@@ -1279,11 +1275,7 @@ cmd_dash() {
             else
                 echo "  Agent:  stopped"
             fi
-            if [ -n "$DASH_PROJECT" ]; then
-                dash_compose ps
-            else
-                echo "  Stack:  no Coolify app set"
-            fi
+            dash_compose ps
             if [ -n "$DASH_HOST" ]; then
                 if curl -fsS --max-time 5 "https://$DASH_HOST/api/healthz" >/dev/null 2>&1; then
                     echo "  Health: ok (https://$DASH_HOST)"
@@ -1302,17 +1294,14 @@ cmd_dash() {
                 echo "Unknown service: $svc" >&2
                 dash_usage
             fi
-            dash_need_project
             dash_compose logs -f --tail 200 ${svc:+"$svc"}
             ;;
         start)
-            dash_need_project
             systemctl --user start "$AGENT_UNIT"
             dash_compose start
             echo "Dashboard started."
             ;;
         stop)
-            dash_need_project
             dash_compose stop
             systemctl --user stop "$AGENT_UNIT"
             echo "Dashboard stopped. The bots keep running."

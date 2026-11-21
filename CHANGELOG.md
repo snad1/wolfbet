@@ -1,5 +1,14 @@
 # Changelog
 
+## wolfctl v3.19 - dash finds the Coolify-deployed stack (2026-11-21)
+
+- `wolfctl dash status|logs|start|stop` now run `docker compose -p wolfbet-dashboard`, the project name `deploy/compose.yml` sets for itself. They used the Coolify app id (`DASH_PROJECT`), but Coolify keeps the compose file's name, so they found no containers: `status` showed an empty table, and `stop` and `start` did nothing. To use another project, set `DASH_COMPOSE_PROJECT=` in `~/.config/casino-dashboard/dash.env`.
+- `DASH_PROJECT` is now only used by `wolfctl dash update`, to queue the Coolify deploy. The stack commands no longer stop when it is unset.
+
+**Tests**: `tests/test_phase11k_wolfctl_dash.py` expects the compose project. Two new tests: the stack commands work without a Coolify app, and an override is honoured. The version pins are updated.
+
+`WOLFCTL_VERSION` `3.18` -> `3.19`.
+
 ## wolfctl v3.18 / TG v1.25.0 - the old web is removed (2026-11-21)
 
 - `web/` is deleted: the FastAPI app, its `install.sh`, its requirements and its three test files. The dashboard serves its pages (`casino-dashboard/docs/parity/old-web.md` lists where each one went). `casino-shared/web` stays, because the five other bots still import `shared.web`.
