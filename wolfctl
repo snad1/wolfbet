@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.19
+# WolfBet AutoBot - Unified Management Command v3.20
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -22,6 +22,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.17 - web retire|restore: the old web gives way to the dashboard; stop-all stops it too
 # v3.18 - the old web is removed; web remove clears a leftover unit (its data dir is kept)
 # v3.19 - dash uses the compose project name; the Coolify app id is only for deploys
+# v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -34,11 +35,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.19
+WOLFCTL_VERSION=3.20
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.19"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.20"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -482,7 +483,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.19"
+    echo "  wolfctl v3.20"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1126,11 +1127,27 @@ cmd_start_all() {
     cmd_status_all
 }
 
+# Reports success only after systemd confirms every bot unit is down: an unreachable user
+# manager makes each `stop` fail quietly, and that must not read as "stopped".
 cmd_stop_all() {
+    local unit state k left=()
     echo "Stopping all services..."
+    stop_all_lanes
     systemctl --user stop "$SERVICE" 2>/dev/null || true
     systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
     systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
+    for unit in "$SERVICE" "$TG_SERVICE" $(for k in $(seq 2 "$LANES_MAX"); do echo "${LANE_SERVICE}@${k}"; done); do
+        state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+        case "$state" in
+            inactive|failed) ;;
+            '') echo "Cannot reach the user's systemd to check $unit (is XDG_RUNTIME_DIR set?)." >&2; exit 1 ;;
+            *) left+=("$unit ($state)") ;;
+        esac
+    done
+    if [ "${#left[@]}" -gt 0 ]; then
+        echo "Still running: ${left[*]}" >&2
+        exit 1
+    fi
     echo "All services stopped."
 }
 

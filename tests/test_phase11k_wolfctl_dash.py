@@ -208,5 +208,5 @@ def test_a_refused_deploy_fails(host):
 def test_version_and_usage_mention_dash():
     with open(_WOLFCTL) as f:
         text = f.read()
-    assert "WOLFCTL_VERSION=3.19" in text
+    assert "WOLFCTL_VERSION=3.20" in text
     assert "wolfctl dash status" in text

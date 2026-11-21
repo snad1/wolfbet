@@ -40,6 +40,25 @@ def _write(path, text, mode=None):
         os.chmod(path, mode)
 
 
+# Like systemd: `is-active` prints the state unless --quiet, and exits 3 for a stopped unit.
+# Units named in $HOME/active.txt stay active; $HOME/no-bus makes every call fail like a
+# missing XDG_RUNTIME_DIR does.
+_SYSTEMCTL = textwrap.dedent("""\
+    #!/bin/sh
+    [ -f "$HOME/no-bus" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }
+    case "$*" in
+        *is-active*)
+            unit=$(for a in "$@"; do last=$a; done; echo "$last")
+            if grep -qx "$unit" "$HOME/active.txt" 2>/dev/null; then state=active; code=0
+            else state=inactive; code=3; fi
+            case "$*" in *--quiet*) ;; *) echo "$state" ;; esac
+            exit $code ;;
+        *is-enabled*) exit 1 ;;
+    esac
+    exit 0
+    """)
+
+
 @pytest.fixture
 def host(tmp_path):
     """Temp HOME with a stub python3, stub systemctl/sqlite3/free/pgrep and an empty fake /proc."""
@@ -50,7 +69,7 @@ def host(tmp_path):
         echo "$*" >> "$HOME/python.log"
         case "$*" in *--json*) echo '{"v": 1}' ;; esac
         """), 0o755)
-    _write(str(stubs / "systemctl"), '#!/bin/sh\ncase "$*" in *is-active*|*is-enabled*) exit 1 ;; esac\nexit 0\n', 0o755)
+    _write(str(stubs / "systemctl"), _SYSTEMCTL, 0o755)
     _write(str(stubs / "sqlite3"), "#!/bin/sh\necho 0\n", 0o755)
     _write(str(stubs / "journalctl"), "#!/bin/sh\nexit 0\n", 0o755)
     _write(str(stubs / "free"), "#!/bin/sh\necho mem\n", 0o755)
@@ -227,6 +246,22 @@ def test_cleanup_accepts_yes_and_keeps_days(host):
     assert _python_calls(host)[-1].endswith("--cleanup")
 
 
+def test_stop_all_fails_and_names_a_unit_that_is_still_running(host):
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@3\n")
+    r = _wolfctl(host, "stop-all")
+    assert r.returncode == 1
+    assert "Still running: wolfbet-lane@3 (active)" in r.stderr
+    assert "All services stopped." not in r.stdout
+
+
+def test_stop_all_fails_when_the_user_systemd_cannot_be_reached(host):
+    _write(os.path.join(host["home"], "no-bus"), "")
+    r = _wolfctl(host, "stop-all")
+    assert r.returncode == 1
+    assert "Cannot reach the user's systemd" in r.stderr
+    assert "All services stopped." not in r.stdout
+
+
 def test_stop_all_and_update_accept_yes(host):
     r = _wolfctl(host, "stop-all", "--yes")
     assert r.returncode == 0 and "All services stopped." in r.stdout
@@ -261,7 +296,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.19" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.20" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():

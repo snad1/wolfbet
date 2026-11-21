@@ -1,5 +1,14 @@
 # Changelog
 
+## wolfctl v3.20 - stop-all only reports what really stopped (2026-11-21)
+
+- `wolfctl stop-all` now stops lanes 2-10 too, as `wolfctl stop` already does. Before, extra lanes kept betting after "Stop all".
+- It then asks systemd for each bot unit (`wolfbet`, `wolfbet-tg`, `wolfbet-lane@2..10`). A unit still running prints `Still running: <unit> (<state>)`, and a user manager it cannot reach (no `XDG_RUNTIME_DIR`) prints `Cannot reach the user's systemd ...`; both exit 1. "All services stopped." is printed only when every unit is down. Before, each stop was `|| true`, so an unreachable systemd still printed "All services stopped." while the bots kept betting.
+
+**Tests**: `tests/test_phase11i_wolfctl_verbs.py` gets a `systemctl` stub that prints unit states like systemd, and two new tests: a lane left running, and no reachable systemd. The version pins are updated.
+
+`WOLFCTL_VERSION` `3.19` -> `3.20`.
+
 ## wolfctl v3.19 - dash finds the Coolify-deployed stack (2026-11-21)
 
 - `wolfctl dash status|logs|start|stop` now run `docker compose -p wolfbet-dashboard`, the project name `deploy/compose.yml` sets for itself. They used the Coolify app id (`DASH_PROJECT`), but Coolify keeps the compose file's name, so they found no containers: `status` showed an empty table, and `stop` and `start` did nothing. To use another project, set `DASH_COMPOSE_PROJECT=` in `~/.config/casino-dashboard/dash.env`.
