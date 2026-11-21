@@ -5,6 +5,7 @@ Bench: add `-m bench -s` to print per-bet cost with events off, on, and on with 
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -93,6 +94,40 @@ def published(monkeypatch):
 
 
 # ── scoped publisher ───────────────────────────────────────
+_FIXTURES = os.path.join(_HERE, "fixtures", "tg_events_v1")
+_FIXTURE_BET = (3, 0.00000002, 2.0, "over", 49.5, 75.31, "win", 0.00000002, 2.52702731,
+                0.00000005, 4, 1, 31.0)
+
+
+@pytest.mark.parametrize("name, item", [
+    ("bet", ("bet", 17, 1795200000123, _FIXTURE_BET, 42)),
+    ("state", ("state", 18, 1795200000200, {
+        "session_id": 3, "running": True, "paused": False, "currency": "usdt",
+        "strategy": "Martingale", "total_bets": 4, "profit": 0.00000005,
+        "current_balance": 2.52702731, "bets_per_second": 9.5}, 42)),
+    ("lifecycle", ("lifecycle", 19, 1795200000300, ("session_close", {
+        "session_id": 3, "total_bets": 4, "wins": 3, "losses": 1, "profit": 0.00000005,
+        "wagered": 0.00000008, "end_balance": 2.52702731}), 42)),
+])
+def test_scoped_encoder_matches_contract_fixtures(name, item):
+    pub = EventPublisher("redis://unused", stream_prefix="wolfbet-tg", scoped=True)
+    pub.pid = 4242
+    stream, text = pub.encode(item)
+    with open(os.path.join(_FIXTURES, f"{name}.json")) as f:
+        assert json.loads(text) == json.load(f)
+    assert stream == {"bet": "wolfbet-tg:42:bets", "state": "wolfbet-tg:42:state",
+                      "lifecycle": "wolfbet-tg:42:lifecycle"}[name]
+
+
+def test_tg_fixture_copies_match_contract_checksums():
+    with open(os.path.join(_FIXTURES, "SHA256SUMS")) as f:
+        sums = dict(reversed(line.split()) for line in f if line.strip())
+    assert set(sums) == {"bet.json", "state.json", "lifecycle.json"}
+    for name, digest in sums.items():
+        with open(os.path.join(_FIXTURES, name), "rb") as f:
+            assert hashlib.sha256(f.read()).hexdigest() == digest, name
+
+
 def test_scoped_events_go_to_the_users_streams_with_uid_in_the_payload():
     client = _Redis()
     pub = _scoped(client)

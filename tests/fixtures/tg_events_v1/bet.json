@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "svc": "wolfbet-tg",
+  "lane": 1,
+  "pid": 4242,
+  "seq": 17,
+  "ts_ms": 1795200000123,
+  "type": "bet",
+  "payload": {
+    "session_id": 3,
+    "amount": 2e-08,
+    "multiplier": 2.0,
+    "rule": "over",
+    "bet_value": 49.5,
+    "result_value": 75.31,
+    "state": "win",
+    "profit": 2e-08,
+    "balance_after": 2.52702731,
+    "session_profit": 5e-08,
+    "total_bets": 4,
+    "current_streak": 1,
+    "api_ms": 31.0,
+    "uid": 42
+  }
+}

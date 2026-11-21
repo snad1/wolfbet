@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "svc": "wolfbet-tg",
+  "lane": 1,
+  "pid": 4242,
+  "seq": 19,
+  "ts_ms": 1795200000300,
+  "type": "lifecycle",
+  "payload": {
+    "kind": "session_close",
+    "data": {
+      "session_id": 3,
+      "total_bets": 4,
+      "wins": 3,
+      "losses": 1,
+      "profit": 5e-08,
+      "wagered": 8e-08,
+      "end_balance": 2.52702731
+    },
+    "uid": 42
+  }
+}
