@@ -105,6 +105,19 @@ def test_load_config_applies_lane_overrides(monkeypatch, tmp_path):
     assert wb.state.base_bet == 0.0001 and wb.state.max_wins == 5
 
 
+def test_a_lane_loads_its_own_game_and_derives_its_bet_value(monkeypatch, tmp_path):
+    _config(monkeypatch, tmp_path, {**BASE, "game": "dice", "lanes": {"count": 2, "overrides": {
+        "2": {"game": "dice-auto", "rule": "under", "multiplier": 3.0}}}})
+    monkeypatch.setattr(wb, "_apply_proxy_to_session", lambda: None)
+    wb.state.lane = 2
+    assert wb.load_config()
+    assert (wb.state.game, wb.state.rule) == ("dice-auto", "under")
+    assert wb.state.bet_value == wb._derive_bet_value(3.0, "under")
+    wb.state.lane = 1
+    assert wb.load_config()
+    assert (wb.state.game, wb.state.rule) == ("dice", "over")
+
+
 def test_save_config_keeps_lanes_block_and_lane_k_never_writes(monkeypatch, tmp_path):
     path = _config(monkeypatch, tmp_path, {**BASE, "lanes": {"count": 2, "overrides": {"2": {"max_wins": 1}}}})
     monkeypatch.setattr(wb, "_apply_proxy_to_session", lambda: None)
@@ -363,7 +376,7 @@ def test_wolfctl_lane_commands():
     assert '"$PYTHON" "$BOT" --monitor --lane "$k"' in s
     assert "--lanes-status" in s
     assert "stop_all_lanes" in s and "sync_lanes" in s
-    assert "WOLFCTL_VERSION=3.20" in s
+    assert "WOLFCTL_VERSION=3.21" in s
 
 
 def test_install_writes_lane_template():

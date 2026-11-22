@@ -272,14 +272,9 @@ def test_game_needs_a_restart_to_apply():
     assert "game" not in wb._LIVE_RELOAD_KEYS
 
 
-def test_game_cannot_differ_per_lane():
-    assert "game" in wb._LANE_FORBIDDEN_KEYS
-    try:
-        wb._lane_override_changes(2, ["game=dice"])
-    except ValueError as e:
-        assert "can't differ per lane" in str(e)
-    else:
-        raise AssertionError("expected ValueError for a per-lane game override")
+def test_game_and_rule_may_differ_per_lane():
+    assert "game" not in wb._LANE_FORBIDDEN_KEYS
+    assert "rule" not in wb._LANE_FORBIDDEN_KEYS
 
 
 # ── the opening strategy is settable from config-set ──────

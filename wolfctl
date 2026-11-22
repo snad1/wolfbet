@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.20
+# WolfBet AutoBot - Unified Management Command v3.21
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -22,6 +22,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.17 - web retire|restore: the old web gives way to the dashboard; stop-all stops it too
 # v3.18 - the old web is removed; web remove clears a leftover unit (its data dir is kept)
 # v3.19 - dash uses the compose project name; the Coolify app id is only for deploys
+# v3.21 - stop K / start K stop or start one extra lane; the others keep betting
 # v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
@@ -35,16 +36,16 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.20
+WOLFCTL_VERSION=3.21
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.20"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.21"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
-    echo "    wolfctl start         Start CLI bot as daemon"
-    echo "    wolfctl stop          Stop CLI bot"
+    echo "    wolfctl start [K]     Start CLI bot as daemon, or only lane K (2-10)"
+    echo "    wolfctl stop [K]      Stop CLI bot, or only lane K (2-10); start/restart bring every lane back"
     echo "    wolfctl restart       Restart CLI bot"
     echo "    wolfctl status        Show CLI bot status (--json: session state only)"
     echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
@@ -281,6 +282,7 @@ cmd_lanes() {
 }
 
 cmd_start() {
+    if [ -n "${1:-}" ]; then cmd_lane_unit start "$1"; return; fi
     if [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
         echo "No config found. Run 'wolfctl setup' first."
         exit 1
@@ -362,7 +364,36 @@ cmd_signal() {
     fi
 }
 
+# Start or stop one extra lane (2..N); lane 1 is the main service, so it has no verb here.
+cmd_lane_unit() {
+    local verb=$1 k=$2 n unit state
+    case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl $verb [K]  (K = lane 2-$LANES_MAX)" >&2; exit 2 ;; esac
+    k=$((10#$k))
+    n=$(lane_count)
+    if [ "$k" -eq 1 ]; then
+        echo "Lane 1 is the main service: use 'wolfctl $verb' without a lane." >&2; exit 2
+    fi
+    if [ "$k" -lt 2 ] || [ "$k" -gt "${n:-1}" ]; then
+        echo "No lane $k: this bot runs ${n:-1} lane(s)." >&2; exit 2
+    fi
+    unit="${LANE_SERVICE}@${k}"
+    systemctl --user "$verb" "$unit" 2>/dev/null || true
+    [ "$verb" = start ] && sleep 1
+    state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
+    if [ -z "$state" ]; then
+        echo "Cannot reach the user's systemd to check $unit (is XDG_RUNTIME_DIR set?)." >&2; exit 1
+    fi
+    if [ "$verb" = start ]; then
+        [ "$state" = active ] || { echo "Lane $k did not start ($state)." >&2; exit 1; }
+        echo "Lane $k started."
+    else
+        case "$state" in inactive|failed) ;; *) echo "Lane $k is still $state." >&2; exit 1 ;; esac
+        echo "Lane $k stopped. Other lanes keep betting."
+    fi
+}
+
 cmd_stop() {
+    if [ -n "${1:-}" ]; then cmd_lane_unit stop "$1"; return; fi
     stop_all_lanes
     systemctl --user stop "$SERVICE"
     echo "CLI bot stopped."
@@ -483,7 +514,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.20"
+    echo "  wolfctl v3.21"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1332,8 +1363,8 @@ cmd_dash() {
 # ── Dispatch ─────────────────────────────────────────
 case "${1:-}" in
     setup)        cmd_setup ;;
-    start)        cmd_start ;;
-    stop)         cmd_stop ;;
+    start)        shift; cmd_start "$@" ;;
+    stop)         shift; cmd_stop "$@" ;;
     restart)      cmd_restart ;;
     status)       shift; cmd_status "$@" ;;
     pause)        cmd_signal pause USR1 "${2:-all}" ;;

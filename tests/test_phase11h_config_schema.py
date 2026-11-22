@@ -356,10 +356,18 @@ def test_custom_rules_are_parsed_and_bad_text_is_refused(env, capsys):
     assert code == 0 and _rows(doc)["custom_rules_text"] == ""
 
 
-@pytest.mark.parametrize("pair", ["lane2.rule=under", "lane2.delay_martin_threshold=4",
-                                  "lane2.currency=btc"])
+@pytest.mark.parametrize("pair", ["lane2.delay_martin_threshold=4", "lane2.currency=btc"])
 def test_wizard_keys_cannot_differ_per_lane(env, capsys, pair):
     doc, code = _dry(env, capsys, pair)
+    assert code == 2
+
+
+def test_a_lane_may_bet_its_own_game_and_rule(env, capsys):
+    doc, code = _dry(env, capsys, "lane2.game=limbo", "lane2.rule=under")
+    assert code == 0
+    lane = {row["key"]: row["new"] for row in doc["lanes"]["2"]}
+    assert lane["game"] == "limbo" and lane["rule"] == "under"
+    doc, code = _dry(env, capsys, "lane2.game=slots")
     assert code == 2
 
 

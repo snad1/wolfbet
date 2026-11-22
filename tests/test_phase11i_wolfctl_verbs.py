@@ -67,6 +67,7 @@ def host(tmp_path):
     _write(str(home / "wolfbet-bot/venv/bin/python3"), textwrap.dedent("""\
         #!/bin/sh
         echo "$*" >> "$HOME/python.log"
+        [ "$1" = - ] && [ -f "$HOME/lanes.txt" ] && { cat "$HOME/lanes.txt"; exit 0; }
         case "$*" in *--json*) echo '{"v": 1}' ;; esac
         """), 0o755)
     _write(str(stubs / "systemctl"), _SYSTEMCTL, 0o755)
@@ -296,8 +297,41 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.20" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.21" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():
     assert subprocess.run(["bash", "-n", _WOLFCTL]).returncode == 0
+
+
+def test_stop_one_lane_leaves_the_others(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    r = _wolfctl(host, "stop", "2")
+    assert r.returncode == 0, r.stderr
+    assert "Lane 2 stopped. Other lanes keep betting." in r.stdout
+
+
+def test_a_lane_that_keeps_running_fails_the_stop(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@3\n")
+    r = _wolfctl(host, "stop", "3")
+    assert r.returncode == 1 and "Lane 3 is still active." in r.stderr
+
+
+def test_start_one_lane_checks_it_came_up(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@2\n")
+    assert "Lane 2 started." in _wolfctl(host, "start", "2").stdout
+    r = _wolfctl(host, "start", "3")
+    assert r.returncode == 1 and "Lane 3 did not start (inactive)." in r.stderr
+
+
+@pytest.mark.parametrize("lane,message", [
+    ("1", "Lane 1 is the main service"),
+    ("4", "No lane 4: this bot runs 3 lane(s)."),
+    ("x", "Usage: wolfctl stop [K]"),
+])
+def test_a_lane_stop_refuses_lane_one_and_lanes_that_do_not_exist(host, lane, message):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    r = _wolfctl(host, "stop", lane)
+    assert r.returncode == 2 and message in r.stderr

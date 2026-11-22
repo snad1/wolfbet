@@ -980,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.45.0"
+VERSION      = "2.46.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1009,9 +1009,10 @@ LANES_MAX = 10
 AUTOSTART_LOCK_PATH = os.environ.get(
     "WOLFBET_AUTOSTART_LOCK", os.path.expanduser("~/.wolfbet_autostart.lock"))
 # Never overridable per lane: identity, account, network and storage settings.
+# Game and dice rule may differ: each lane is its own process with its own auto-bet state.
 _LANE_FORBIDDEN_KEYS = {
-    "api_key", "currency", "game", "proxy", "purge_days", "db_write_mode",
-    "pipeline_depth", "events_enabled", "events_url", "rule", "delay_martin_threshold",
+    "api_key", "currency", "proxy", "purge_days", "db_write_mode",
+    "pipeline_depth", "events_enabled", "events_url", "delay_martin_threshold",
 }
 
 

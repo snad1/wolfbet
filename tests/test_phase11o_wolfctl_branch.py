@@ -170,7 +170,7 @@ def test_status_shows_branch_commit_and_lead_over_main(site):
 def test_usage_and_version(site):
     out = _wolfctl(site, "help").stdout
     assert "wolfctl update --branch NAME" in out and "4 the checkout has local changes" in out
-    assert "wolfctl v3.20" in _wolfctl(site, "version").stdout
+    assert "wolfctl v3.21" in _wolfctl(site, "version").stdout
 
 
 def test_wolfctl_syntax_valid():

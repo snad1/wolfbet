@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.46.0 + wolfctl v3.21 - each lane can bet its own game, and one lane can be stopped (2026-11-22)
+
+- `game` and `rule` may now differ per lane: `--config-set lane2.game=limbo lane2.rule=under`. Each lane is its own process with its own auto-bet state, and it derives `bet_value` from its own multiplier and rule when it loads. `--config-schema` reports both as `lane_overridable`, so the dashboard's lane tabs show them. `currency`, the API key, proxy and storage settings stay shared.
+- `wolfctl stop K` and `wolfctl start K` stop or start only lane K (2 up to the lane count). The other lanes keep betting. The result is checked with systemd: a lane still running after stop, or not running after start, exits 1; a systemd it cannot reach exits 1 too. Lane 1 is the main service, so `stop 1` exits 2 and points to plain `stop`; a lane above the count exits 2. `wolfctl start` and `restart` without K still bring every lane back.
+
+**Tests**: `tests/test_phase11h_config_schema.py` and `tests/test_phase10_lanes.py` cover a per-lane game and rule, a lane loading them with its own bet value, and currency still refused per lane. `tests/test_phase11i_wolfctl_verbs.py` covers stop and start of one lane, a lane that stays up, one that does not start, and the refused lane numbers. The version pins are updated.
+
+`VERSION` `2.45.0` -> `2.46.0`, `WOLFCTL_VERSION` `3.20` -> `3.21`.
+
 ## v2.45.0 - config-set takes currency, rule, the Delay Martingale threshold and custom rules (2026-11-22)
 
 - `--config-set` (and the dashboard's Config page) now accepts four keys only the setup wizard could set: `currency` (one of the supported coins), `rule` (`over` or `under`), `delay_martin_threshold` (a whole number of at least 1) and `custom_rules_text` (Rule-Based rules as JSON or `onEvery...` lines, at most 4000 characters; `off` clears them).
