@@ -376,3 +376,15 @@ def test_the_schema_publishes_the_rules_limit(env, capsys):
     assert keys["custom_rules_text"]["format"] == "rules"
     assert keys["custom_rules_text"]["max_length"] == wb.RULES_MAX_CHARS
     assert keys["currency"]["choices"] == list(wb.CURRENCIES)
+
+
+def test_the_rules_key_carries_the_wizards_menus(env, capsys):
+    keys = {k["key"]: k for k in _schema_doc(capsys)["keys"]}
+    options = keys["custom_rules_text"]["rule_options"]
+    assert options["cond_types"] == ["sequence", "profit", "bet"]
+    assert [m["key"] for m in options["seq_modes"]] == [k for k, _ in wb.SEQ_MODES.values()]
+    assert [a["key"] for a in options["actions"]] == [k for k, _ in wb.RULE_ACTIONS.values()]
+    takes_value = {a["key"]: a["value"] for a in options["actions"]}
+    assert not takes_value["switch"] and not takes_value["stop"] and not takes_value["reset_amount"]
+    assert takes_value["increase_amount"] and takes_value["set_payout"]
+    assert sum("rule_options" in k for k in keys.values()) == 1

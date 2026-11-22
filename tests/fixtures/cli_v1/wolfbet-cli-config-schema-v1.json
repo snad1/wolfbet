@@ -68,6 +68,28 @@
             "type": "integer",
             "minimum": 1
           },
+          "rule_options": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cond_types", "seq_modes", "seq_triggers", "profit_fields", "bet_fields", "ops", "actions"],
+            "properties": {
+              "cond_types": {"type": "array", "items": {"type": "string"}},
+              "seq_modes": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["key", "label"], "properties": {"key": {"type": "string"}, "label": {"type": "string"}}}},
+              "seq_triggers": {"type": "array", "items": {"type": "string"}},
+              "profit_fields": {"type": "array", "items": {"type": "string"}},
+              "bet_fields": {"type": "array", "items": {"type": "string"}},
+              "ops": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["key", "label"], "properties": {"key": {"type": "string"}, "label": {"type": "string"}}}},
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["key", "label", "value"],
+                  "properties": {"key": {"type": "string"}, "label": {"type": "string"}, "value": {"type": "boolean"}}
+                }
+              }
+            }
+          },
           "schemes": {
             "type": "array",
             "items": {

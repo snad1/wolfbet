@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.47.0 - the config schema carries the rule menus (2026-11-22)
+
+- `--config-schema` gives `custom_rules_text` a `rule_options` object: the condition types, sequence modes and events, profit and bet fields, comparison operators, and every rule action with whether it takes a value. These are the setup wizard's own tables, so a rule builder (the dashboard's Config page) offers exactly what the bot runs. The schema file allows the new object.
+
+**Tests**: `tests/test_phase11h_config_schema.py` checks the menus match the wizard's tables, that reset, switch and stop take no value, and that only the rules key carries them. The version pins are updated.
+
+`VERSION` `2.46.0` -> `2.47.0`.
+
 ## v2.46.0 + wolfctl v3.21 - each lane can bet its own game, and one lane can be stopped (2026-11-22)
 
 - `game` and `rule` may now differ per lane: `--config-set lane2.game=limbo lane2.rule=under`. Each lane is its own process with its own auto-bet state, and it derives `bet_value` from its own multiplier and rule when it loads. `--config-schema` reports both as `lane_overridable`, so the dashboard's lane tabs show them. `currency`, the API key, proxy and storage settings stay shared.

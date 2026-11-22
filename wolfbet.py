@@ -980,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.46.0"
+VERSION      = "2.47.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -7120,6 +7120,24 @@ def _rule_bounds(key: str) -> tuple:
     return rule["min"], rule["max"]
 
 
+_VALUELESS_ACTIONS = frozenset({"switch", "stop"})
+
+
+def _rule_options() -> dict:
+    """The wizard's rule menus (condition, fields, operators, actions) for a rule builder."""
+    return {
+        "cond_types": list(COND_TYPES.values()),
+        "seq_modes": [{"key": key, "label": label} for key, label in SEQ_MODES.values()],
+        "seq_triggers": list(SEQ_TRIGGERS.values()),
+        "profit_fields": list(PROFIT_FIELDS.values()),
+        "bet_fields": list(BET_FIELDS.values()),
+        "ops": [{"key": key, "label": label} for key, label in CMP_OPS.values()],
+        "actions": [{"key": key, "label": label,
+                     "value": not (key.startswith("reset_") or key in _VALUELESS_ACTIONS)}
+                    for key, label in RULE_ACTIONS.values()],
+    }
+
+
 def _config_schema_data() -> dict:
     """Every key --config-set accepts: value rule, aliases, default, live reload, lane override, help."""
     defaults = BotState()
@@ -7136,6 +7154,9 @@ def _config_schema_data() -> dict:
              "lane_overridable": key not in _LANE_FORBIDDEN_KEYS,
              "help": helps[key]}
             for key in sorted(_TWEAK_PARAMS)]
+    for entry in keys:
+        if entry["key"] == "custom_rules_text":
+            entry["rule_options"] = _rule_options()
     return {"keys": keys,
             "lanes": {"count": {"min": 1, "max": LANES_MAX},
                       "split": {"choices": list(LANE_SPLIT_MODES)},
