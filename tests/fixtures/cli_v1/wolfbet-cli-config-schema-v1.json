@@ -60,8 +60,13 @@
           "format": {
             "enum": [
               "N:X",
-              "url"
+              "url",
+              "rules"
             ]
+          },
+          "max_length": {
+            "type": "integer",
+            "minimum": 1
           },
           "schemes": {
             "type": "array",

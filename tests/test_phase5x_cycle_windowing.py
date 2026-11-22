@@ -168,4 +168,4 @@ def test_cmd_diagnose_source_has_efficiency_over_100_flag():
 
 # ── Version ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.44.0"
+    assert wb.VERSION == "2.45.0"

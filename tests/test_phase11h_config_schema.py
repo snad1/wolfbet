@@ -314,3 +314,57 @@ def test_cli_flag_combinations(env):
     assert r.returncode == 2 and "--dry-run works with --config-set only" in r.stderr
     r = _cli("--json", "--config-set", "maxloss=0.01")
     assert r.returncode == 2 and r.stdout == ""
+
+
+# ── keys the setup wizard used to own ──
+def _rows(doc):
+    return {row["key"]: row["new"] for row in doc["base"]}
+
+
+def test_a_rule_change_re_derives_the_bet_value(env, capsys):
+    doc, code = _dry(env, capsys, "rule=under")
+    rows = _rows(doc)
+    assert code == 0 and rows["rule"] == "under"
+    assert rows["bet_value"] == wb._derive_bet_value(wb.state.multiplier, "under")
+
+
+def test_rule_and_multiplier_together_derive_from_both(env, capsys):
+    doc, code = _dry(env, capsys, "rule=under", "multiplier=3")
+    assert code == 0
+    assert _rows(doc)["bet_value"] == wb._derive_bet_value(3.0, "under")
+
+
+@pytest.mark.parametrize("value,ok", [("5", True), ("1", True), ("0", False), ("2.5", False),
+                                      ("abc", False)])
+def test_delay_martingale_threshold_is_a_whole_number_of_at_least_one(env, capsys, value, ok):
+    doc, code = _dry(env, capsys, f"delay_martin_threshold={value}")
+    assert (code == 0) is ok
+    if ok:
+        assert _rows(doc)["delay_martin_threshold"] == int(value)
+
+
+def test_custom_rules_are_parsed_and_bad_text_is_refused(env, capsys):
+    rule = wb._load_rules_from_text("onEvery3loseReset")[0]
+    text = json.dumps([rule.to_dict()])
+    doc, code = _dry(env, capsys, f"custom_rules_text={text}")
+    assert code == 0 and _rows(doc)["custom_rules_text"] == text
+    doc, code = _dry(env, capsys, "custom_rules_text=not a rule")
+    assert code == 2 and "no valid rule found" in doc["error"]["message"]
+    doc, code = _dry(env, capsys, "custom_rules_text=x" + "y" * wb.RULES_MAX_CHARS)
+    assert code == 2
+    doc, code = _dry(env, capsys, "custom_rules_text=off")
+    assert code == 0 and _rows(doc)["custom_rules_text"] == ""
+
+
+@pytest.mark.parametrize("pair", ["lane2.rule=under", "lane2.delay_martin_threshold=4",
+                                  "lane2.currency=btc"])
+def test_wizard_keys_cannot_differ_per_lane(env, capsys, pair):
+    doc, code = _dry(env, capsys, pair)
+    assert code == 2
+
+
+def test_the_schema_publishes_the_rules_limit(env, capsys):
+    keys = {k["key"]: k for k in _schema_doc(capsys)["keys"]}
+    assert keys["custom_rules_text"]["format"] == "rules"
+    assert keys["custom_rules_text"]["max_length"] == wb.RULES_MAX_CHARS
+    assert keys["currency"]["choices"] == list(wb.CURRENCIES)

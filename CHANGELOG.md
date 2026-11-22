@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.45.0 - config-set takes currency, rule, the Delay Martingale threshold and custom rules (2026-11-22)
+
+- `--config-set` (and the dashboard's Config page) now accepts four keys only the setup wizard could set: `currency` (one of the supported coins), `rule` (`over` or `under`), `delay_martin_threshold` (a whole number of at least 1) and `custom_rules_text` (Rule-Based rules as JSON or `onEvery...` lines, at most 4000 characters; `off` clears them).
+- A `rule` change re-derives `bet_value` from the multiplier, as a `multiplier` change already does, so the casino never gets a stale win chance.
+- `custom_rules_text` is parsed before it is saved; text that holds no valid rule is refused with "Custom rules: no valid rule found". It reloads live; the other three apply after a restart.
+- `rule` and `delay_martin_threshold` cannot differ per lane, like `currency`.
+- `--config-schema` publishes the rules key with `format: "rules"` and `max_length`; the schema file allows both.
+
+**Tests**: `tests/test_phase11h_config_schema.py` covers each key, valid and refused, the bet_value re-derive, the lane refusal and the published limit. The unknown-key snapshot lists the new keys. The version pins are updated.
+
+`VERSION` `2.44.0` -> `2.45.0`.
+
 ## wolfctl v3.20 - stop-all only reports what really stopped (2026-11-21)
 
 - `wolfctl stop-all` now stops lanes 2-10 too, as `wolfctl stop` already does. Before, extra lanes kept betting after "Stop all".

@@ -1,8 +1,9 @@
-Invalid --config-set argument: Unknown config field: 'foo'. Valid: balance_goal, base_bet, basebet_pct, bet_delay, db_write_mode, events_enabled, events_url, 
-game, hard_cap, hybrid_press_at, hybrid_press_bet, hybrid_press_floor, hybrid_press_strategy, hybrid_recover_at, hybrid_recover_bet, hybrid_recover_strategy, 
-loss_mult, max_bets, max_loss, max_profit, max_wins, milestone_bets, milestone_losses, milestone_profit, milestone_wins, multiplier, pipeline_depth, 
-profit_increment, profit_increment_scope, profit_threshold, proxy, purge_days, recurring, recurring_delay, restart_after_loss, stop_on_balance, strategy_key, 
-streak_delay_bets, streak_delay_loss, streak_delay_win, streak_reset_delay, streak_reset_losses, streakbet_loss, win_mult
+Invalid --config-set argument: Unknown config field: 'foo'. Valid: balance_goal, base_bet, basebet_pct, bet_delay, currency, custom_rules_text, db_write_mode, 
+delay_martin_threshold, events_enabled, events_url, game, hard_cap, hybrid_press_at, hybrid_press_bet, hybrid_press_floor, hybrid_press_strategy, 
+hybrid_recover_at, hybrid_recover_bet, hybrid_recover_strategy, loss_mult, max_bets, max_loss, max_profit, max_wins, milestone_bets, milestone_losses, 
+milestone_profit, milestone_wins, multiplier, pipeline_depth, profit_increment, profit_increment_scope, profit_threshold, proxy, purge_days, recurring, 
+recurring_delay, restart_after_loss, rule, stop_on_balance, strategy_key, streak_delay_bets, streak_delay_loss, streak_delay_win, streak_reset_delay, 
+streak_reset_losses, streakbet_loss, win_mult
 [exit 2]
 {
   "api_key": "wb_live_0123456789abcdefSECRET9876",

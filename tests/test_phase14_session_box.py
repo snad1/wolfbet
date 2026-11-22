@@ -1133,7 +1133,7 @@ def test_backtest_command_refuses_rules_that_cannot_work(monkeypatch, tmp_path, 
 
 
 def test_version():
-    assert wb.VERSION == "2.44.0"
+    assert wb.VERSION == "2.45.0"
 
 
 # ── the switching is visible in the live log ──────────────

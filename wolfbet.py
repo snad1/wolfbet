@@ -408,6 +408,7 @@ _TWEAK_PARAMS = {
     "streak_reset_losses", "streak_reset_delay",
     "base_bet", "multiplier", "loss_mult", "win_mult",
     "game", "strategy_key",
+    "currency", "rule", "delay_martin_threshold", "custom_rules_text",
     "pipeline_depth",
     "proxy", "purge_days",
     "db_write_mode",
@@ -702,6 +703,41 @@ def _apply_mutation(changes: dict) -> list:
         state.paroli_count = 0
         msgs.append(f"Strategy: {state.strategy} (restart to apply)")
         strategy_touched = True
+    if "currency" in changes:
+        currency = str(changes["currency"]).strip().lower()
+        if currency not in CURRENCIES:
+            raise ValueError(f"currency must be one of {', '.join(CURRENCIES)}, got {currency!r}")
+        state.currency = currency
+        msgs.append(f"Currency: {currency.upper()} (restart to apply)")
+        strategy_touched = True
+    if "rule" in changes:
+        rule = str(changes["rule"]).strip().lower()
+        if rule not in DICE_RULES:
+            raise ValueError(f"rule must be one of {', '.join(DICE_RULES)}, got {rule!r}")
+        state.rule = rule
+        msgs.append(f"Rule: {rule} (restart to apply)")
+        if "multiplier" not in changes and "bet_value" not in changes:
+            state.bet_value = _derive_bet_value(state.multiplier, rule)
+            msgs.append(f"bet_value re-derived: {state.bet_value:.2f}")
+        strategy_touched = True
+    if "delay_martin_threshold" in changes:
+        threshold = _finite_num("Delay Martingale threshold", changes["delay_martin_threshold"], int)
+        if threshold < 1:
+            raise ValueError("Delay Martingale threshold must be at least 1")
+        state.delay_martin_threshold = threshold
+        msgs.append(f"Delay Martingale threshold: {threshold}")
+        strategy_touched = True
+    if "custom_rules_text" in changes:
+        raw = changes["custom_rules_text"]
+        text = "" if _is_off(raw) else str(raw).strip()
+        if len(text) > RULES_MAX_CHARS:
+            raise ValueError(f"Custom rules must be at most {RULES_MAX_CHARS} characters")
+        rules = _load_rules_from_text(text)
+        if text and not rules:
+            raise ValueError("Custom rules: no valid rule found")
+        state.custom_rules_text, state.custom_rules = text, rules
+        msgs.append(f"Custom rules: {len(rules)} rule(s)")
+        strategy_touched = True
     if "base_bet" in changes:
         state.base_bet = float(changes["base_bet"])
         state.current_bet = state.base_bet
@@ -944,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.44.0"
+VERSION      = "2.45.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -975,7 +1011,7 @@ AUTOSTART_LOCK_PATH = os.environ.get(
 # Never overridable per lane: identity, account, network and storage settings.
 _LANE_FORBIDDEN_KEYS = {
     "api_key", "currency", "game", "proxy", "purge_days", "db_write_mode",
-    "pipeline_depth", "events_enabled", "events_url",
+    "pipeline_depth", "events_enabled", "events_url", "rule", "delay_martin_threshold",
 }
 
 
@@ -1070,6 +1106,8 @@ def _lane_config(data: dict, lane: int) -> dict:
     return merged
 
 
+DICE_RULES = ("over", "under")
+RULES_MAX_CHARS = 4000
 CURRENCIES  =["btc", "eth", "ltc", "doge", "trx", "bch", "xrp", "usdt", "bnb", "ada", "matic"]
 
 # ══════════════════════════════════════════════════════════
@@ -7047,6 +7085,11 @@ _CONFIG_VALUE_RULES = {
     "win_mult":                {"type": "number"},
     "game":                    {"type": "string", "choices": tuple(sorted(GAME_ENDPOINTS))},
     "strategy_key":            {"type": "string", "choices": tuple(sorted(STRATEGY_NAMES))},
+    "currency":                {"type": "string", "choices": tuple(CURRENCIES)},
+    "rule":                    {"type": "string", "choices": DICE_RULES},
+    "delay_martin_threshold":  {"type": "integer", "min": 1},
+    "custom_rules_text":       {"type": "string", "format": "rules", "max_length": RULES_MAX_CHARS,
+                                "off_allowed": True},
     "pipeline_depth":          {"type": "integer", "min": 1, "max": 8, "clamps": True,
                                 "off_allowed": True},
     "proxy":                   {"type": "string", "format": "url", "schemes": _URL_SCHEMES_PROXY,
