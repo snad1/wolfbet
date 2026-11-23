@@ -42,10 +42,11 @@ def _write(path, text, mode=None):
 
 # Like systemd: `is-active` prints the state unless --quiet, and exits 3 for a stopped unit.
 # Units named in $HOME/active.txt stay active; $HOME/no-bus makes every call fail like a
-# missing XDG_RUNTIME_DIR does.
+# missing XDG_RUNTIME_DIR does. Every call is appended to $HOME/systemctl.log.
 _SYSTEMCTL = textwrap.dedent("""\
     #!/bin/sh
     [ -f "$HOME/no-bus" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }
+    echo "$*" >> "$HOME/systemctl.log"
     case "$*" in
         *is-active*)
             unit=$(for a in "$@"; do last=$a; done; echo "$last")
@@ -297,7 +298,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.22" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.23" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():
@@ -318,7 +319,20 @@ def test_a_lane_that_keeps_running_fails_the_stop(host):
     assert r.returncode == 1 and "Lane 3 is still active." in r.stderr
 
 
+def _systemctl_calls(host) -> list:
+    try:
+        with open(os.path.join(host["home"], "systemctl.log")) as f:
+            return [line for line in f.read().splitlines() if "is-active" not in line]
+    except FileNotFoundError:
+        return []
+
+
+def _saved_config(host):
+    _write(os.path.join(host["home"], ".wolfbet_autobot.json"), "{}")
+
+
 def test_start_one_lane_checks_it_came_up(host):
+    _saved_config(host)
     _write(os.path.join(host["home"], "lanes.txt"), "3\n")
     _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@2\n")
     assert "Lane 2 started." in _wolfctl(host, "start", "2").stdout
@@ -326,12 +340,64 @@ def test_start_one_lane_checks_it_came_up(host):
     assert r.returncode == 1 and "Lane 3 did not start (inactive)." in r.stderr
 
 
+@pytest.mark.parametrize("verb", ["stop", "start", "restart"])
 @pytest.mark.parametrize("lane,message", [
-    ("1", "Lane 1 is the main service"),
+    ("0", "No lane 0: this bot runs 3 lane(s)."),
     ("4", "No lane 4: this bot runs 3 lane(s)."),
-    ("x", "Usage: wolfctl stop [K]"),
+    ("x", "(K = lane 1-10)"),
 ])
-def test_a_lane_stop_refuses_lane_one_and_lanes_that_do_not_exist(host, lane, message):
+def test_a_lane_verb_refuses_lanes_that_do_not_exist(host, verb, lane, message):
+    _saved_config(host)
     _write(os.path.join(host["home"], "lanes.txt"), "3\n")
-    r = _wolfctl(host, "stop", lane)
+    r = _wolfctl(host, verb, lane)
     assert r.returncode == 2 and message in r.stderr
+    assert _systemctl_calls(host) == []
+
+
+def test_stop_lane_one_stops_only_the_main_service(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    r = _wolfctl(host, "stop", "1")
+    assert r.returncode == 0, r.stderr
+    assert "Lane 1 stopped. Other lanes keep betting." in r.stdout
+    assert _systemctl_calls(host) == ["--user stop wolfbet"]
+
+
+def test_start_lane_one_checks_the_main_service_came_up(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
+    r = _wolfctl(host, "start", "1")
+    assert r.returncode == 0 and "Lane 1 started." in r.stdout
+    assert _systemctl_calls(host) == ["--user start wolfbet"]
+
+
+def test_start_one_lane_needs_a_saved_config(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    r = _wolfctl(host, "start", "1")
+    assert r.returncode == 1 and "No config found" in r.stderr
+    assert _systemctl_calls(host) == []
+
+
+def test_restart_one_lane_touches_only_that_lane(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@2\n")
+    r = _wolfctl(host, "restart", "2")
+    assert r.returncode == 0, r.stderr
+    assert "Lane 2 restarted. Other lanes keep betting." in r.stdout
+    assert _systemctl_calls(host) == ["--user restart wolfbet-lane@2"]
+
+
+def test_a_lane_that_does_not_come_back_fails_the_restart(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    r = _wolfctl(host, "restart", "3")
+    assert r.returncode == 1 and "Lane 3 did not start (inactive)." in r.stderr
+
+
+def test_plain_restart_still_restarts_every_lane(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    r = _wolfctl(host, "restart")
+    assert r.returncode == 0, r.stderr
+    calls = _systemctl_calls(host)
+    assert "--user stop wolfbet-lane@2" in calls and "--user restart wolfbet" in calls

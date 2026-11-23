@@ -1,5 +1,16 @@
 # Changelog
 
+## wolfctl v3.23 - stop, start or restart any one lane, lane 1 included (2026-11-23)
+
+- `wolfctl stop K`, `start K` and the new `restart K` act on lane K alone, for K from 1 to the lane count. Lane 1 is still the main service (`wolfbet.service`); `stop 1` stops only that unit and the other lanes keep betting.
+- `start K` and `restart K` check the unit is active afterwards (`Lane K did not start (state).`, exit 1) and need a saved config. `stop K` checks the unit is down.
+- A lane outside 1 to the lane count exits 2 with `No lane K: this bot runs N lane(s).`; a non-number prints the usage. Nothing is sent to systemd in either case.
+- Plain `wolfctl stop`, `start` and `restart` still act on every lane, as before.
+
+**Tests**: `tests/test_phase11i_wolfctl_verbs.py` records every systemctl call and checks that `stop 1`, `start 1` and `restart 2` touch only their own unit, that a lane that stays down fails the restart, that `start K` needs a config, that bad lane numbers reach no unit, and that plain `restart` still restarts every lane. The version pins are updated.
+
+`WOLFCTL_VERSION` `3.22` -> `3.23`.
+
 ## v2.48.0 + wolfctl v3.22 - lanes have names (2026-11-23)
 
 - Lanes live in a registry: `lanes.items` holds each lane by id with a `name`, an `enabled` flag and its `overrides`, plus `lanes.next_id`. It replaces `lanes.count` and `lanes.overrides`.
