@@ -59,16 +59,29 @@ Daemon reloaded live config.
   "hybrid_press_strategy": "5",
   "hybrid_press_bet": 1.0,
   "lanes": {
-    "count": 3,
     "split": "bet",
-    "overrides": {
+    "next_id": 4,
+    "items": {
+      "1": {
+        "name": "Lane 1",
+        "enabled": true,
+        "overrides": {}
+      },
       "2": {
-        "multiplier": 3.0,
-        "streak_delay_loss": "2:4",
-        "max_loss": 0.003
+        "name": "Lane 2",
+        "enabled": true,
+        "overrides": {
+          "multiplier": 3.0,
+          "streak_delay_loss": "2:4",
+          "max_loss": 0.003
+        }
       },
       "3": {
-        "max_loss": 0.002
+        "name": "Lane 3",
+        "enabled": true,
+        "overrides": {
+          "max_loss": 0.002
+        }
       }
     }
   },

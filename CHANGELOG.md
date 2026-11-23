@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.48.0 + wolfctl v3.22 - lanes have names (2026-11-23)
+
+- Lanes live in a registry: `lanes.items` holds each lane by id with a `name`, an `enabled` flag and its `overrides`, plus `lanes.next_id`. It replaces `lanes.count` and `lanes.overrides`.
+- A config in the old shape reads exactly as before: lanes 1 up to the count are enabled and named `Lane 1`, `Lane 2`, ... The file keeps its old shape until the next lane change (`lanes=N`, `lane_split`, `laneK.key=` or a rename) writes the registry.
+- `--config-set laneK.name="friend-A"` names a lane; lane 1 can be named too. A name is 1 to 32 letters, digits, spaces, `_` or `-`; anything else exits 2 and nothing is written. Only that lane gets SIGHUP, and its log lines then read `[L3 friend-A]`. `--config-set --dry-run` reports a rename as `live`.
+- `lanes=N` enables lanes 1 to N and disables the ones above N. A disabled lane keeps its name and overrides, as overrides above the count were kept before.
+- `--lanes-status` (`wolfctl status` with lanes) adds a Name column once a lane has its own name.
+- `wolfctl` counts the enabled lanes of the registry, or `lanes.count` in an old file.
+- **Rollback:** the first registry write copies the old file to `~/.wolfbet_autobot.json.pre-registry` (mode 0600, written once). Older code reads a registry file as one lane, so restore that copy before going back to v2.47.0.
+
+**Tests**: `tests/test_phase10_lanes.py` covers the old shape read as a registry, enabled count and disabled overrides, lane count changes keeping names and overrides, a rename signalling only its lane and setting the log prefix, a reload picking up a rename, refused names leaving the file alone, the one-time backup and its mode, the dry-run entry, the Name column and the wolfctl lane count for both shapes. The `set_lanes` and `set_mixed` snapshots now show the registry. The version pins are updated.
+
+`VERSION` `2.47.0` -> `2.48.0`, `WOLFCTL_VERSION` `3.21` -> `3.22`.
+
 ## v2.47.0 - the config schema carries the rule menus (2026-11-22)
 
 - `--config-schema` gives `custom_rules_text` a `rule_options` object: the condition types, sequence modes and events, profit and bet fields, comparison operators, and every rule action with whether it takes a value. These are the setup wizard's own tables, so a rule builder (the dashboard's Config page) offers exactly what the bot runs. The schema file allows the new object.

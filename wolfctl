@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.21
+# WolfBet AutoBot - Unified Management Command v3.22
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -23,6 +23,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.18 - the old web is removed; web remove clears a leftover unit (its data dir is kept)
 # v3.19 - dash uses the compose project name; the Coolify app id is only for deploys
 # v3.21 - stop K / start K stop or start one extra lane; the others keep betting
+# v3.22 - lane count reads the named-lane registry as well as the old lane count
 # v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
 LANES_MAX=10
@@ -36,11 +37,11 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.21
+WOLFCTL_VERSION=3.22
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.21"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.22"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
@@ -145,12 +146,18 @@ confirm() {
 }
 
 # ── v3.10 - parallel lanes ─────────────────────────────
-# Configured lane count from the config file (1 when unset / unreadable).
+# Configured lane count from the config file (1 when unset / unreadable): the enabled
+# lanes of the registry, or `lanes.count` in a config written before lanes had names.
 lane_count() {
     "$PYTHON" - "$HOME/.wolfbet_autobot.json" <<'PY' 2>/dev/null || echo 1
 import json, sys
 try:
-    n = int((json.load(open(sys.argv[1])).get("lanes") or {}).get("count") or 1)
+    lanes = json.load(open(sys.argv[1])).get("lanes") or {}
+    items = lanes.get("items")
+    if isinstance(items, dict):
+        n = sum(1 for e in items.values() if isinstance(e, dict) and e.get("enabled", True))
+    else:
+        n = int(lanes.get("count") or 1)
 except Exception:
     n = 1
 print(max(1, min(10, n)))
@@ -514,7 +521,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.21"
+    echo "  wolfctl v3.22"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────

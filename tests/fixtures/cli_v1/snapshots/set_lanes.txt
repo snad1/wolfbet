@@ -28,15 +28,33 @@ Run wolfctl lanes 4 to start/stop lane processes (restart running lanes so each 
   "events_enabled": true,
   "events_url": "redis://dash:redispass@127.0.0.1:6379/0",
   "lanes": {
-    "count": 4,
     "split": "budget",
-    "overrides": {
+    "next_id": 5,
+    "items": {
+      "1": {
+        "name": "Lane 1",
+        "enabled": true,
+        "overrides": {}
+      },
       "2": {
-        "streak_delay_loss": "2:4"
+        "name": "Lane 2",
+        "enabled": true,
+        "overrides": {
+          "streak_delay_loss": "2:4"
+        }
       },
       "3": {
-        "max_loss": 0.002,
-        "max_wins": 5
+        "name": "Lane 3",
+        "enabled": true,
+        "overrides": {
+          "max_loss": 0.002,
+          "max_wins": 5
+        }
+      },
+      "4": {
+        "name": "Lane 4",
+        "enabled": true,
+        "overrides": {}
       }
     }
   }
