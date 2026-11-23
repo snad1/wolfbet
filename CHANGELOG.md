@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.49.0 + wolfctl v3.24 - add, remove or rename one lane; lanes N changes only the difference (2026-11-23)
+
+- `wolfctl lane add NAME [--from K]` adds one lane under the next free id, copies lane K's overrides (lane 1 has none, so the new lane uses the base config) and starts it. The running lanes keep their process.
+- `wolfctl lane remove K` stops lane K through systemd (state saved, session closed, as `wolfctl stop K`) and drops it from the config. Its id is never given to a new lane, so its history in the DB stays its own. Lane 1 can't be removed: it holds the base config.
+- `wolfctl lane rename K NAME` is `--config-set laneK.name=NAME`; only lane K reloads.
+- `wolfctl lanes N` starts or stops only the lanes that change. It no longer stops every lane and restarts the main service. Raising the count enables disabled lanes first (lowest id, with their names and overrides), then adds new ids; lowering it disables the highest ids.
+- `lanes.max` (default 10, up to 99) is how many lanes may be enabled at once: `wolfctl lanes --max N` or `--config-set lanes_max=N`. It can't go below the lanes configured. Lane ids go up to 99 and are no longer capped at 10. `--config-schema` reports the configured limit as `lanes.count.max` and 99 as `override_lanes.max`.
+- When the lane count changes, a lane split of `bet` or `both` reloads the remaining lanes, so each one's base bet ÷ lanes follows at once. On reload a lane now also takes the new lane count, so `basebet_pct` divides by it too. A `budget` or `both` split keeps each lane's budget share until that lane restarts, and wolfctl says so: `Budget shares update when each lane restarts: wolfctl restart K.`
+- `wolfbet.py --lane-ids [all]` prints the enabled lane ids (or every id); wolfctl reads lanes through it instead of its own copy of the parser. `wolfctl pause|resume|reload all` signals every lane with a pid file; `stop`, `stop-all` and `restart` go through the registry ids. `wolfctl run-reset` clears every lane's run file.
+- A config in the old shape with overrides above the count (for example lane 5) now brings that lane back first on `lanes N`, instead of a new empty lane 4.
+- **Rollback:** v2.48.0 rejects lane ids above 10 and ignores `lanes.max`. Before going back, run `wolfctl lanes N` with N no higher than 10 and remove lanes whose id is above 10.
+
+**Tests**: `tests/test_phase10_lanes.py` covers adding with copied overrides, never reusing a removed id, refused changes writing nothing (lane 1, unknown lanes, bad names, the limit), the id ceiling, `lanes=N` up and down on sparse ids, the owner limit, a lane id above 10, which lanes a count change signals for each split, a reload taking the new count, run-reset over every lane file and `--lane-ids` for both config shapes. `tests/test_phase11i_wolfctl_verbs.py` checks from the systemctl call log that `lane add` starts only the new unit, `lane remove` disables only its lane, `lanes N` starts or stops only the difference and never restarts the main service, plus rename, `--max`, refusals and bad arguments reaching no unit. The `set_lanes` and `err_lanes_count` snapshots and the version pins are updated.
+
+`VERSION` `2.48.0` -> `2.49.0`, `WOLFCTL_VERSION` `3.23` -> `3.24`.
+
 ## wolfctl v3.23 - stop, start or restart any one lane, lane 1 included (2026-11-23)
 
 - `wolfctl stop K`, `start K` and the new `restart K` act on lane K alone, for K from 1 to the lane count. Lane 1 is still the main service (`wolfbet.service`); `stop 1` stops only that unit and the other lanes keep betting.

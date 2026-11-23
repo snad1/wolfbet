@@ -68,7 +68,14 @@ def host(tmp_path):
     _write(str(home / "wolfbet-bot/venv/bin/python3"), textwrap.dedent("""\
         #!/bin/sh
         echo "$*" >> "$HOME/python.log"
-        [ "$1" = - ] && [ -f "$HOME/lanes.txt" ] && { cat "$HOME/lanes.txt"; exit 0; }
+        case "$*" in
+            *"--lane-ids all"*) cat "$HOME/lanes-all.txt" 2>/dev/null || cat "$HOME/lanes.txt" 2>/dev/null; exit 0 ;;
+            *--lane-ids*) cat "$HOME/lanes.txt" 2>/dev/null; exit 0 ;;
+            *--lane-add*|*--lane-remove*|*--config-set*)
+                [ -f "$HOME/python-fails" ] && { cat "$HOME/python-fails"; exit 2; }
+                [ -f "$HOME/lanes-after.txt" ] && mv "$HOME/lanes-after.txt" "$HOME/lanes.txt"
+                exit 0 ;;
+        esac
         case "$*" in *--json*) echo '{"v": 1}' ;; esac
         """), 0o755)
     _write(str(stubs / "systemctl"), _SYSTEMCTL, 0o755)
@@ -163,7 +170,7 @@ def test_pid_that_is_not_wolfbet_is_refused(host):
     assert not os.path.exists(out)
 
 
-@pytest.mark.parametrize("target", ["0", "11", "x", "1;id", "-1"])
+@pytest.mark.parametrize("target", ["0", "100", "x", "1;id", "-1"])
 def test_bad_lane_number_exits_2(host, target):
     r = _wolfctl(host, "reload", target)
     assert r.returncode == 2 and "Usage: wolfctl reload [K|all]" in r.stderr
@@ -249,6 +256,7 @@ def test_cleanup_accepts_yes_and_keeps_days(host):
 
 
 def test_stop_all_fails_and_names_a_unit_that_is_still_running(host):
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@3\n")
     r = _wolfctl(host, "stop-all")
     assert r.returncode == 1
@@ -298,7 +306,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.23" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.24" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():
@@ -306,14 +314,14 @@ def test_wolfctl_syntax_valid():
 
 
 def test_stop_one_lane_leaves_the_others(host):
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     r = _wolfctl(host, "stop", "2")
     assert r.returncode == 0, r.stderr
     assert "Lane 2 stopped. Other lanes keep betting." in r.stdout
 
 
 def test_a_lane_that_keeps_running_fails_the_stop(host):
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@3\n")
     r = _wolfctl(host, "stop", "3")
     assert r.returncode == 1 and "Lane 3 is still active." in r.stderr
@@ -333,7 +341,7 @@ def _saved_config(host):
 
 def test_start_one_lane_checks_it_came_up(host):
     _saved_config(host)
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@2\n")
     assert "Lane 2 started." in _wolfctl(host, "start", "2").stdout
     r = _wolfctl(host, "start", "3")
@@ -344,18 +352,18 @@ def test_start_one_lane_checks_it_came_up(host):
 @pytest.mark.parametrize("lane,message", [
     ("0", "No lane 0: this bot runs 3 lane(s)."),
     ("4", "No lane 4: this bot runs 3 lane(s)."),
-    ("x", "(K = lane 1-10)"),
+    ("x", "(K = a lane id from 'wolfctl lanes')"),
 ])
 def test_a_lane_verb_refuses_lanes_that_do_not_exist(host, verb, lane, message):
     _saved_config(host)
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     r = _wolfctl(host, verb, lane)
     assert r.returncode == 2 and message in r.stderr
     assert _systemctl_calls(host) == []
 
 
 def test_stop_lane_one_stops_only_the_main_service(host):
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     r = _wolfctl(host, "stop", "1")
     assert r.returncode == 0, r.stderr
     assert "Lane 1 stopped. Other lanes keep betting." in r.stdout
@@ -364,7 +372,7 @@ def test_stop_lane_one_stops_only_the_main_service(host):
 
 def test_start_lane_one_checks_the_main_service_came_up(host):
     _saved_config(host)
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
     r = _wolfctl(host, "start", "1")
     assert r.returncode == 0 and "Lane 1 started." in r.stdout
@@ -372,7 +380,7 @@ def test_start_lane_one_checks_the_main_service_came_up(host):
 
 
 def test_start_one_lane_needs_a_saved_config(host):
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     r = _wolfctl(host, "start", "1")
     assert r.returncode == 1 and "No config found" in r.stderr
     assert _systemctl_calls(host) == []
@@ -380,7 +388,7 @@ def test_start_one_lane_needs_a_saved_config(host):
 
 def test_restart_one_lane_touches_only_that_lane(host):
     _saved_config(host)
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     _write(os.path.join(host["home"], "active.txt"), "wolfbet-lane@2\n")
     r = _wolfctl(host, "restart", "2")
     assert r.returncode == 0, r.stderr
@@ -390,14 +398,130 @@ def test_restart_one_lane_touches_only_that_lane(host):
 
 def test_a_lane_that_does_not_come_back_fails_the_restart(host):
     _saved_config(host)
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     r = _wolfctl(host, "restart", "3")
     assert r.returncode == 1 and "Lane 3 did not start (inactive)." in r.stderr
 
 
 def test_plain_restart_still_restarts_every_lane(host):
-    _write(os.path.join(host["home"], "lanes.txt"), "3\n")
+    _write(os.path.join(host["home"], "lanes.txt"), "1 2 3\n")
     r = _wolfctl(host, "restart")
     assert r.returncode == 0, r.stderr
     calls = _systemctl_calls(host)
     assert "--user stop wolfbet-lane@2" in calls and "--user restart wolfbet" in calls
+
+
+# ── lane add / remove / rename and lanes N change only the lanes they name ──
+def _lanes(host, now, after=None):
+    _write(os.path.join(host["home"], "lanes.txt"), now + "\n")
+    if after is not None:
+        _write(os.path.join(host["home"], "lanes-after.txt"), after + "\n")
+
+
+def _no_restarts(calls):
+    return not any(c.startswith(("--user stop", "--user restart")) for c in calls)
+
+
+def test_lane_add_starts_only_the_new_lane(host):
+    _lanes(host, "1 2", "1 2 3")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
+    r = _wolfctl(host, "lane", "add", "friend-A", "--from", "2")
+    assert r.returncode == 0, r.stderr
+    assert "--lane-add friend-A --lane-from 2" in _python_calls(host)[-2]
+    calls = _systemctl_calls(host)
+    assert "--user enable --now wolfbet-lane@3" in calls
+    assert not any("wolfbet-lane@2" in c for c in calls) and _no_restarts(calls)
+    assert "lane 3 started" in r.stdout and "Other lanes keep betting." in r.stdout
+
+
+def test_lane_add_with_the_bot_stopped_only_says_how_to_start_it(host):
+    _lanes(host, "1", "1 2")
+    r = _wolfctl(host, "lane", "add", "night")
+    assert r.returncode == 0, r.stderr
+    assert "start it with: wolfctl start 2" in r.stdout
+    assert not any("enable" in c for c in _systemctl_calls(host))
+
+
+def test_lane_add_refused_by_the_bot_touches_no_unit(host):
+    _lanes(host, "1 2")
+    _write(os.path.join(host["home"], "python-fails"), "This bot already runs 2 lane(s), the limit.\n")
+    r = _wolfctl(host, "lane", "add", "x")
+    assert r.returncode == 2 and "the limit" in r.stdout
+    assert _systemctl_calls(host) == []
+
+
+def test_lane_remove_stops_only_that_lane(host):
+    _lanes(host, "1 2 3", "1 2")
+    r = _wolfctl(host, "lane", "remove", "3")
+    assert r.returncode == 0, r.stderr
+    assert "Lane 3 stopped. Other lanes keep betting." in r.stdout
+    assert _systemctl_calls(host) == ["--user disable --now wolfbet-lane@3"]
+
+
+def test_lane_remove_refused_by_the_bot_touches_no_unit(host):
+    _lanes(host, "1 2")
+    _write(os.path.join(host["home"], "python-fails"),
+           "Lane 1 holds the base config and can't be removed.\n")
+    r = _wolfctl(host, "lane", "remove", "1")
+    assert r.returncode == 2 and "can't be removed" in r.stdout
+    assert _systemctl_calls(host) == []
+
+
+def test_lane_rename_goes_through_config_set(host):
+    _lanes(host, "1 3")
+    r = _wolfctl(host, "lane", "rename", "3", "night run")
+    assert r.returncode == 0, r.stderr
+    assert _python_calls(host)[-1].endswith("wolfbet.py --config-set lane3.name=night run")
+    assert _systemctl_calls(host) == []
+
+
+def test_lane_rename_of_an_unknown_lane_exits_2(host):
+    _lanes(host, "1 2")
+    r = _wolfctl(host, "lane", "rename", "9", "x")
+    assert r.returncode == 2 and "No lane 9." in r.stderr
+    assert not any("--config-set" in c for c in _python_calls(host))
+
+
+@pytest.mark.parametrize("args", [("lane",), ("lane", "add"), ("lane", "remove", "x"),
+                                  ("lane", "remove", "2;id"), ("lane", "rename", "2"),
+                                  ("lane", "add", "a", "--from", "x"), ("lane", "move", "2")])
+def test_bad_lane_arguments_exit_2(host, args):
+    _lanes(host, "1 2")
+    r = _wolfctl(host, *args)
+    assert r.returncode == 2 and "Usage: wolfctl lane" in r.stderr
+    assert _systemctl_calls(host) == []
+
+
+def test_lanes_n_up_starts_only_the_new_lanes(host):
+    _lanes(host, "1 2", "1 2 3 4")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
+    r = _wolfctl(host, "lanes", "4")
+    assert r.returncode == 0, r.stderr
+    calls = _systemctl_calls(host)
+    assert [c for c in calls if "enable --now" in c] == [
+        "--user enable --now wolfbet-lane@3", "--user enable --now wolfbet-lane@4"]
+    assert _no_restarts(calls)
+
+
+def test_lanes_n_down_stops_only_the_dropped_lanes(host):
+    _lanes(host, "1 2 3", "1")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
+    r = _wolfctl(host, "lanes", "1")
+    assert r.returncode == 0, r.stderr
+    calls = _systemctl_calls(host)
+    assert calls == ["--user disable --now wolfbet-lane@2", "--user disable --now wolfbet-lane@3"]
+
+
+def test_lanes_max_sets_the_limit(host):
+    r = _wolfctl(host, "lanes", "--max", "12")
+    assert r.returncode == 0, r.stderr
+    assert _python_calls(host)[-1].endswith("wolfbet.py --config-set lanes_max=12")
+    assert "Lane limit set to 12." in r.stdout and _systemctl_calls(host) == []
+
+
+def test_lanes_over_the_limit_shows_the_bot_message(host):
+    _lanes(host, "1 2")
+    _write(os.path.join(host["home"], "python-fails"), "lanes must be 1-10, got 12\n")
+    r = _wolfctl(host, "lanes", "12")
+    assert r.returncode == 2 and "lanes must be 1-10, got 12" in r.stderr
+    assert _systemctl_calls(host) == []

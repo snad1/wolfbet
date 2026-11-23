@@ -6,7 +6,8 @@
 
 Saved to config.json
 1 running lane(s) reloaded live config (restart-only fields apply on the next start).
-Run wolfctl lanes 4 to start/stop lane processes (restart running lanes so each recomputes its budget share).
+Budget shares update when each lane restarts: wolfctl restart K.
+Run wolfctl lanes 4 to start or stop lane processes.
 [exit 0]
 {
   "api_key": "wb_live_0123456789abcdefSECRET9876",

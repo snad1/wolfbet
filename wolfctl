@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.23
+# WolfBet AutoBot - Unified Management Command v3.24
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -25,9 +25,11 @@ WEB_SERVICE="wolfbet-web"
 # v3.21 - stop K / start K stop or start one extra lane; the others keep betting
 # v3.22 - lane count reads the named-lane registry as well as the old lane count
 # v3.23 - stop K / start K / restart K work on any lane, lane 1 included
+# v3.24 - lane add/remove/rename change one lane; lanes N starts or stops only the difference;
+#         lanes --max N sets the lane limit; lane ids come from the config registry
 # v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
-LANES_MAX=10
+LANE_ID_MAX=99
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 PYTHON="$INSTALL_DIR/venv/bin/python3"
 BOT="$INSTALL_DIR/wolfbet.py"
@@ -38,21 +40,25 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.23
+WOLFCTL_VERSION=3.24
 
 usage() {
     echo ""
-    echo "  wolfctl - WolfBet AutoBot Manager v3.23"
+    echo "  wolfctl - WolfBet AutoBot Manager v3.24"
     echo ""
     echo "  CLI BOT:"
     echo "    wolfctl setup         Run wizard to configure"
-    echo "    wolfctl start [K]     Start CLI bot as daemon, or only lane K (1-10)"
-    echo "    wolfctl stop [K]      Stop CLI bot, or only lane K (1-10); the other lanes keep betting"
-    echo "    wolfctl restart [K]   Restart CLI bot, or only lane K (1-10)"
+    echo "    wolfctl start [K]     Start CLI bot as daemon, or only lane K"
+    echo "    wolfctl stop [K]      Stop CLI bot, or only lane K; the other lanes keep betting"
+    echo "    wolfctl restart [K]   Restart CLI bot, or only lane K"
     echo "    wolfctl status        Show CLI bot status (--json: session state only)"
     echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
-    echo "    wolfctl lanes N       Run N parallel lanes (1 = classic single bot)"
+    echo "    wolfctl lanes N       Run N parallel lanes (1 = classic single bot); only the difference starts or stops"
     echo "      --split MODE        none (default: full bet, no lane budget) | budget | bet | both"
+    echo "      --max N             How many lanes may run at once (default 10, up to $LANE_ID_MAX)"
+    echo "    wolfctl lane add NAME [--from K]  Add one lane (copies lane K's overrides) and start it"
+    echo "    wolfctl lane remove K             Stop lane K and remove it; its id is never reused"
+    echo "    wolfctl lane rename K NAME        Rename lane K (letters, digits, space, _ or -)"
     echo "    wolfctl pause [K|all]   Pause betting on lane K or every running lane (default all)"
     echo "    wolfctl resume [K|all]  Resume betting"
     echo "    wolfctl reload [K|all]  Re-read the saved config into the running lanes"
@@ -147,22 +153,25 @@ confirm() {
 }
 
 # ── v3.10 - parallel lanes ─────────────────────────────
-# Configured lane count from the config file (1 when unset / unreadable): the enabled
-# lanes of the registry, or `lanes.count` in a config written before lanes had names.
+# Lane ids from the config registry: the enabled ones, or every id with "all" (1 when unreadable).
+lane_ids() {
+    local ids
+    ids=$("$PYTHON" "$BOT" --lane-ids "${1:-enabled}" 2>/dev/null) || ids=""
+    echo "${ids:-1}"
+}
+
 lane_count() {
-    "$PYTHON" - "$HOME/.wolfbet_autobot.json" <<'PY' 2>/dev/null || echo 1
-import json, sys
-try:
-    lanes = json.load(open(sys.argv[1])).get("lanes") or {}
-    items = lanes.get("items")
-    if isinstance(items, dict):
-        n = sum(1 for e in items.values() if isinstance(e, dict) and e.get("enabled", True))
-    else:
-        n = int(lanes.get("count") or 1)
-except Exception:
-    n = 1
-print(max(1, min(10, n)))
-PY
+    set -- $(lane_ids)
+    echo "$#"
+}
+
+# True when lane $1 is in the registry (enabled lanes, or every lane with "all").
+has_lane() {
+    local k
+    for k in $(lane_ids "${2:-enabled}"); do
+        [ "$k" = "$1" ] && return 0
+    done
+    return 1
 }
 
 # Write the systemd template for lanes 2..N (same unit as lane 1 + --lane %i).
@@ -202,27 +211,53 @@ UNITEOF
     systemctl --user daemon-reload
 }
 
-# Start lanes 2..count; stop every lane above count.
+# Start every enabled lane 2+ and stop the disabled ones.
 sync_lanes() {
-    local n="$1" k
-    if [ "$n" -gt 1 ]; then
-        ensure_lane_unit
-    fi
-    for k in $(seq 2 "$LANES_MAX"); do
-        if [ "$k" -le "$n" ]; then
+    local k enabled
+    enabled=" $(lane_ids) "
+    [ "$enabled" = " 1 " ] || ensure_lane_unit
+    for k in $(lane_ids all); do
+        [ "$k" -gt 1 ] || continue
+        case "$enabled" in
             # enable → lanes come back after a reboot together with lane 1
+            *" $k "*) systemctl --user enable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true ;;
+            *)
+                if systemctl --user is-enabled --quiet "${LANE_SERVICE}@${k}" 2>/dev/null \
+                        || systemctl --user is-active --quiet "${LANE_SERVICE}@${k}" 2>/dev/null; then
+                    systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+                    echo "  lane $k stopped"
+                fi ;;
+        esac
+    done
+}
+
+# Stop the lanes in $1 that are not in $2 and start the ones that are new; the rest keep running.
+apply_lane_delta() {
+    local before=" $1 " after=" $2 " k
+    for k in $1; do
+        [ "$k" -gt 1 ] || continue
+        case "$after" in
+            *" $k "*) ;;
+            *) systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+               echo "  lane $k stopped" ;;
+        esac
+    done
+    for k in $2; do
+        case "$before" in *" $k "*) continue ;; esac
+        if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+            ensure_lane_unit
             systemctl --user enable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
-        elif systemctl --user is-enabled --quiet "${LANE_SERVICE}@${k}" 2>/dev/null \
-                || systemctl --user is-active --quiet "${LANE_SERVICE}@${k}" 2>/dev/null; then
-            systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
-            echo "  lane $k stopped"
+            echo "  lane $k started"
+        else
+            echo "  lane $k ready; start it with: wolfctl start $k"
         fi
     done
 }
 
 stop_all_lanes() {
     local k
-    for k in $(seq 2 "$LANES_MAX"); do
+    for k in $(lane_ids all); do
+        [ "$k" -gt 1 ] || continue
         systemctl --user stop "${LANE_SERVICE}@${k}" 2>/dev/null || true
     done
 }
@@ -237,11 +272,14 @@ except Exception:
 }
 
 cmd_lanes() {
-    local n="" split="" json=0
+    local n="" split="" max="" json=0 before out
+    local pairs=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --split) split="${2:-}"; shift 2 || { echo "Usage: wolfctl lanes N --split none|budget|bet|both"; exit 1; } ;;
             --split=*) split="${1#--split=}"; shift ;;
+            --max) max="${2:-}"; shift 2 || { echo "Usage: wolfctl lanes --max N  (1-$LANE_ID_MAX)"; exit 1; } ;;
+            --max=*) max="${1#--max=}"; shift ;;
             --json) json=1; shift ;;
             --yes|-y) shift ;;
             -*) echo "Unknown option: $1"; exit 1 ;;
@@ -249,7 +287,7 @@ cmd_lanes() {
         esac
     done
     if [ "$json" = "1" ]; then
-        [ -z "$n" ] && [ -z "$split" ] || { echo "--json works with 'wolfctl lanes' alone" >&2; exit 2; }
+        [ -z "$n" ] && [ -z "$split" ] && [ -z "$max" ] || { echo "--json works with 'wolfctl lanes' alone" >&2; exit 2; }
         "$PYTHON" "$BOT" --lanes-status --json
         return
     fi
@@ -259,34 +297,87 @@ cmd_lanes() {
     if [ -n "$split" ]; then
         case "$split" in none|budget|bet|both) ;; *) echo "--split must be none, budget, bet or both"; exit 1 ;; esac
     fi
-    if [ -z "$n" ]; then
+    if [ -n "$max" ]; then
+        case "$max" in *[!0-9]*) echo "Usage: wolfctl lanes --max N  (1-$LANE_ID_MAX)"; exit 1 ;; esac
+        pairs+=("lanes_max=$max")
+    fi
+    if [ -z "$n" ] && [ -z "$max" ]; then
         echo "Configured lanes: $(lane_count)"
         "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
         echo "  Split: $(lane_split_mode)"
-        echo "  Change with: wolfctl lanes N [--split none|budget|bet|both]   (1-$LANES_MAX)"
+        echo "  Change with: wolfctl lanes N [--split none|budget|bet|both] [--max N]"
         return
     fi
-    case "$n" in ''|*[!0-9]*) echo "Usage: wolfctl lanes N  (1-$LANES_MAX)"; exit 1 ;; esac
-    if [ "$n" -lt 1 ] || [ "$n" -gt "$LANES_MAX" ]; then
-        echo "lanes must be 1-$LANES_MAX"; exit 1
+    if [ -n "$n" ]; then
+        case "$n" in *[!0-9]*) echo "Usage: wolfctl lanes N"; exit 1 ;; esac
+        pairs+=("lanes=$n")
     fi
-    if [ -n "$split" ]; then
-        "$PYTHON" "$BOT" --config-set "lanes=$n" "lane_split=$split" >/dev/null
-    else
-        "$PYTHON" "$BOT" --config-set "lanes=$n" >/dev/null
+    [ -z "$split" ] || pairs+=("lane_split=$split")
+    before=$(lane_ids)
+    if ! out=$("$PYTHON" "$BOT" --config-set "${pairs[@]}" 2>&1); then
+        echo "$out" >&2
+        exit 2
     fi
+    [ -z "$max" ] || echo "Lane limit set to $max."
+    [ -n "$n" ] || return 0
     echo "Lanes set to $n - split: $(lane_split_mode)."
-    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
-        # Restart every lane so each recomputes its budget share.
-        echo "Restarting lanes (each running chain is saved and ended)..."
-        stop_all_lanes
-        systemctl --user restart "$SERVICE"
-        sync_lanes "$n"
-        sleep 2
-        "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
-    else
-        echo "Bot not running - start all $n lane(s) with: wolfctl start"
+    apply_lane_delta "$before" "$(lane_ids)"
+    if [ "$before" != "$(lane_ids)" ]; then
+        case "$(lane_split_mode)" in
+            budget|both) echo "Budget shares update when each lane restarts: wolfctl restart K." ;;
+        esac
     fi
+    "$PYTHON" "$BOT" --lanes-status 2>/dev/null || true
+}
+
+# Add, remove or rename one lane; every other lane keeps betting.
+cmd_lane() {
+    local sub="${1:-}" name="" from="" k before
+    [ $# -gt 0 ] && shift
+    case "$sub" in
+        add)
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --from) from="${2:-}"; shift 2 || { echo "Usage: wolfctl lane add NAME [--from K]" >&2; exit 2; } ;;
+                    --from=*) from="${1#--from=}"; shift ;;
+                    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+                    *) [ -z "$name" ] || { echo "Usage: wolfctl lane add NAME [--from K]" >&2; exit 2; }; name="$1"; shift ;;
+                esac
+            done
+            [ -n "$name" ] || { echo "Usage: wolfctl lane add NAME [--from K]" >&2; exit 2; }
+            if [ -n "$from" ]; then
+                case "$from" in *[!0-9]*) echo "Usage: wolfctl lane add NAME [--from K]" >&2; exit 2 ;; esac
+            fi
+            before=$(lane_ids)
+            "$PYTHON" "$BOT" --lane-add "$name" ${from:+--lane-from "$((10#$from))"} || exit $?
+            apply_lane_delta "$before" "$(lane_ids)"
+            echo "Other lanes keep betting."
+            ;;
+        remove)
+            k="${1:-}"
+            case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl lane remove K" >&2; exit 2 ;; esac
+            [ $# -eq 1 ] || { echo "Usage: wolfctl lane remove K" >&2; exit 2; }
+            k=$((10#$k))
+            "$PYTHON" "$BOT" --lane-remove "$k" || exit $?
+            systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
+            case "$(systemctl --user is-active "${LANE_SERVICE}@${k}" 2>/dev/null || true)" in
+                active|activating|deactivating) echo "Lane $k is still running." >&2; exit 1 ;;
+            esac
+            echo "Lane $k stopped. Other lanes keep betting."
+            ;;
+        rename)
+            k="${1:-}" name="${2:-}"
+            case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl lane rename K NAME" >&2; exit 2 ;; esac
+            [ $# -eq 2 ] || { echo "Usage: wolfctl lane rename K NAME" >&2; exit 2; }
+            k=$((10#$k))
+            has_lane "$k" all || { echo "No lane $k." >&2; exit 2; }
+            "$PYTHON" "$BOT" --config-set "lane${k}.name=$name"
+            ;;
+        *)
+            echo "Usage: wolfctl lane add NAME [--from K] | remove K | rename K NAME" >&2
+            exit 2
+            ;;
+    esac
 }
 
 cmd_start() {
@@ -304,7 +395,7 @@ cmd_start() {
     if systemctl --user is-active --quiet "$SERVICE"; then
         local n
         n=$(lane_count)
-        sync_lanes "$n"
+        sync_lanes
         if [ "$was_active" -eq 1 ]; then
             echo "CLI bot was already running - nothing restarted."
             echo "  Apply a saved config:  wolfctl restart"
@@ -335,11 +426,16 @@ lane_pid_file() {
 cmd_signal() {
     local verb="$1" sig="$2" target="${3:-all}" lanes k pid pidfile cmdline matched=0
     case "$target" in
-        all) lanes=$(seq 1 "$LANES_MAX") ;;
-        ''|*[!0-9]*) echo "Usage: wolfctl $verb [K|all]  (K = 1-$LANES_MAX)" >&2; exit 2 ;;
+        all)
+            lanes=1
+            for pidfile in "$HOME"/.wolfbet_autobot.lane*.pid; do
+                k=${pidfile##*.lane}; k=${k%.pid}
+                case "$k" in ''|*[!0-9]*) ;; *) lanes="$lanes $k" ;; esac
+            done ;;
+        ''|*[!0-9]*) echo "Usage: wolfctl $verb [K|all]  (K = 1-$LANE_ID_MAX)" >&2; exit 2 ;;
         *)
-            if [ "$target" -lt 1 ] || [ "$target" -gt "$LANES_MAX" ]; then
-                echo "Usage: wolfctl $verb [K|all]  (K = 1-$LANES_MAX)" >&2; exit 2
+            if [ "$target" -lt 1 ] || [ "$target" -gt "$LANE_ID_MAX" ]; then
+                echo "Usage: wolfctl $verb [K|all]  (K = 1-$LANE_ID_MAX)" >&2; exit 2
             fi
             lanes="$target" ;;
     esac
@@ -377,14 +473,13 @@ lane_unit() {
     if [ "$1" -eq 1 ]; then echo "$SERVICE"; else echo "${LANE_SERVICE}@$1"; fi
 }
 
-# Start, stop or restart lane K (1..N) alone; every other lane keeps betting.
+# Start, stop or restart one enabled lane alone; every other lane keeps betting.
 cmd_lane_unit() {
-    local verb=$1 k=$2 n unit state
-    case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl $verb [K]  (K = lane 1-$LANES_MAX)" >&2; exit 2 ;; esac
+    local verb=$1 k=$2 unit state
+    case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl $verb [K]  (K = a lane id from 'wolfctl lanes')" >&2; exit 2 ;; esac
     k=$((10#$k))
-    n=$(lane_count)
-    if [ "$k" -lt 1 ] || [ "$k" -gt "${n:-1}" ]; then
-        echo "No lane $k: this bot runs ${n:-1} lane(s)." >&2; exit 2
+    if ! has_lane "$k"; then
+        echo "No lane $k: this bot runs $(lane_count) lane(s)." >&2; exit 2
     fi
     if [ "$verb" != stop ] && [ ! -f "$HOME/.wolfbet_autobot.json" ]; then
         echo "No config found. Run 'wolfctl setup' first." >&2; exit 1
@@ -422,7 +517,7 @@ cmd_restart() {
     stop_all_lanes
     systemctl --user restart "$SERVICE"
     sleep 1
-    sync_lanes "$(lane_count)"
+    sync_lanes
     echo "CLI bot restarted."
     "$PYTHON" "$BOT" --status 2>/dev/null || true
 }
@@ -532,7 +627,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.23"
+    echo "  wolfctl v3.24"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -670,7 +765,7 @@ cmd_run_reset() {
     "$PYTHON" "$BOT" --run-reset
     if [ "$was_running" = "1" ]; then
         systemctl --user start "$SERVICE"
-        sync_lanes "$(lane_count)"
+        sync_lanes
         echo "Lanes restarted on a new run."
     fi
 }
@@ -1077,7 +1172,7 @@ cmd_update() {
         systemctl --user restart "$SERVICE"
         sleep 1
         # v3.10 - bring parallel lanes back on the new code too.
-        sync_lanes "$(lane_count)"
+        sync_lanes
         if systemctl --user is-active --quiet "$SERVICE"; then
             echo "CLI daemon restarted (session auto-resumed)."
         else
@@ -1185,7 +1280,7 @@ cmd_stop_all() {
     systemctl --user stop "$SERVICE" 2>/dev/null || true
     systemctl --user stop "$TG_SERVICE" 2>/dev/null || true
     systemctl --user stop "$WEB_SERVICE" 2>/dev/null || true
-    for unit in "$SERVICE" "$TG_SERVICE" $(for k in $(seq 2 "$LANES_MAX"); do echo "${LANE_SERVICE}@${k}"; done); do
+    for unit in "$SERVICE" "$TG_SERVICE" $(for k in $(lane_ids all); do [ "$k" -gt 1 ] && echo "${LANE_SERVICE}@${k}"; done); do
         state=$(systemctl --user is-active "$unit" 2>/dev/null || true)
         case "$state" in
             inactive|failed) ;;
@@ -1390,6 +1485,7 @@ case "${1:-}" in
     reload)       cmd_signal reload HUP "${2:-all}" ;;
     monitor)      cmd_monitor "${2:-}" ;;
     lanes)        shift; cmd_lanes "$@" ;;
+    lane)         shift; cmd_lane "$@" ;;
     logs)         cmd_logs ;;
     logs-full)    cmd_logs_full ;;
     interactive)  cmd_interactive ;;

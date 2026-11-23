@@ -137,9 +137,9 @@ def test_schema_defaults_and_lanes(env, capsys):
     assert keys["streakbet_loss"]["default"] == [0, 1.0]
     assert keys["proxy"]["default"] is None
     assert keys["strategy_key"]["aliases"] == ["strategy"]
-    assert doc["lanes"] == {"count": {"min": 1, "max": wb.LANES_MAX},
+    assert doc["lanes"] == {"count": {"min": 1, "max": wb.LANES_MAX_DEFAULT},
                             "split": {"choices": list(wb.LANE_SPLIT_MODES)},
-                            "override_lanes": {"min": 2, "max": wb.LANES_MAX},
+                            "override_lanes": {"min": 2, "max": wb.LANE_ID_MAX},
                             "unset_values": ["default", "unset", "inherit"]}
 
 

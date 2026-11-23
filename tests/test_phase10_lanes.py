@@ -81,7 +81,7 @@ def test_apply_lane_one_keeps_classic_paths():
     assert wb.STATE_PATH == wb._BASE_STATE_PATH and wb.PID_PATH == wb._BASE_PID_PATH
 
 
-@pytest.mark.parametrize("bad", [0, 11, -1])
+@pytest.mark.parametrize("bad", [0, 100, -1])
 def test_apply_lane_range(bad):
     with pytest.raises(ValueError):
         wb._apply_lane(bad)
@@ -144,15 +144,16 @@ def test_live_reload_merges_lane_overrides(monkeypatch, tmp_path):
 
 
 def test_split_lane_pairs():
-    base, per_lane, count, split = wb._split_lane_pairs(
-        ["max_wins=4", "lanes=3", "lane2.base_bet=0.001", "LANE3.maxwins=1", "lane_split=Both"])
-    assert base == ["max_wins=4"] and count == 3 and split == "both"
+    base, per_lane, block = wb._split_lane_pairs(
+        ["max_wins=4", "lanes=3", "lane2.base_bet=0.001", "LANE3.maxwins=1", "lane_split=Both",
+         "lanes_max=12"])
+    assert base == ["max_wins=4"] and block == {"count": 3, "split": "both", "max": 12}
     assert per_lane == {2: ["base_bet=0.001"], 3: ["maxwins=1"]}
 
 
-@pytest.mark.parametrize("pairs", [["lanes=0"], ["lanes=11"], ["lanes=x"], ["lane1.base_bet=1"],
-                                   ["lane11.base_bet=1"], ["lane_split=half"],
-                                   ["lane2.lane_split=bet"]])
+@pytest.mark.parametrize("pairs", [["lanes=0"], ["lanes=100"], ["lanes=x"], ["lane1.base_bet=1"],
+                                   ["lane100.base_bet=1"], ["lane_split=half"],
+                                   ["lane2.lane_split=bet"], ["lanes_max=0"], ["lanes_max=100"]])
 def test_split_lane_pairs_rejects(pairs):
     with pytest.raises(ValueError):
         wb._split_lane_pairs(pairs)
@@ -230,7 +231,7 @@ def test_lane_count_change_keeps_names_and_overrides(monkeypatch, tmp_path):
     assert data["items"]["3"] == {"name": "friend-A", "enabled": False, "overrides": {}}
     wb.cmd_config_set(["lanes=4"])
     data = json.load(open(path))["lanes"]
-    assert [k for k, e in data["items"].items() if e["enabled"]] == ["1", "2", "3", "4"]
+    assert [k for k, e in data["items"].items() if e["enabled"]] == ["1", "2", "3", "5"]
     assert data["items"]["3"]["name"] == "friend-A"
     assert data["items"]["2"]["overrides"] == {"max_wins": 2}
     assert data["items"]["5"]["overrides"] == {"base_bet": 0.0005}
@@ -300,22 +301,28 @@ def test_dry_run_reports_a_rename_as_live(monkeypatch, tmp_path, capsys):
                                    "apply": "live", "removed": False}]
 
 
-def _wolfctl_lane_count(home, lanes):
+def _lane_ids_cli(tmp_path, lanes, *extra):
     import subprocess
-    with open(os.path.join(home, ".wolfbet_autobot.json"), "w") as f:
-        json.dump({"lanes": lanes}, f)
-    src = _src("wolfctl")
-    body = src.split("lane_count() {", 1)[1].split("\n}\n", 1)[0]
-    script = f'PYTHON={sys.executable}\nlane_count() {{{body}\n}}\nlane_count\n'
-    out = subprocess.run(["bash", "-c", script], env={**os.environ, "HOME": str(home)},
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps({"lanes": lanes}))
+    out = subprocess.run([sys.executable, os.path.join(_WOLFBET_DIR, "wolfbet.py"), "--lane-ids",
+                          *extra], env={**os.environ, "WOLFBET_CONFIG_PATH": str(path)},
                          capture_output=True, text=True, check=True)
-    return int(out.stdout.strip())
+    return out.stdout.strip()
 
 
-def test_wolfctl_lane_count_reads_both_shapes(tmp_path):
-    assert _wolfctl_lane_count(tmp_path, OLD_LANES) == 3
-    assert _wolfctl_lane_count(tmp_path, {"items": {
-        "1": {"enabled": True}, "2": {"enabled": True}, "3": {"enabled": False}}}) == 2
+def test_lane_ids_reads_both_shapes(tmp_path):
+    assert _lane_ids_cli(tmp_path, OLD_LANES) == "1 2 3"
+    assert _lane_ids_cli(tmp_path, OLD_LANES, "all") == "1 2 3 5"
+    assert _lane_ids_cli(tmp_path, {"items": {
+        "1": {"enabled": True}, "2": {"enabled": True}, "3": {"enabled": False},
+        "15": {"enabled": True}}}) == "1 2 15"
+
+
+def test_wolfctl_lane_count_counts_the_enabled_ids():
+    s = _src("wolfctl")
+    assert '"$PYTHON" "$BOT" --lane-ids "${1:-enabled}"' in s
+    assert "seq 2" not in s
 
 
 # ── split budget ──────────────────────────────────────────
@@ -487,6 +494,7 @@ def test_db_start_session_tags_lane(monkeypatch, tmp_path):
 def test_lanes_status_table(monkeypatch, tmp_path, capsys):
     base = str(tmp_path / "live.json")
     monkeypatch.setattr(wb, "_BASE_STATE_PATH", base)
+    _config(monkeypatch, tmp_path, {**BASE, "lanes": {"count": 2}})
     for k, p in ((1, 0.001), (2, -0.0005)):
         with open(wb._lane_path(base, k), "w") as f:
             json.dump({"pid": os.getpid(), "session_id": 10 + k, "uptime_sec": 5,
@@ -524,8 +532,8 @@ def test_wolfctl_lane_commands():
     assert "--lane %i" in s
     assert '"$PYTHON" "$BOT" --monitor --lane "$k"' in s
     assert "--lanes-status" in s
-    assert "stop_all_lanes" in s and "sync_lanes" in s
-    assert "WOLFCTL_VERSION=3.23" in s
+    assert "stop_all_lanes" in s and "sync_lanes" in s and 'cmd_lane "$@"' in s
+    assert "WOLFCTL_VERSION=3.24" in s
 
 
 def test_install_writes_lane_template():
@@ -640,3 +648,135 @@ def test_wolfctl_lanes_split_option():
     s = open(os.path.join(_WOLFBET_DIR, "wolfctl")).read()
     assert "--split" in s and '"lane_split=$split"' in s
     assert 'lanes)        shift; cmd_lanes "$@" ;;' in s
+
+
+# ── one lane at a time: add, remove, count delta, owner limit ──
+def _registry_config(monkeypatch, tmp_path, items, **block):
+    lanes = {"split": "none", "next_id": max(int(k) for k in items) + 1, **block, "items": {
+        k: {"name": f"Lane {k}", "enabled": True, "overrides": {}, **v} for k, v in items.items()}}
+    path = _config(monkeypatch, tmp_path, {**BASE, "lanes": lanes})
+    monkeypatch.setattr(wb, "_apply_proxy_to_session", lambda: None)
+    signalled = []
+    monkeypatch.setattr(wb, "_signal_lane_daemons",
+                        lambda lanes=None: signalled.extend(lanes or []) or len(lanes or []))
+    wb.state.lane = 1
+    return path, signalled
+
+
+def _lanes_block(path):
+    return json.load(open(path))["lanes"]
+
+
+def test_lane_add_copies_overrides_and_takes_the_next_id(monkeypatch, tmp_path, capsys):
+    path, signalled = _registry_config(monkeypatch, tmp_path, {
+        "1": {}, "2": {"overrides": {"max_wins": 2}}})
+    wb.cmd_lane_add("friend-A", 2)
+    block = _lanes_block(path)
+    assert block["items"]["3"] == {"name": "friend-A", "enabled": True,
+                                   "overrides": {"max_wins": 2}}
+    assert block["next_id"] == 4 and signalled == []
+    assert "Lane 3 (friend-A) added with lane 2's overrides." in capsys.readouterr().out
+    wb.cmd_lane_add("plain")
+    assert _lanes_block(path)["items"]["4"]["overrides"] == {}
+
+
+def test_a_removed_lane_id_is_never_reused(monkeypatch, tmp_path, capsys):
+    path, _ = _registry_config(monkeypatch, tmp_path, {"1": {}, "2": {}, "3": {}})
+    wb.cmd_lane_remove(3)
+    block = _lanes_block(path)
+    assert "3" not in block["items"] and block["next_id"] == 4
+    assert "Lane 3 (Lane 3) removed." in capsys.readouterr().out
+    wb.cmd_lane_add("again")
+    assert "4" in _lanes_block(path)["items"] and "3" not in _lanes_block(path)["items"]
+
+
+@pytest.mark.parametrize("call,message", [
+    (lambda: wb.cmd_lane_remove(1), "Lane 1 holds the base config and can't be removed."),
+    (lambda: wb.cmd_lane_remove(9), "No lane 9."),
+    (lambda: wb.cmd_lane_add("x", 9), "No lane 9."),
+    (lambda: wb.cmd_lane_add("x;rm"), wb.LANE_NAME_HELP),
+    (lambda: wb.cmd_lane_add("x"), "This bot already runs 2 lane(s), the limit."),
+])
+def test_refused_lane_changes_write_nothing(monkeypatch, tmp_path, capsys, call, message):
+    path, signalled = _registry_config(monkeypatch, tmp_path, {"1": {}, "2": {}}, max=2)
+    before = open(path).read()
+    with pytest.raises(SystemExit) as e:
+        call()
+    assert e.value.code == 2 and message in capsys.readouterr().out
+    assert open(path).read() == before and signalled == []
+
+
+def test_lane_ids_run_out_at_the_ceiling(monkeypatch, tmp_path, capsys):
+    path, _ = _registry_config(monkeypatch, tmp_path, {"1": {}}, next_id=wb.LANE_ID_MAX + 1)
+    with pytest.raises(SystemExit):
+        wb.cmd_lane_add("x")
+    assert "Lane ids run out at 99" in capsys.readouterr().out
+
+
+def test_lanes_n_down_disables_the_highest_ids(monkeypatch, tmp_path):
+    path, _ = _registry_config(monkeypatch, tmp_path, {"1": {}, "4": {}, "7": {}}, next_id=8)
+    wb.cmd_config_set(["lanes=2"])
+    items = _lanes_block(path)["items"]
+    assert [k for k, e in items.items() if e["enabled"]] == ["1", "4"]
+    wb.cmd_config_set(["lanes=4"])
+    block = _lanes_block(path)
+    assert [k for k, e in block["items"].items() if e["enabled"]] == ["1", "4", "7", "8"]
+    assert block["next_id"] == 9
+
+
+def test_owner_limit_bounds_the_lane_count(monkeypatch, tmp_path, capsys):
+    path, _ = _registry_config(monkeypatch, tmp_path, {"1": {}, "2": {}, "3": {}})
+    with pytest.raises(SystemExit) as e:
+        wb.cmd_config_set(["lanes=11"])
+    assert e.value.code == 2 and "lanes must be 1-10, got 11" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        wb.cmd_config_set(["lanes_max=2"])
+    assert "lanes_max can't be below the 3 lane(s) configured" in capsys.readouterr().out
+    wb.cmd_config_set(["lanes_max=12", "lanes=11"])
+    block = _lanes_block(path)
+    assert block["max"] == 12 and sum(e["enabled"] for e in block["items"].values()) == 11
+    assert wb._lanes_max(json.load(open(path))) == 12
+
+
+def test_a_lane_id_above_ten_runs(monkeypatch, tmp_path):
+    _registry_config(monkeypatch, tmp_path, {"1": {}, "15": {"name": "late"}})
+    wb._apply_lane(15)
+    assert wb.state.lane == 15 and "[L15 late]" in wb._log_handler.formatter._fmt
+    assert wb._lane_ids(json.load(open(wb.CONFIG_PATH))) == [1, 15]
+
+
+@pytest.mark.parametrize("split,signals,note", [
+    ("none", [], False), ("bet", [1, 2], False), ("budget", [], True), ("both", [1, 2], True)])
+def test_count_change_reaches_only_lanes_whose_share_changed(monkeypatch, tmp_path, capsys,
+                                                            split, signals, note):
+    _, signalled = _registry_config(monkeypatch, tmp_path, {"1": {}, "2": {}, "3": {}},
+                                    split=split)
+    wb.cmd_lane_remove(3)
+    assert signalled == signals
+    assert ("Budget shares update when each lane restarts" in capsys.readouterr().out) == note
+
+
+def test_rename_does_not_signal_share_lanes(monkeypatch, tmp_path):
+    _, signalled = _registry_config(monkeypatch, tmp_path, {"1": {}, "2": {}}, split="bet")
+    wb.cmd_config_set(["lane2.name=night"])
+    assert signalled == [2]
+
+
+def test_reload_follows_the_lane_count(monkeypatch, tmp_path):
+    path = _load_lane(monkeypatch, tmp_path, 2, {"count": 2, "split": "bet"})
+    assert wb.state.lanes_count == 2 and wb.state.base_bet == 0.00005
+    with open(path, "w") as f:
+        json.dump({**BASE, "lanes": {"count": 4, "split": "bet"}}, f)
+    wb._reload_live_config()
+    assert wb.state.lanes_count == 4 and wb.state.base_bet == 0.000025
+    assert wb._split_bet_divisor() == 4
+
+
+def test_run_reset_clears_every_lane_file(monkeypatch, tmp_path):
+    run = str(tmp_path / "run.json")
+    monkeypatch.setattr(wb, "RUN_PATH", run)
+    for k in (1, 2, 15):
+        open(wb._lane_path(run, k), "w").write("{}")
+    open(str(tmp_path / "run.laneX.json"), "w").write("{}")
+    assert wb._lane_file_ids(run) == [1, 2, 15]
+    assert wb.cmd_run_reset() == 3

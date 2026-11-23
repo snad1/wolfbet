@@ -980,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.48.0"
+VERSION      = "2.49.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1005,7 +1005,8 @@ logger.addHandler(_log_handler)
 # stops and pauses. Lane 1 = the classic single bot (paths unchanged). Lanes
 # 2..N run side by side, share the DB + config file, and each may only use
 # balance ÷ lanes (split budget).
-LANES_MAX = 10
+LANE_ID_MAX = 99
+LANES_MAX_DEFAULT = 10
 AUTOSTART_LOCK_PATH = os.environ.get(
     "WOLFBET_AUTOSTART_LOCK", os.path.expanduser("~/.wolfbet_autostart.lock"))
 # Never overridable per lane: identity, account, network and storage settings.
@@ -1024,6 +1025,18 @@ def _lane_path(path: str, lane: int) -> str:
     return f"{root}.lane{lane}{ext}"
 
 
+def _lane_file_ids(path: str) -> list:
+    """Lane ids that have a file next to `path` (lane 1 = `path`, lane K = its .laneK twin)."""
+    import glob
+    root, ext = os.path.splitext(path)
+    ids = [1] if os.path.exists(path) else []
+    for f in glob.glob(f"{glob.escape(root)}.lane*{glob.escape(ext)}"):
+        tag = f[len(root) + len(".lane"):len(f) - len(ext)]
+        if tag.isdigit():
+            ids.append(int(tag))
+    return sorted(ids)
+
+
 LANE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
 LANE_NAME_HELP = "lane name must be 1-32 characters: letters, digits, space, _ or -"
 
@@ -1033,7 +1046,7 @@ def _default_lane_name(lane: int) -> str:
 
 
 def _lane_registry(data: dict) -> dict:
-    """Every configured lane as {id: {"name", "enabled", "overrides"}}, ids 1..LANES_MAX.
+    """Every configured lane as {id: {"name", "enabled", "overrides"}}, ids 1..LANE_ID_MAX.
 
     Reads `lanes.items`; a config written before lanes had names (`lanes.count` plus
     `lanes.overrides`) reads as lanes 1..count enabled, and lanes that only have overrides
@@ -1048,7 +1061,7 @@ def _lane_registry(data: dict) -> dict:
                 lane = int(key)
             except (TypeError, ValueError):
                 continue
-            if not 1 <= lane <= LANES_MAX or not isinstance(entry, dict):
+            if not 1 <= lane <= LANE_ID_MAX or not isinstance(entry, dict):
                 continue
             name = entry.get("name")
             reg[lane] = {
@@ -1059,13 +1072,13 @@ def _lane_registry(data: dict) -> dict:
             }
     else:
         try:
-            count = max(1, min(LANES_MAX, int(block.get("count") or 1)))
+            count = max(1, min(LANES_MAX_DEFAULT, int(block.get("count") or 1)))
         except (TypeError, ValueError):
             count = 1
         overrides = block.get("overrides") or {}
         ids = set(range(1, count + 1))
         for key in overrides:
-            if str(key).isdigit() and 1 <= int(key) <= LANES_MAX:
+            if str(key).isdigit() and 1 <= int(key) <= LANES_MAX_DEFAULT:
                 ids.add(int(key))
         for lane in sorted(ids):
             reg[lane] = {"name": _default_lane_name(lane), "enabled": lane <= count,
@@ -1073,6 +1086,20 @@ def _lane_registry(data: dict) -> dict:
     reg.setdefault(1, {"name": _default_lane_name(1), "enabled": True, "overrides": {}})
     reg[1]["enabled"] = True
     return reg
+
+
+def _lanes_max(data: dict) -> int:
+    """How many lanes may be enabled at once: the owner-set `lanes.max`, default 10."""
+    try:
+        return max(1, min(LANE_ID_MAX, int((data.get("lanes") or {}).get("max")
+                                           or LANES_MAX_DEFAULT)))
+    except (TypeError, ValueError):
+        return LANES_MAX_DEFAULT
+
+
+def _lane_ids(data: dict) -> list:
+    """Every registry lane id, enabled or not, in order."""
+    return sorted(_lane_registry(data))
 
 
 def _lane_name(data: dict, lane: int) -> str:
@@ -1101,8 +1128,8 @@ def _apply_lane(lane: int) -> None:
     """Switch this process to lane `lane`: state/pid paths + log prefix."""
     global STATE_PATH, PID_PATH
     lane = 1 if lane is None else int(lane)
-    if not 1 <= lane <= LANES_MAX:
-        raise ValueError(f"--lane must be 1-{LANES_MAX}, got {lane}")
+    if not 1 <= lane <= LANE_ID_MAX:
+        raise ValueError(f"--lane must be 1-{LANE_ID_MAX}, got {lane}")
     state.lane = lane
     if lane > 1:
         STATE_PATH = _lane_path(_BASE_STATE_PATH, lane)
@@ -1390,6 +1417,7 @@ def _reload_live_config() -> dict:
     except Exception as e:
         logger.warning("live reload: failed to parse config: %s", e)
         return {}
+    state.lanes_count = _lanes_count(data)
     data = _lane_config(data, getattr(state, "lane", 1))
 
     applied = {}
@@ -2756,7 +2784,7 @@ def _attach_run(session_id: int) -> None:
 def cmd_run_reset(lane: int = None) -> int:
     """Delete the run file(s): the next start begins a new run. Returns count removed."""
     n = 0
-    for k in ([lane] if lane else range(1, LANES_MAX + 1)):
+    for k in ([lane] if lane else _lane_file_ids(RUN_PATH)):
         try:
             os.remove(_lane_path(RUN_PATH, k))
             n += 1
@@ -6578,9 +6606,9 @@ def _span_range(span: dict) -> tuple:
 #  --status COMMAND
 # ══════════════════════════════════════════════════════════
 def _read_lane_states() -> list:
-    """v2.35.0: [(lane, state-dict | None, alive)] for lanes 1..LANES_MAX that have a state file."""
+    """v2.35.0: [(lane, state-dict | None, alive)] for registry lanes that have a state file."""
     out = []
-    for k in range(1, LANES_MAX + 1):
+    for k in _lane_ids(_read_config_raw()):
         path = _lane_path(_BASE_STATE_PATH, k)
         if not os.path.exists(path):
             continue
@@ -7058,7 +7086,7 @@ def _config_show_data() -> dict:
     except (OSError, ValueError):
         raw = {}
     overrides = {}
-    for lane in range(2, LANES_MAX + 1):
+    for lane in _lane_ids(raw):
         ov = _lane_overrides(raw, lane)
         if ov:
             overrides[str(lane)] = {k: _config_show_value(k, v) for k, v in sorted(ov.items())}
@@ -7232,9 +7260,9 @@ def _config_schema_data() -> dict:
         if entry["key"] == "custom_rules_text":
             entry["rule_options"] = _rule_options()
     return {"keys": keys,
-            "lanes": {"count": {"min": 1, "max": LANES_MAX},
+            "lanes": {"count": {"min": 1, "max": _lanes_max(_read_config_raw())},
                       "split": {"choices": list(LANE_SPLIT_MODES)},
-                      "override_lanes": {"min": 2, "max": LANES_MAX},
+                      "override_lanes": {"min": 2, "max": LANE_ID_MAX},
                       "unset_values": list(_LANE_UNSET_VALUES)}}
 
 
@@ -7263,9 +7291,13 @@ _LANE_UNSET_VALUES = ("default", "unset", "inherit")
 
 
 def _split_lane_pairs(pairs: list):
-    """Split config-set pairs into (base, {lane: [pairs]}, lanes_count|None, split|None)."""
+    """Split config-set pairs into (base, {lane: [pairs]}, block).
+
+    block holds the lanes-wide settings given: "count" (lanes=N), "split" (lane_split)
+    and "max" (lanes_max). The count is checked against the limit when the plan is built.
+    """
     import re as _re
-    base, per_lane, count, split = [], {}, None, None
+    base, per_lane, block = [], {}, {}
     for pair in pairs:
         if "=" not in pair:
             base.append(pair)          # _parse_config_set_pairs reports it
@@ -7273,36 +7305,38 @@ def _split_lane_pairs(pairs: list):
         key, val = pair.split("=", 1)
         key = key.strip().lower()
         m = _re.match(r"^lane(\d+)\.(.+)$", key)
-        if key == "lanes":
+        if key in ("lanes", "lanes_max"):
             try:
-                count = int(val.strip())
+                n = int(val.strip())
             except ValueError:
-                raise ValueError(f"lanes must be an integer 1-{LANES_MAX}, got {val!r}")
-            if not 1 <= count <= LANES_MAX:
-                raise ValueError(f"lanes must be 1-{LANES_MAX}, got {count}")
+                raise ValueError(f"{key} must be an integer 1-{LANE_ID_MAX}, got {val!r}")
+            if not 1 <= n <= LANE_ID_MAX:
+                raise ValueError(f"{key} must be 1-{LANE_ID_MAX}, got {n}")
+            block["count" if key == "lanes" else "max"] = n
         elif key == "lane_split":
             split = val.strip().lower()
             if split not in LANE_SPLIT_MODES:
                 raise ValueError(f"lane_split must be one of {', '.join(LANE_SPLIT_MODES)}, "
                                  f"got {val!r}")
+            block["split"] = split
         elif m and m.group(2) == "name":
             lane, name = int(m.group(1)), val.strip().strip('"').strip("'").strip()
-            if not 1 <= lane <= LANES_MAX:
-                raise ValueError(f"lanes are 1-{LANES_MAX}, got lane{lane}")
+            if not 1 <= lane <= LANE_ID_MAX:
+                raise ValueError(f"lanes are 1-{LANE_ID_MAX}, got lane{lane}")
             if not LANE_NAME_RE.match(name):
                 raise ValueError(LANE_NAME_HELP)
             per_lane.setdefault(lane, []).append(f"name={name}")
         elif m:
             lane = int(m.group(1))
-            if not 2 <= lane <= LANES_MAX:
-                raise ValueError(f"lane overrides are for lanes 2-{LANES_MAX} "
+            if not 2 <= lane <= LANE_ID_MAX:
+                raise ValueError(f"lane overrides are for lanes 2-{LANE_ID_MAX} "
                                  f"(lane 1 uses the base config), got lane{lane}")
             if m.group(2) == "lane_split":
                 raise ValueError("lane_split can't differ per lane (shared by all lanes)")
             per_lane.setdefault(lane, []).append(f"{m.group(2)}={val}")
         else:
             base.append(pair)
-    return base, per_lane, count, split
+    return base, per_lane, block
 
 
 def _backup_pre_registry_config() -> None:
@@ -7370,7 +7404,7 @@ def _lane_override_changes(lane: int, lane_pairs: list):
 def _signal_lane_daemons(lanes=None) -> int:
     """SIGHUP every running lane daemon (or just `lanes`). Returns count signalled."""
     n = 0
-    for k in (lanes or range(1, LANES_MAX + 1)):
+    for k in (lanes or _lane_ids(_read_config_raw())):
         try:
             with open(_lane_path(_BASE_PID_PATH, k)) as f:
                 os.kill(int(f.read().strip()), signal.SIGHUP)
@@ -7380,27 +7414,93 @@ def _signal_lane_daemons(lanes=None) -> int:
     return n
 
 
-def _plan_lane_changes(per_lane: dict, count, split) -> dict:
-    """Validate lanes=N, lane_split and laneK.* pairs and build the lanes block to write.
-
-    Returns {"raw": config dict with the new lanes block, "changes": [...], "lanes": [K, ...]};
-    each change is {lane (None for lanes/lane_split), key, old, new, removed}.
-    """
+def _lane_config_or_fail() -> dict:
     try:
         with open(CONFIG_PATH) as f:
             raw = json.load(f)
     except (OSError, ValueError):
         raise _CliError("no_config", "No config saved yet: run the wizard first.",
                         exit_code=1) from None
+    return raw if isinstance(raw, dict) else {}
+
+
+def _next_lane_id(raw: dict, reg: dict) -> int:
+    """The id the next new lane gets: never one a removed lane had."""
+    try:
+        stored = int((raw.get("lanes") or {}).get("next_id") or 0)
+    except (TypeError, ValueError):
+        stored = 0
+    return max(stored, max(reg) + 1)
+
+
+def _lanes_block(raw: dict, reg: dict, next_id: int, split=None, lanes_max=None) -> dict:
+    """The `lanes` block to write: split, the owner limit when set, next_id and the items."""
+    block = {"split": split if split is not None else _lane_split(raw)}
+    limit = lanes_max if lanes_max is not None else (raw.get("lanes") or {}).get("max")
+    if limit is not None:
+        block["max"] = limit
+    block["next_id"] = next_id
+    block["items"] = {str(lane): reg[lane] for lane in sorted(reg)}
+    return block
+
+
+def _set_enabled_count(reg: dict, count: int, next_id: int) -> int:
+    """Enable `count` lanes: disabled lanes come back first (lowest id), then new ids.
+
+    Lowering the count disables the highest enabled ids; lane 1 always stays. Returns next_id.
+    """
+    enabled = [lane for lane in sorted(reg) if reg[lane]["enabled"]]
+    for lane in enabled[count:]:
+        reg[lane]["enabled"] = False
+    need = count - len(enabled)
+    for lane in sorted(reg):
+        if need > 0 and not reg[lane]["enabled"]:
+            reg[lane]["enabled"] = True
+            need -= 1
+    while need > 0:
+        if next_id > LANE_ID_MAX:
+            raise ValueError(f"lane ids run out at {LANE_ID_MAX}: removed ids are never reused")
+        reg[next_id] = {"name": _default_lane_name(next_id), "enabled": True, "overrides": {}}
+        next_id += 1
+        need -= 1
+    return next_id
+
+
+def _plan_lane_changes(per_lane: dict, block: dict) -> dict:
+    """Validate lanes=N, lanes_max, lane_split and laneK.* pairs and build the lanes block to write.
+
+    Returns {"raw": config dict with the new lanes block, "before": the config as read,
+    "changes": [...], "lanes": [K, ...]}; each change is {lane (None for the lanes-wide
+    settings), key, old, new, removed}.
+    """
+    raw = _lane_config_or_fail()
+    before = json.loads(json.dumps(raw))
     reg = _lane_registry(raw)
+    next_id = _next_lane_id(raw, reg)
+    count, split, limit = block.get("count"), block.get("split"), block.get("max")
     changes = []
+    if limit is not None:
+        changes.append({"lane": None, "key": "lanes_max", "old": _lanes_max(raw), "new": limit,
+                        "removed": False})
+    effective_limit = limit if limit is not None else _lanes_max(raw)
     if count is not None:
+        if count > effective_limit:
+            raise _CliError("invalid_argument",
+                            f"Invalid --config-set argument: lanes must be 1-{effective_limit}, "
+                            f"got {count}", style="red", exit_code=2,
+                            hint="  Raise the limit with: wolfctl lanes --max N")
         changes.append({"lane": None, "key": "lanes", "old": _lanes_count(raw),
                         "new": count, "removed": False})
-        for lane in range(1, max(count, max(reg)) + 1):
-            entry = reg.setdefault(lane, {"name": _default_lane_name(lane), "enabled": True,
-                                          "overrides": {}})
-            entry["enabled"] = lane <= count
+        try:
+            next_id = _set_enabled_count(reg, count, next_id)
+        except ValueError as e:
+            raise _CliError("invalid_argument", f"Invalid --config-set argument: {e}",
+                            style="red", exit_code=2) from None
+    running = sum(1 for entry in reg.values() if entry["enabled"])
+    if limit is not None and limit < running:
+        raise _CliError("invalid_argument",
+                        f"Invalid --config-set argument: lanes_max can't be below the "
+                        f"{running} lane(s) configured", style="red", exit_code=2)
     if split is not None:
         changes.append({"lane": None, "key": "lane_split", "old": _lane_split(raw),
                         "new": split, "removed": False})
@@ -7427,12 +7527,87 @@ def _plan_lane_changes(per_lane: dict, count, split) -> dict:
         for k, v in sets.items():
             changes.append({"lane": lane, "key": k, "old": ov.get(k), "new": v, "removed": False})
             ov[k] = v
-    raw["lanes"] = {
-        "split": split if split is not None else _lane_split(raw),
-        "next_id": max(reg) + 1,
-        "items": {str(lane): reg[lane] for lane in sorted(reg)},
-    }
-    return {"raw": raw, "changes": changes, "lanes": sorted(per_lane)}
+    raw["lanes"] = _lanes_block(raw, reg, max(next_id, max(reg) + 1), split, limit)
+    return {"raw": raw, "before": before, "changes": changes, "lanes": sorted(per_lane)}
+
+
+def _save_lane_registry(raw: dict, reg: dict, next_id: int) -> None:
+    _backup_pre_registry_config()
+    raw["lanes"] = _lanes_block(raw, reg, next_id)
+    _write_config_raw(raw)
+
+
+def _signal_share_change(before: dict, after: dict) -> None:
+    """After the lane count changes, bring the remaining lanes their new share.
+
+    With the bet split each running lane reloads, so its base bet ÷ lanes follows at once.
+    The budget share (balance ÷ lanes) is fixed when a lane starts, so it waits for a restart.
+    """
+    if _lanes_count(before) == _lanes_count(after):
+        return
+    split = _lane_split(after)
+    if split in ("bet", "both"):
+        enabled = [lane for lane, entry in _lane_registry(after).items() if entry["enabled"]]
+        n = _signal_lane_daemons(enabled)
+        if n:
+            console.print(f"[dim]{n} running lane(s) reloaded their base bet share.[/]")
+    if split in ("budget", "both"):
+        console.print("[dim]Budget shares update when each lane restarts: "
+                      "[cyan]wolfctl restart K[/].[/]")
+
+
+def cmd_lane_add(name: str, src=None) -> None:
+    """Add one enabled lane named `name`, copying lane `src`'s overrides (lane 1: none)."""
+    src = 1 if src is None else int(src)
+    name = (name or "").strip()
+    try:
+        if not LANE_NAME_RE.match(name):
+            raise _CliError("invalid_argument", LANE_NAME_HELP, style="red", exit_code=2)
+        raw = _lane_config_or_fail()
+        before = json.loads(json.dumps(raw))
+        reg = _lane_registry(raw)
+        if src not in reg:
+            raise _CliError("no_lane", f"No lane {src}.", style="red", exit_code=2)
+        limit, running = _lanes_max(raw), _lanes_count(raw)
+        if running >= limit:
+            raise _CliError("lane_limit", f"This bot already runs {running} lane(s), the limit.",
+                            style="red", exit_code=2,
+                            hint="  Raise it with: wolfctl lanes --max N")
+        lane = _next_lane_id(raw, reg)
+        if lane > LANE_ID_MAX:
+            raise _CliError("lane_ids_used",
+                            f"Lane ids run out at {LANE_ID_MAX}: removed ids are never reused.",
+                            style="red", exit_code=2)
+    except _CliError as e:
+        _cli_fail(e, False)
+        return
+    overrides = dict(reg[src]["overrides"]) if src > 1 else {}
+    reg[lane] = {"name": name, "enabled": True, "overrides": overrides}
+    _save_lane_registry(raw, reg, lane + 1)
+    copied = f" with lane {src}'s overrides" if overrides else ""
+    console.print(f"Lane {lane} ({name}) added{copied}.")
+    _signal_share_change(before, raw)
+
+
+def cmd_lane_remove(lane: int) -> None:
+    """Drop lane `lane` from the registry; its id is never reused and its history stays."""
+    try:
+        if lane == 1:
+            raise _CliError("lane_one", "Lane 1 holds the base config and can't be removed.",
+                            style="red", exit_code=2)
+        raw = _lane_config_or_fail()
+        reg = _lane_registry(raw)
+        if lane not in reg:
+            raise _CliError("no_lane", f"No lane {lane}.", style="red", exit_code=2)
+    except _CliError as e:
+        _cli_fail(e, False)
+        return
+    before = json.loads(json.dumps(raw))
+    next_id = _next_lane_id(raw, reg)
+    name = reg.pop(lane)["name"]
+    _save_lane_registry(raw, reg, next_id)
+    console.print(f"Lane {lane} ({name}) removed.")
+    _signal_share_change(before, raw)
 
 
 def _config_set_plan(pairs: list) -> dict:
@@ -7450,13 +7625,13 @@ def _config_set_plan(pairs: list) -> dict:
                             hint="  Set the WOLFBET_API_KEY environment variable instead "
                                  "(never in shell history / process args).")
     try:
-        pairs, per_lane, lanes_count, lane_split = _split_lane_pairs(pairs)
+        pairs, per_lane, lane_block = _split_lane_pairs(pairs)
     except ValueError as e:
         raise _CliError("invalid_argument", f"Invalid --config-set argument: {e}",
                         style="red", exit_code=2) from None
     plan = {"lanes": None, "parsed": {}, "old": {}, "before": {}, "msgs": []}
-    if per_lane or lanes_count is not None or lane_split is not None:
-        plan["lanes"] = _plan_lane_changes(per_lane, lanes_count, lane_split)
+    if per_lane or lane_block:
+        plan["lanes"] = _plan_lane_changes(per_lane, lane_block)
         if not pairs:
             return plan
     try:
@@ -7520,8 +7695,8 @@ def _write_lane_plan(lp: dict) -> None:
     """Write the planned lanes block, print each change and SIGHUP the lanes it touched."""
     for c in lp["changes"]:
         k, lane = c["key"], c["lane"]
-        if lane is None and k == "lanes":
-            console.print(f"  [yellow]lanes[/]: [dim]{c['old']}[/]  →  [green]{c['new']}[/]")
+        if lane is None and k in ("lanes", "lanes_max"):
+            console.print(f"  [yellow]{k}[/]: [dim]{c['old']}[/]  →  [green]{c['new']}[/]")
         elif lane is None:
             console.print(f"  [yellow]lane_split[/]: [dim]{c['old']}[/]  →  [green]{c['new']}[/]  "
                           f"[dim]({_LANE_SPLIT_HELP[c['new']]})[/]")
@@ -7541,12 +7716,11 @@ def _write_lane_plan(lp: dict) -> None:
         if n:
             console.print(f"[dim]{n} running lane(s) reloaded live config "
                           "(restart-only fields apply on the next start).[/]")
+    _signal_share_change(lp["before"], lp["raw"])
     count = next((c["new"] for c in lp["changes"] if c["lane"] is None and c["key"] == "lanes"), None)
-    split_changed = any(c["lane"] is None and c["key"] == "lane_split" for c in lp["changes"])
     if count is not None:
-        console.print(f"[dim]Run [cyan]wolfctl lanes {count}[/] to start/stop lane processes "
-                      "(restart running lanes so each recomputes its budget share).[/]")
-    elif split_changed:
+        console.print(f"[dim]Run [cyan]wolfctl lanes {count}[/] to start or stop lane processes.[/]")
+    elif any(c["lane"] is None and c["key"] == "lane_split" for c in lp["changes"]):
         console.print("[dim]lane_split applies on the next lane start: run "
                       "[cyan]wolfctl restart[/].[/]")
 
@@ -7625,7 +7799,7 @@ def cmd_config_set(pairs: list, dry_run: bool = False, as_json: bool = False):
         console.print("[dim]Daemon PID stale; changes apply on next "
                       "[cyan]wolfctl start[/].[/]")
     # v2.35.0: the base config is shared: reload lanes 2..N too.
-    n_lanes = _signal_lane_daemons(range(2, LANES_MAX + 1))
+    n_lanes = _signal_lane_daemons([k for k in _lane_ids(_read_config_raw()) if k > 1])
     if n_lanes:
         console.print(f"[dim]{n_lanes} more lane(s) reloaded live config.[/]")
 
@@ -7734,7 +7908,7 @@ def recommend_lanes(base_rps: float, rows: dict) -> int:
 def cmd_benchmark_lanes(n: int, lanes: int):
     """Probe 1..N concurrent clients and recommend a lane count (no bets)."""
     from rich.table import Table
-    lanes = max(2, min(LANES_MAX, int(lanes)))
+    lanes = max(2, min(_lanes_max(_read_config_raw()), int(lanes)))
     console.print(f"[dim]Lane benchmark: 1..{lanes} concurrent clients × {n} × "
                   f"GET /v1/user/balances (read-only, no bets) ...[/]")
     rows = {}
@@ -8960,6 +9134,15 @@ def main():
                        help="Non-interactive config mutation. Aliases match the T-hotkey grammar "
                             "(delay=0.35, maxprofit=0.005, pipeline=3, ...). api_key is refused: "
                             "use the WOLFBET_API_KEY env var.")
+    group.add_argument("--lane-ids", nargs="?", const="enabled", choices=("enabled", "all"),
+                       help="Print the enabled lane ids (or every registry id with 'all'), "
+                            "space-separated")
+    group.add_argument("--lane-add", metavar="NAME",
+                       help="Add one lane named NAME (copies --lane-from K's overrides)")
+    group.add_argument("--lane-remove", type=int, metavar="K",
+                       help="Remove lane K from the config; its id is never reused")
+    parser.add_argument("--lane-from", type=int, metavar="K", default=None,
+                        help="With --lane-add: copy lane K's overrides (default: lane 1, none)")
     group.add_argument("--config-schema", action="store_true",
                        help="Print every key --config-set accepts as JSON: type, choices or range, "
                             "aliases, default, live reload, lane override, help")
@@ -9003,7 +9186,7 @@ def main():
     parser.add_argument("--balance", type=float, metavar="X",
                         help="Backtest: starting balance (default 1.0)")
     parser.add_argument("--lane", type=int, metavar="K", default=None,
-                        help=f"Parallel lane to run / inspect (1-{LANES_MAX}; default 1). "
+                        help=f"Parallel lane to run / inspect (1-{LANE_ID_MAX}; default 1). "
                              "With --stats/--analytics: only that lane's sessions")
     parser.add_argument("--lanes", type=int, metavar="N", default=None,
                         help="With --benchmark: probe with N concurrent clients")
@@ -9092,6 +9275,17 @@ def main():
         return
     if args.config_schema:
         _print_json(_config_schema_data())
+        return
+    if args.lane_ids:
+        reg = _lane_registry(_read_config_raw())
+        ids = [k for k in sorted(reg) if args.lane_ids == "all" or reg[k]["enabled"]]
+        sys.stdout.write(" ".join(map(str, ids)) + "\n")
+        return
+    if args.lane_add is not None:
+        cmd_lane_add(args.lane_add, args.lane_from)
+        return
+    if args.lane_remove is not None:
+        cmd_lane_remove(args.lane_remove)
         return
     if args.cleanup is not None:
         init_db()

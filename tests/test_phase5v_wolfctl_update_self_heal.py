@@ -37,7 +37,7 @@ def _wolfctl_src() -> str:
 
 # ── Version bumps ────────────────────────────────────────
 def test_wolfbet_version_bumped():
-    assert wb.VERSION == "2.48.0"
+    assert wb.VERSION == "2.49.0"
 
 
 def test_wolfctl_version_constant_current():
@@ -50,9 +50,9 @@ def test_wolfctl_version_constant_current():
 
 def test_wolfctl_header_and_usage_bumped_to_3_8():
     src = _wolfctl_src()
-    assert "Management Command v3.23" in src
-    assert "WolfBet AutoBot Manager v3.23" in src
-    assert "wolfctl v3.23" in src
+    assert "Management Command v3.24" in src
+    assert "WolfBet AutoBot Manager v3.24" in src
+    assert "wolfctl v3.24" in src
     assert "v3.7" not in src, "stale v3.7 references remain"
 
 
