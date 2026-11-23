@@ -980,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.50.0"
+VERSION      = "2.51.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1243,6 +1243,69 @@ def _mask_key(key: str) -> str:
         return "***"
     return f"{key[:8]}...{key[-4:]}"
 
+VAULT_SERVICE = "wolfbet"
+VAULT_KEY_ID = "default"
+
+
+def _vault():
+    """This bot's key vault, or None when casino-shared has no vault yet (logged)."""
+    try:
+        from shared.core.vault import Vault
+    except ImportError:
+        logger.warning("Key vault unavailable: casino-shared has no vault module (run wolfctl update)")
+        return None
+    return Vault(VAULT_SERVICE)
+
+
+def _vault_secret() -> Optional[str]:
+    """The vault's default key, or None when it has none or can't be read (logged, no secret)."""
+    vault = _vault()
+    if vault is None:
+        return None
+    from shared.core.vault import VaultError
+    try:
+        return vault.secret(VAULT_KEY_ID)
+    except (VaultError, OSError) as e:
+        logger.warning("Key vault unavailable: %s", e)
+        return None
+
+
+def _active_api_key(config_key: str) -> str:
+    """The key this run bets with: WOLFBET_API_KEY, else the vault's default, else the config's."""
+    return os.environ.get("WOLFBET_API_KEY") or _vault_secret() or config_key or ""
+
+
+def _store_key_in_vault() -> bool:
+    """Make the vault's default equal the key in use (lane 1 only). True once it reads back equal."""
+    if getattr(state, "lane", 1) > 1 or not state.api_key:
+        return False
+    vault = _vault()
+    if vault is None:
+        return False
+    from shared.core.vault import VaultError
+    try:
+        if vault.secret(VAULT_KEY_ID) != state.api_key:
+            vault.put(VAULT_KEY_ID, state.api_key, "WolfBet main key")
+            logger.info("API key stored in the vault as %s", VAULT_KEY_ID)
+        return vault.secret(VAULT_KEY_ID) == state.api_key
+    except (VaultError, OSError) as e:
+        logger.warning("Key vault unavailable: %s", e)
+        return False
+
+
+def _sync_vault_key() -> None:
+    """Move the key into the vault, then drop the config file's plaintext copy (one backup kept)."""
+    if not _store_key_in_vault():
+        return
+    raw = _read_config_raw()
+    if "api_key" not in raw:
+        return
+    _backup_config_once(".pre-vault", "moving the API key to the vault")
+    raw.pop("api_key")
+    _write_config_raw(raw)
+    logger.info("API key removed from %s; the vault keeps it", CONFIG_PATH)
+
+
 def save_config():
     if getattr(state, "lane", 1) > 1:
         # v2.35.0: a lane's state holds base + its overrides; writing it back
@@ -1250,6 +1313,10 @@ def save_config():
         logger.info("save_config skipped on lane %d (base config is lane 1's)", state.lane)
         return
     data = {k: getattr(state, k) for k in _CONFIG_KEYS}
+    if _store_key_in_vault():
+        if "api_key" in _read_config_raw():
+            _backup_config_once(".pre-vault", "moving the API key to the vault")
+        data.pop("api_key")
     # v2.36.0: bet split: an untouched split base bet is saved as the full one.
     _sb = getattr(state, "base_bet_split", None)
     if _sb is not None and state.base_bet == _sb:
@@ -1273,7 +1340,7 @@ def save_config():
     fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
-    logger.info("Config saved (key=%s)", _mask_key(data.get("api_key", "")))
+    logger.info("Config saved (key=%s)", _mask_key(state.api_key))
 
 def load_config() -> bool:
     if not os.path.exists(CONFIG_PATH):
@@ -1306,10 +1373,8 @@ def load_config() -> bool:
                 setattr(state, k, parse_streak_delay(v))
             elif k in _CONFIG_KEYS:
                 setattr(state, k, v)
-        # Environment variable override for API key (ISO 27001: no hardcoded secrets)
-        env_key = os.environ.get("WOLFBET_API_KEY")
-        if env_key:
-            state.api_key = env_key
+        # ISO 27001: the key comes from the environment or the vault, a config copy is the fallback.
+        state.api_key = _active_api_key(data.get("api_key") or "")
         env_events_url = os.environ.get("WOLFBET_EVENTS_URL")
         if env_events_url:
             state.events_url = env_events_url
@@ -7343,20 +7408,25 @@ def _split_lane_pairs(pairs: list):
     return base, per_lane, block
 
 
-def _backup_pre_registry_config() -> None:
-    """Keep one copy of a config still in the numbered-lanes shape, so older code can be restored."""
-    lanes = _read_config_raw().get("lanes")
-    if not isinstance(lanes, dict) or "items" in lanes:
-        return
-    backup = CONFIG_PATH + ".pre-registry"
-    if os.path.exists(backup):
+def _backup_config_once(suffix: str, reason: str) -> None:
+    """Copy the config file to CONFIG_PATH + suffix (0600) unless that copy already exists."""
+    backup = CONFIG_PATH + suffix
+    if os.path.exists(backup) or not os.path.exists(CONFIG_PATH):
         return
     try:
         fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as out, open(CONFIG_PATH, "rb") as src:
             out.write(src.read())
     except OSError as e:
-        logger.warning("could not back up the config before the lane registry: %s", e)
+        logger.warning("could not back up the config before %s: %s", reason, e)
+
+
+def _backup_pre_registry_config() -> None:
+    """Keep one copy of a config still in the numbered-lanes shape, so older code can be restored."""
+    lanes = _read_config_raw().get("lanes")
+    if not isinstance(lanes, dict) or "items" in lanes:
+        return
+    _backup_config_once(".pre-registry", "the lane registry")
 
 
 def _write_config_raw(data: dict) -> None:
@@ -9018,6 +9088,7 @@ def _load_and_connect(daemon: bool = False):
     if not load_config():
         console.print("[red]No saved config found. Run without --resume first.[/]")
         sys.exit(1)
+    _sync_vault_key()
     _exit_on_session_rule_errors(exit_code=0 if daemon else 2)
     console.print("[dim]Loading saved config...[/]")
     try:
@@ -9329,13 +9400,8 @@ def main():
         _exit_on_session_rule_errors()
         # need API key from main config
         if not state.api_key:
-            saved = {}
-            if os.path.exists(CONFIG_PATH):
-                with open(CONFIG_PATH) as f:
-                    saved = json.load(f)
-            if saved.get("api_key"):
-                state.api_key = saved["api_key"]
-            else:
+            state.api_key = _active_api_key(_read_config_raw().get("api_key") or "")
+            if not state.api_key:
                 console.print("[red]No API key found. Run wizard first.[/]")
                 sys.exit(1)
         console.print(f"[green]Loaded preset '{args.preset}': {state.strategy} on "

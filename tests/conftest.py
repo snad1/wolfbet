@@ -1,4 +1,4 @@
-"""Test environment for the wolfbet suite: the bench marker and its opt-in."""
+"""Test environment for the wolfbet suite: the bench marker, its opt-in and a private key vault."""
 
 import pytest
 
@@ -16,3 +16,10 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "bench" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def isolated_vault(tmp_path, monkeypatch):
+    """Every test gets its own key vault under its temp dir, never the real home."""
+    monkeypatch.setenv("CASINO_VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setenv("CASINO_VAULT_KEY_FILE", str(tmp_path / "agent" / "vault.key"))

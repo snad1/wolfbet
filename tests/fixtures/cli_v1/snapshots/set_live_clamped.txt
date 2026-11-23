@@ -10,7 +10,6 @@ Daemon reloaded live config.
 1 more lane(s) reloaded live config.
 [exit 0]
 {
-  "api_key": "wb_live_0123456789abcdefSECRET9876",
   "currency": "usdt",
   "game": "dice",
   "rule": "over",

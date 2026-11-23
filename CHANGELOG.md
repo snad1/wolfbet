@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.51.0 - the API key lives in the host key vault (2026-11-23)
+
+Needs casino-shared v0.5.0 (`wolfctl update` installs it).
+
+- The key the bot bets with is `WOLFBET_API_KEY` when it is set, else the vault key `default` (`~/.casino-vault/wolfbet/default.json`, AES-256-GCM, 0600), else the config file's `api_key`. It is read when a lane starts, never per bet.
+- When lane 1 starts (`--resume`, `--daemon`), and when the config is saved (wizard, `--config-set`), the vault's `default` is made equal to the key in use: `WOLFBET_API_KEY` replaces it when it differs, a key found only in the config file is moved in. Once the vault returns the same key, `api_key` is removed from `~/.wolfbet_autobot.json` and is no longer written there. The first removal copies the file once to `~/.wolfbet_autobot.json.pre-vault` (0600). Lanes 2+ only read.
+- A vault that can't be used (casino-shared without the vault module, a vault key file other users can read, a wrong or missing vault key, a damaged file) logs `Key vault unavailable: <reason>` with no secret in it. The bot then uses `WOLFBET_API_KEY` or the config copy as before, and the config keeps its key.
+- The log says `API key stored in the vault as default` and never shows the key. Read-only commands (`--status`, `--config-show`, `--lanes-status`) read the vault but never write it.
+- **Rollback:** v2.50.0 reads the key only from `WOLFBET_API_KEY` or the config file. Keep `WOLFBET_API_KEY` in `.env` before rolling back, or restore `~/.wolfbet_autobot.json.pre-vault`.
+
+**Tests**: `tests/test_phase15_vault.py` covers the env key moving in with the one-time 0600 backup, an env change replacing the vault copy, a config-only key moved in, a later start on the vault key alone, the backup written once, a broken vault falling back with nothing stripped, lanes 2+ only reading, read-only commands writing nothing, `save_config` with and without a working vault, and the key never reaching the log. `tests/conftest.py` gives every test its own vault under its temp dir. The `set_live_clamped`, `set_mixed`, `set_restart` and `set_secrets` snapshots no longer hold `api_key`. The version pins are updated.
+
+`VERSION` `2.50.0` -> `2.51.0`.
+
 ## v2.50.0 - the lane name is in the live state (2026-11-23)
 
 - Each lane's state (the state file, `--status --json` and the state event) carries `lane_name`: the name set with `wolfctl lane rename` or `laneK.name=`, or null while the lane has its default `Lane K`. The dashboard shows it on the lane card.
