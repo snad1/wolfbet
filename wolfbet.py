@@ -980,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.49.0"
+VERSION      = "2.50.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1110,6 +1110,7 @@ def _lane_name(data: dict, lane: int) -> str:
 def _set_lane_log_prefix(lane: int, name: str) -> None:
     """`[L3]`, or `[L3 friend-A]` once the lane has its own name; lane 1 has none until named."""
     named = name != _default_lane_name(lane)
+    state.lane_name = name if named else None
     tag = "" if lane <= 1 and not named else f"[L{lane} {name}] " if named else f"[L{lane}] "
     _log_handler.setFormatter(logging.Formatter(
         f"%(asctime)s  %(levelname)-7s  {tag}%(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
@@ -1418,6 +1419,7 @@ def _reload_live_config() -> dict:
         logger.warning("live reload: failed to parse config: %s", e)
         return {}
     state.lanes_count = _lanes_count(data)
+    _set_lane_log_prefix(getattr(state, "lane", 1), _lane_name(data, getattr(state, "lane", 1)))
     data = _lane_config(data, getattr(state, "lane", 1))
 
     applied = {}
@@ -1688,6 +1690,7 @@ class BotState:
         self.lane            = 1
         self.lanes_count     = 1
         self.lane_share      : Optional[float] = None
+        self.lane_name       : Optional[str] = None
         self.lane_split      = "none"     # v2.36.0: see LANE_SPLIT_MODES
         self.base_bet_disk   = None       # base_bet as saved (before the bet split)
         self.base_bet_split  = None       # split base_bet applied at load, else None
@@ -4481,6 +4484,7 @@ def _state_snapshot() -> dict:
         "lanes_count": state.lanes_count,
         "lane_share": state.lane_share,
         "lane_split": state.lane_split,
+        "lane_name": state.lane_name,
         # v2.37.0: run-wide profit increment
         "profit_increment_scope": state.profit_increment_scope,
         "run_profit_total": run_profit_total(),

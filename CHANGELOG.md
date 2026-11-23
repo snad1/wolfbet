@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.50.0 - the lane name is in the live state (2026-11-23)
+
+- Each lane's state (the state file, `--status --json` and the state event) carries `lane_name`: the name set with `wolfctl lane rename` or `laneK.name=`, or null while the lane has its default `Lane K`. The dashboard shows it on the lane card.
+- A live reload (SIGHUP, as `wolfctl lane rename` sends) now picks up a new name at once: the log prefix and `lane_name` change without a restart. Before, the new name only showed after the lane restarted.
+
+**Tests**: `tests/test_phase10_lanes.py` checks the state carries the name of a named lane and null for a default one, and that a reload after a rename changes both the name and the log prefix. The version pins are updated.
+
+`VERSION` `2.49.0` -> `2.50.0`.
+
 ## v2.49.0 + wolfctl v3.24 - add, remove or rename one lane; lanes N changes only the difference (2026-11-23)
 
 - `wolfctl lane add NAME [--from K]` adds one lane under the next free id, copies lane K's overrides (lane 1 has none, so the new lane uses the base config) and starts it. The running lanes keep their process.

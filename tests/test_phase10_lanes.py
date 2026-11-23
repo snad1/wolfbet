@@ -32,7 +32,7 @@ _LANE_ATTRS = ("lane", "lanes_count", "lane_share", "lane_run_profit", "profit",
                "streak_reset_losses", "recurring", "currency", "loss_mult",
                "multiplier", "bet_value", "rule", "streak_delay_loss",
                "soft_pace_delay", "lane_split", "base_bet_disk", "base_bet_split",
-               "basebet_pct", "max_loss", "strategy_key")
+               "basebet_pct", "max_loss", "strategy_key", "lane_name")
 
 
 @pytest.fixture(autouse=True)
@@ -780,3 +780,23 @@ def test_run_reset_clears_every_lane_file(monkeypatch, tmp_path):
     open(str(tmp_path / "run.laneX.json"), "w").write("{}")
     assert wb._lane_file_ids(run) == [1, 2, 15]
     assert wb.cmd_run_reset() == 3
+
+
+# ── the lane name rides on the live state ──
+def test_state_snapshot_carries_the_lane_name(monkeypatch, tmp_path):
+    _registry_config(monkeypatch, tmp_path, {"1": {}, "3": {"name": "friend-A"}})
+    wb._apply_lane(3)
+    assert wb._state_snapshot()["lane_name"] == "friend-A"
+    wb._apply_lane(1)
+    assert wb._state_snapshot()["lane_name"] is None
+
+
+def test_a_live_reload_picks_up_a_rename(monkeypatch, tmp_path):
+    path, _ = _registry_config(monkeypatch, tmp_path, {"1": {}, "3": {"name": "friend-A"}})
+    wb._apply_lane(3)
+    wb.cmd_config_set(["lane3.name=night-run"])
+    wb.state.lane = 3
+    wb._reload_live_config()
+    assert wb.state.lane_name == "night-run"
+    assert "[L3 night-run]" in wb._log_handler.formatter._fmt
+    assert json.load(open(path))["lanes"]["items"]["3"]["name"] == "night-run"
