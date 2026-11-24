@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.61.1 / TG v1.26.1 - lanes, session-end requests and vault reads come from casino-shared (2026-11-24)
+
+- The lane registry (named lanes and the older `lanes.count` shape), the lane file paths, the session-end request file and the vault reads now come from casino-shared 0.9.0 instead of copies in `wolfbet.py`, so the other bots reuse them. Nothing changes in what the bot or `wolfctl` does or prints.
+- The Telegram bot reads its token from the vault through the same casino-shared helper.
+- With casino-shared older than 0.9.0 the CLI prints `casino-shared 0.9.0 or newer is needed: run wolfctl update` and exits 1 instead of a traceback. Push casino-shared before this version: `wolfctl update` installs it from `main`.
+
+**Tests**: `tests/test_phase16_shared_helpers.py` (the bot uses the shared helpers; an older casino-shared is named). The whole suite passes unchanged. The version pins are updated.
+
+`VERSION` `2.61.0` -> `2.61.1`; TG `1.26.0` -> `1.26.1`.
+
 ## v2.61.0 - config-show reports the update rollout (2026-11-24)
 
 - `--config-show --json` gains `rollout`: for each running lane, which code it runs during an update (`new`, `waiting for session end` or `old`, the same rule as the **Code** column in `wolfctl status`). The dashboard Control page shows it beside each lane's pending changes. Stopped lanes are left out. The table output is unchanged.

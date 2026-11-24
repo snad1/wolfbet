@@ -67,6 +67,20 @@ from core.session_rules import (
     next_phase, loss_room, floor_room, config_errors,
     parse_amount, parse_flag, parse_multiple, parse_strategy_key, PHASE_STRATEGY_KEYS,
 )
+# The lane registry, session-end requests and vault reads live in casino-shared, once for
+# every bot; an older install lacks them, so say how to fix it instead of a traceback.
+try:
+    from shared.core.lanes import (
+        LANE_ID_MAX, LANE_NAME_HELP, LANE_NAME_RE, LANES_MAX as LANES_MAX_DEFAULT,  # noqa: F401
+        default_lane_name as _default_lane_name, lane_file_ids as _lane_file_ids,
+        lane_ids as _lane_ids, lane_name as _lane_name, lane_path as _lane_path,
+        lane_registry as _lane_registry, lanes_count as _lanes_count, lanes_max as _lanes_max,
+        lane_overrides as _shared_lane_overrides, request_drain, take_drain,
+    )
+    from shared.core.vault import vault_info, vault_secret
+except ImportError:
+    print("casino-shared 0.9.0 or newer is needed: run wolfctl update", file=sys.stderr)
+    sys.exit(1)
 
 # ══════════════════════════════════════════════════════════
 #  CONSTANTS (configurable via environment variables)
@@ -998,7 +1012,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.61.0"
+VERSION      = "2.61.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1023,8 +1037,6 @@ logger.addHandler(_log_handler)
 # stops and pauses. Lane 1 = the classic single bot (paths unchanged). Lanes
 # 2..N run side by side, share the DB + config file, and each may only use
 # balance ÷ lanes (split budget).
-LANE_ID_MAX = 99
-LANES_MAX_DEFAULT = 10
 AUTOSTART_LOCK_PATH = os.environ.get(
     "WOLFBET_AUTOSTART_LOCK", os.path.expanduser("~/.wolfbet_autostart.lock"))
 # Every setting: how a change reaches running lanes, and whether one lane may override it.
@@ -1095,96 +1107,6 @@ def _restart_only(keys) -> list:
     return sorted(k for k in keys if k not in _LIVE_RELOAD_KEYS)
 
 
-def _lane_path(path: str, lane: int) -> str:
-    """'~/.wolfbet_autobot_live.json' + lane 2 → '~/.wolfbet_autobot_live.lane2.json'."""
-    if lane <= 1:
-        return path
-    root, ext = os.path.splitext(path)
-    return f"{root}.lane{lane}{ext}"
-
-
-def _lane_file_ids(path: str) -> list:
-    """Lane ids that have a file next to `path` (lane 1 = `path`, lane K = its .laneK twin)."""
-    import glob
-    root, ext = os.path.splitext(path)
-    ids = [1] if os.path.exists(path) else []
-    for f in glob.glob(f"{glob.escape(root)}.lane*{glob.escape(ext)}"):
-        tag = f[len(root) + len(".lane"):len(f) - len(ext)]
-        if tag.isdigit():
-            ids.append(int(tag))
-    return sorted(ids)
-
-
-LANE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
-LANE_NAME_HELP = "lane name must be 1-32 characters: letters, digits, space, _ or -"
-
-
-def _default_lane_name(lane: int) -> str:
-    return f"Lane {lane}"
-
-
-def _lane_registry(data: dict) -> dict:
-    """Every configured lane as {id: {"name", "enabled", "overrides"}}, ids 1..LANE_ID_MAX.
-
-    Reads `lanes.items`; a config written before lanes had names (`lanes.count` plus
-    `lanes.overrides`) reads as lanes 1..count enabled, and lanes that only have overrides
-    above the count as disabled, so both shapes behave the same.
-    """
-    block = data.get("lanes") or {}
-    items = block.get("items")
-    reg = {}
-    if isinstance(items, dict):
-        for key, entry in items.items():
-            try:
-                lane = int(key)
-            except (TypeError, ValueError):
-                continue
-            if not 1 <= lane <= LANE_ID_MAX or not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            reg[lane] = {
-                "name": name if isinstance(name, str) and LANE_NAME_RE.match(name)
-                else _default_lane_name(lane),
-                "enabled": bool(entry.get("enabled", True)),
-                "overrides": dict(entry.get("overrides") or {}),
-            }
-    else:
-        try:
-            count = max(1, min(LANES_MAX_DEFAULT, int(block.get("count") or 1)))
-        except (TypeError, ValueError):
-            count = 1
-        overrides = block.get("overrides") or {}
-        ids = set(range(1, count + 1))
-        for key in overrides:
-            if str(key).isdigit() and 1 <= int(key) <= LANES_MAX_DEFAULT:
-                ids.add(int(key))
-        for lane in sorted(ids):
-            reg[lane] = {"name": _default_lane_name(lane), "enabled": lane <= count,
-                         "overrides": dict(overrides.get(str(lane)) or {})}
-    reg.setdefault(1, {"name": _default_lane_name(1), "enabled": True, "overrides": {}})
-    reg[1]["enabled"] = True
-    return reg
-
-
-def _lanes_max(data: dict) -> int:
-    """How many lanes may be enabled at once: the owner-set `lanes.max`, default 10."""
-    try:
-        return max(1, min(LANE_ID_MAX, int((data.get("lanes") or {}).get("max")
-                                           or LANES_MAX_DEFAULT)))
-    except (TypeError, ValueError):
-        return LANES_MAX_DEFAULT
-
-
-def _lane_ids(data: dict) -> list:
-    """Every registry lane id, enabled or not, in order."""
-    return sorted(_lane_registry(data))
-
-
-def _lane_name(data: dict, lane: int) -> str:
-    entry = _lane_registry(data).get(lane)
-    return entry["name"] if entry else _default_lane_name(lane)
-
-
 def _set_lane_log_prefix(lane: int, name: str) -> None:
     """`[L3]`, or `[L3 friend-A]` once the lane has its own name; lane 1 has none until named."""
     named = name != _default_lane_name(lane)
@@ -1217,16 +1139,8 @@ def _apply_lane(lane: int) -> None:
 
 
 def _lane_overrides(data: dict, lane: int) -> dict:
-    """Per-lane override dict from a raw config dict (lane 1 has none)."""
-    if lane <= 1:
-        return {}
-    ov = (_lane_registry(data).get(lane) or {}).get("overrides") or {}
-    return {k: v for k, v in ov.items() if k not in _LANE_FORBIDDEN_KEYS}
-
-
-def _lanes_count(data: dict) -> int:
-    """How many lanes run: the enabled lanes of the registry."""
-    return sum(1 for entry in _lane_registry(data).values() if entry["enabled"])
+    """Per-lane override dict from a raw config dict, without the keys no lane may override."""
+    return _shared_lane_overrides(data, lane, _LANE_FORBIDDEN_KEYS)
 
 
 # v2.36.0: how lanes share the money. Default "none": every lane uses the
@@ -1364,29 +1278,12 @@ def _vault():
 
 def _vault_secret(key_id: str = VAULT_KEY_ID, kind: str = "key") -> Optional[str]:
     """Vault entry `key_id` of `kind`, or None when absent, of another kind or unreadable."""
-    vault = _vault()
-    if vault is None:
-        return None
-    from shared.core.vault import VaultError
-    try:
-        info = vault.info(key_id)
-        return vault.secret(key_id) if info is not None and info.kind == kind else None
-    except (VaultError, OSError) as e:
-        logger.warning("Key vault unavailable: %s", e)
-        return None
+    return vault_secret(VAULT_SERVICE, key_id, kind, log=logger)
 
 
 def _vault_info(key_id: str):
     """What the vault knows about `key_id` (no secret), or None when it is absent or unusable."""
-    from shared.core.vault import KEY_ID_RE, VaultError
-    vault = _vault()
-    if vault is None or not KEY_ID_RE.match(key_id or ""):
-        return None
-    try:
-        return vault.info(key_id)
-    except (VaultError, OSError) as e:
-        logger.warning("Key vault unavailable: %s", e)
-        return None
+    return vault_info(VAULT_SERVICE, key_id, log=logger)
 
 
 def _active_api_key(config_key: str, key_ref: str = VAULT_KEY_ID) -> str:
@@ -8005,15 +7902,10 @@ def cmd_lane_drain(lane: int, action: str) -> None:
     except _CliError as e:
         _cli_fail(e, False)
         return
-    path = _lane_path(DRAIN_PATH, lane)
+    request_drain(DRAIN_PATH, lane, action)
     if action == "cancel":
-        if os.path.exists(path):
-            os.remove(path)
         console.print(f"Lane {lane} no longer waits for its session end.")
         return
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(action)
     done = "restarts" if action == "restart" else "is removed"
     console.print(f"Lane {lane} {done} when its session ends. It keeps betting until then.")
 
@@ -8026,15 +7918,12 @@ def _session_boundary(final: bool) -> bool:
     process on the saved config and code; with `final` (recurring off) the lane stops as
     usual and the restart is dropped. Returns True when the lane must stop now.
     """
-    path = _lane_path(DRAIN_PATH, getattr(state, "lane", 1))
-    if not os.path.exists(path):
-        return False
     try:
-        with open(path) as f:
-            action = f.read().strip()
-        os.remove(path)
+        action = take_drain(DRAIN_PATH, getattr(state, "lane", 1))
     except OSError as e:
         logger.warning("Lane %d: session-end request unreadable: %s", state.lane, e)
+        return False
+    if action is None:
         return False
     if action == "remove":
         import subprocess
