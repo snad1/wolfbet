@@ -32,13 +32,13 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.58.0"
+    assert wb.VERSION == "2.59.0"
 
 
 def test_wolfctl_version_constant_3_9():
     src = _wolfctl_src()
-    assert re.search(r"^WOLFCTL_VERSION=3\.24\b", src, re.MULTILINE)
-    assert "Management Command v3.24" in src
+    assert re.search(r"^WOLFCTL_VERSION=3\.25\b", src, re.MULTILINE)
+    assert "Management Command v3.25" in src
 
 
 # ── wolfctl reset: archive-first design ─────────────────

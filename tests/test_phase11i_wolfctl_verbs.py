@@ -306,7 +306,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.24" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.25" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():
@@ -464,6 +464,31 @@ def test_lane_remove_refused_by_the_bot_touches_no_unit(host):
            "Lane 1 holds the base config and can't be removed.\n")
     r = _wolfctl(host, "lane", "remove", "1")
     assert r.returncode == 2 and "can't be removed" in r.stdout
+    assert _systemctl_calls(host) == []
+
+
+def test_session_end_requests_go_to_the_bot_and_touch_no_unit(host):
+    _lanes(host, "1 2 3")
+    for args, call in (
+        (("restart", "2", "--at-boundary"), "--lane-drain 2 restart"),
+        (("restart", "2", "--cancel-boundary"), "--lane-drain 2 cancel"),
+        (("lane", "remove", "3", "--after-session"), "--lane-drain 3 remove"),
+    ):
+        r = _wolfctl(host, *args)
+        assert r.returncode == 0, r.stderr
+        assert _python_calls(host)[-1].endswith(f"wolfbet.py {call}")
+    assert _systemctl_calls(host) == []
+
+
+@pytest.mark.parametrize("args", [("restart", "x", "--at-boundary"), ("restart", "2", "--soon"),
+                                  ("restart", "2", "--at-boundary", "extra"),
+                                  ("lane", "remove", "3", "--after"),
+                                  ("lane", "remove", "3", "--after-session", "x")])
+def test_bad_session_end_requests_exit_2(host, args):
+    _lanes(host, "1 2 3")
+    r = _wolfctl(host, *args)
+    assert r.returncode == 2 and "Usage: wolfctl" in r.stderr
+    assert not any("--lane-drain" in c for c in _python_calls(host))
     assert _systemctl_calls(host) == []
 
 

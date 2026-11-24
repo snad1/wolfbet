@@ -991,12 +991,14 @@ DB_PATH      = os.environ.get("WOLFBET_DB_PATH",     os.path.expanduser("~/.wolf
 CONFIG_PATH  = os.environ.get("WOLFBET_CONFIG_PATH",  os.path.expanduser("~/.wolfbet_autobot.json"))
 STATE_PATH   = os.environ.get("WOLFBET_STATE_PATH",   os.path.expanduser("~/.wolfbet_autobot_live.json"))
 PID_PATH     = os.environ.get("WOLFBET_PID_PATH",     os.path.expanduser("~/.wolfbet_autobot.pid"))
+DRAIN_PATH   = os.environ.get("WOLFBET_DRAIN_PATH",   os.path.expanduser("~/.wolfbet_autobot.drain"))
+WOLFCTL      = os.environ.get("WOLFBET_WOLFCTL",      os.path.expanduser("~/.local/bin/wolfctl"))
 _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 # v2.37.0: run-wide profit increment tracking (one file per lane)
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.58.0"
+VERSION      = "2.59.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -3158,6 +3160,10 @@ def betting_loop():
                 if is_auto_game(state.game):
                     api_auto_stop()
                 _db_save_session()
+                if _session_boundary(final=False):
+                    state.running = False
+                    state.status = f"STOPPED: {reason}"
+                    break
                 _reset_session_for_recurring(_restart_delay_for(reason), reason)
                 last_result = "none"
                 continue
@@ -3166,6 +3172,7 @@ def betting_loop():
             if is_auto_game(state.game):
                 api_auto_stop()
             _db_save_session()
+            _session_boundary(final=True)
             break
 
         # ── streak delay (loss / win / every-N-bets) ──
@@ -3645,6 +3652,10 @@ def pipelined_betting_loop(depth: int):
                 if _should_recurring_restart(reason):
                     logger.info("RECURRING RESTART after: %s", reason)
                     _db_save_session()
+                    if _session_boundary(final=False):
+                        state.running = False
+                        state.status = f"STOPPED: {reason}"
+                        break
                     _reset_session_for_recurring(_restart_delay_for(reason), reason)
                     with state.lock:
                         state.pipeline_dispatched = 0
@@ -3652,6 +3663,7 @@ def pipelined_betting_loop(depth: int):
                 state.running = False
                 state.status  = f"STOPPED: {reason}"
                 _db_save_session()
+                _session_boundary(final=True)
                 break
 
             if state._insufficient_balance:
@@ -7957,6 +7969,72 @@ def cmd_lane_remove(lane: int) -> None:
     _signal_share_change(before, raw)
 
 
+DRAIN_ACTIONS = ("restart", "remove", "cancel")
+
+
+def cmd_lane_drain(lane: int, action: str) -> None:
+    """Ask lane `lane` to restart or be removed when its current session ends, or cancel that."""
+    try:
+        if action == "remove" and lane == 1:
+            raise _CliError("lane_one", "Lane 1 holds the base config and can't be removed.",
+                            style="red", exit_code=2)
+        if lane not in _lane_registry(_lane_config_or_fail()):
+            raise _CliError("no_lane", f"No lane {lane}.", style="red", exit_code=2)
+    except _CliError as e:
+        _cli_fail(e, False)
+        return
+    path = _lane_path(DRAIN_PATH, lane)
+    if action == "cancel":
+        if os.path.exists(path):
+            os.remove(path)
+        console.print(f"Lane {lane} no longer waits for its session end.")
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(action)
+    done = "restarts" if action == "restart" else "is removed"
+    console.print(f"Lane {lane} {done} when its session ends. It keeps betting until then.")
+
+
+def _session_boundary(final: bool) -> bool:
+    """Carry out a restart or removal the lane was asked to do at its session end.
+
+    Read once per session close, never per bet. The request is deleted before it is acted
+    on, so a lane that fails to come back never loops on it. A restart re-executes this
+    process on the saved config and code; with `final` (recurring off) the lane stops as
+    usual and the restart is dropped. Returns True when the lane must stop now.
+    """
+    path = _lane_path(DRAIN_PATH, getattr(state, "lane", 1))
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path) as f:
+            action = f.read().strip()
+        os.remove(path)
+    except OSError as e:
+        logger.warning("Lane %d: session-end request unreadable: %s", state.lane, e)
+        return False
+    if action == "remove":
+        import subprocess
+        logger.warning("Lane %d: removed at the session boundary", state.lane)
+        with open(os.devnull, "wb") as null:
+            subprocess.Popen([WOLFCTL, "lane", "remove", str(state.lane)],
+                             stdout=null, stderr=null, start_new_session=True)
+        return True
+    if action != "restart":
+        return False
+    if final:
+        logger.info("Lane %d: restart request dropped, the lane stops at its session end",
+                    state.lane)
+        return False
+    logger.warning("Lane %d: restarting at the session boundary", state.lane)
+    _stop_bet_writer(timeout=5.0)
+    _save_state_file()
+    _stop_events()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+    return True
+
+
 def _config_set_plan(pairs: list) -> dict:
     """Validate every --config-set pair and work out the result, writing and signalling nothing.
 
@@ -9551,6 +9629,8 @@ def main():
                        help="Add one lane named NAME (copies --lane-from K's overrides)")
     group.add_argument("--lane-remove", type=int, metavar="K",
                        help="Remove lane K from the config; its id is never reused")
+    group.add_argument("--lane-drain", nargs=2, metavar=("K", "ACTION"),
+                       help="At lane K's next session end: restart, remove, or cancel a request")
     group.add_argument("--key-list", action="store_true",
                        help="List the vault keys as JSON (label, last 4 characters, lanes); "
                             "never a secret")
@@ -9712,6 +9792,12 @@ def main():
         return
     if args.lane_remove is not None:
         cmd_lane_remove(args.lane_remove)
+        return
+    if args.lane_drain is not None:
+        lane, action = args.lane_drain
+        if not lane.isdigit() or action not in DRAIN_ACTIONS:
+            parser.error("--lane-drain takes a lane number and restart, remove or cancel")
+        cmd_lane_drain(int(lane), action)
         return
     if args.key_list:
         cmd_key("list")

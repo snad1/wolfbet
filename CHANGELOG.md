@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.59.0 / wolfctl v3.25 - restart or remove a lane at its session end (2026-11-24)
+
+- `wolfctl restart K --at-boundary` asks lane K to restart when its current session ends: `Lane K restarts when its session ends. It keeps betting until then.` At that session close the lane flushes its bet writer, state file and events, then re-executes itself in place (same unit), so the next session runs on the saved config and code. Other lanes are not touched. `--cancel-boundary` forgets the request.
+- `wolfctl lane remove K --after-session` removes lane K at its session end the same way `wolfctl lane remove K` does (the lane runs it itself), instead of stopping it at once. Lane 1 and unknown lanes are refused with the usual messages.
+- With recurring off a lane already stops at its session end; a pending restart is then dropped and the lane starts on the new config whenever it is next started. A pending removal still removes it.
+- The request is a small file per lane (`~/.wolfbet_autobot.drain`, `.laneK` for other lanes, 0600) read once per session close, never per bet, and deleted before it is acted on. New bot flag `--lane-drain K restart|remove|cancel`.
+
+**Tests**: `tests/test_phase16_lane_drain.py` (request written, cancelled and refused; restart flushes then re-executes; recurring off drops it; removal hands the lane to wolfctl; the betting loop restarts or stops only at the session end), `tests/test_phase11i_wolfctl_verbs.py` (the three flags reach the bot and touch no unit; bad arguments exit 2). The version pins are updated.
+
+`VERSION` `2.58.0` -> `2.59.0`; wolfctl `3.24` -> `3.25`.
+
 ## v2.58.0 - see which lanes still wait for a restart (2026-11-24)
 
 - On every reload a running lane records the saved restart-only settings it is not using yet (for example `multiplier` 3 while 4 is saved). `--config-show --json` lists them per running lane under `pending` (`{"2": [{"key": "multiplier", "running": 3.0, "saved": 4.0}]}`); a restart clears them. Live settings still apply at once, as before. The raw key is never listed, and the proxy and events URL are masked.

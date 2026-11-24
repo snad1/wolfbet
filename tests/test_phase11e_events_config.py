@@ -277,4 +277,4 @@ def test_wolfctl_doctor_runs_the_events_check():
         src = f.read()
     doctor = src[src.index("cmd_doctor() {"):src.index("─── Prescriptions ───")]
     assert '"$PYTHON" "$BOT" --events-check' in doctor
-    assert re.search(r"^WOLFCTL_VERSION=3\.24\b", src, re.MULTILINE)
+    assert re.search(r"^WOLFCTL_VERSION=3\.25\b", src, re.MULTILINE)

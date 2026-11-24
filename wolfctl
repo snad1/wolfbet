@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.24
+# WolfBet AutoBot - Unified Management Command v3.25
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -27,6 +27,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.23 - stop K / start K / restart K work on any lane, lane 1 included
 # v3.24 - lane add/remove/rename change one lane; lanes N starts or stops only the difference;
 #         lanes --max N sets the lane limit; lane ids come from the config registry
+# v3.25 - restart K --at-boundary and lane remove K --after-session wait for the session end
 # v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
 LANE_ID_MAX=99
@@ -40,7 +41,7 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.24
+WOLFCTL_VERSION=3.25
 
 usage() {
     echo ""
@@ -51,6 +52,8 @@ usage() {
     echo "    wolfctl start [K]     Start CLI bot as daemon, or only lane K"
     echo "    wolfctl stop [K]      Stop CLI bot, or only lane K; the other lanes keep betting"
     echo "    wolfctl restart [K]   Restart CLI bot, or only lane K"
+    echo "    wolfctl restart K --at-boundary      Restart lane K when its session ends"
+    echo "    wolfctl restart K --cancel-boundary  Forget a session-end restart or removal"
     echo "    wolfctl status        Show CLI bot status (--json: session state only)"
     echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
     echo "    wolfctl lanes N       Run N parallel lanes (1 = classic single bot); only the difference starts or stops"
@@ -58,6 +61,7 @@ usage() {
     echo "      --max N             How many lanes may run at once (default 10, up to $LANE_ID_MAX)"
     echo "    wolfctl lane add NAME [--from K]  Add one lane (copies lane K's overrides) and start it"
     echo "    wolfctl lane remove K             Stop lane K and remove it; its id is never reused"
+    echo "    wolfctl lane remove K --after-session  Remove lane K when its session ends"
     echo "    wolfctl lane rename K NAME        Rename lane K (letters, digits, space, _ or -)"
     echo "    wolfctl pause [K|all]   Pause betting on lane K or every running lane (default all)"
     echo "    wolfctl resume [K|all]  Resume betting"
@@ -355,8 +359,12 @@ cmd_lane() {
             ;;
         remove)
             k="${1:-}"
-            case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl lane remove K" >&2; exit 2 ;; esac
-            [ $# -eq 1 ] || { echo "Usage: wolfctl lane remove K" >&2; exit 2; }
+            case "$k" in ''|*[!0-9]*) echo "Usage: wolfctl lane remove K [--after-session]" >&2; exit 2 ;; esac
+            if [ "${2:-}" = "--after-session" ] && [ $# -eq 2 ]; then
+                "$PYTHON" "$BOT" --lane-drain "$((10#$k))" remove
+                exit $?
+            fi
+            [ $# -eq 1 ] || { echo "Usage: wolfctl lane remove K [--after-session]" >&2; exit 2; }
             k=$((10#$k))
             "$PYTHON" "$BOT" --lane-remove "$k" || exit $?
             systemctl --user disable --now "${LANE_SERVICE}@${k}" >/dev/null 2>&1 || true
@@ -513,6 +521,18 @@ cmd_stop() {
 }
 
 cmd_restart() {
+    case "${2:-}" in
+        --at-boundary|--cancel-boundary)
+            case "${1:-}" in ''|*[!0-9]*) echo "Usage: wolfctl restart K [--at-boundary|--cancel-boundary]" >&2; exit 2 ;; esac
+            [ $# -eq 2 ] || { echo "Usage: wolfctl restart K [--at-boundary|--cancel-boundary]" >&2; exit 2; }
+            local action=restart
+            [ "$2" = "--cancel-boundary" ] && action=cancel
+            "$PYTHON" "$BOT" --lane-drain "$((10#$1))" "$action"
+            return $?
+            ;;
+        '') ;;
+        *) echo "Usage: wolfctl restart K [--at-boundary|--cancel-boundary]" >&2; exit 2 ;;
+    esac
     if [ -n "${1:-}" ]; then cmd_lane_unit restart "$1"; return; fi
     stop_all_lanes
     systemctl --user restart "$SERVICE"
@@ -627,7 +647,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.24"
+    echo "  wolfctl v3.25"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
