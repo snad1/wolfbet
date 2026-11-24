@@ -76,10 +76,12 @@ try:
         lane_ids as _lane_ids, lane_name as _lane_name, lane_path as _lane_path,
         lane_registry as _lane_registry, lanes_count as _lanes_count, lanes_max as _lanes_max,
         lane_overrides as _shared_lane_overrides, request_drain, take_drain,
+        next_lane_id as _next_lane_id, registry_block as _lanes_block,
+        set_enabled_count as _set_enabled_count, split_registry_pairs as _split_lane_pairs,
     )
     from shared.core.vault import vault_info, vault_secret
 except ImportError:
-    print("casino-shared 0.9.0 or newer is needed: run wolfctl update", file=sys.stderr)
+    print("casino-shared 0.10.0 or newer is needed: run wolfctl update", file=sys.stderr)
     sys.exit(1)
 
 # ══════════════════════════════════════════════════════════
@@ -1012,7 +1014,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.61.1"
+VERSION      = "2.61.2"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -7560,55 +7562,6 @@ def _parse_config_set_pairs(pairs: list) -> dict:
 _LANE_UNSET_VALUES = ("default", "unset", "inherit")
 
 
-def _split_lane_pairs(pairs: list):
-    """Split config-set pairs into (base, {lane: [pairs]}, block).
-
-    block holds the lanes-wide settings given: "count" (lanes=N), "split" (lane_split)
-    and "max" (lanes_max). The count is checked against the limit when the plan is built.
-    """
-    import re as _re
-    base, per_lane, block = [], {}, {}
-    for pair in pairs:
-        if "=" not in pair:
-            base.append(pair)          # _parse_config_set_pairs reports it
-            continue
-        key, val = pair.split("=", 1)
-        key = key.strip().lower()
-        m = _re.match(r"^lane(\d+)\.(.+)$", key)
-        if key in ("lanes", "lanes_max"):
-            try:
-                n = int(val.strip())
-            except ValueError:
-                raise ValueError(f"{key} must be an integer 1-{LANE_ID_MAX}, got {val!r}")
-            if not 1 <= n <= LANE_ID_MAX:
-                raise ValueError(f"{key} must be 1-{LANE_ID_MAX}, got {n}")
-            block["count" if key == "lanes" else "max"] = n
-        elif key == "lane_split":
-            split = val.strip().lower()
-            if split not in LANE_SPLIT_MODES:
-                raise ValueError(f"lane_split must be one of {', '.join(LANE_SPLIT_MODES)}, "
-                                 f"got {val!r}")
-            block["split"] = split
-        elif m and m.group(2) == "name":
-            lane, name = int(m.group(1)), val.strip().strip('"').strip("'").strip()
-            if not 1 <= lane <= LANE_ID_MAX:
-                raise ValueError(f"lanes are 1-{LANE_ID_MAX}, got lane{lane}")
-            if not LANE_NAME_RE.match(name):
-                raise ValueError(LANE_NAME_HELP)
-            per_lane.setdefault(lane, []).append(f"name={name}")
-        elif m:
-            lane = int(m.group(1))
-            if not 2 <= lane <= LANE_ID_MAX:
-                raise ValueError(f"lane overrides are for lanes 2-{LANE_ID_MAX} "
-                                 f"(lane 1 uses the base config), got lane{lane}")
-            if m.group(2) == "lane_split":
-                raise ValueError("lane_split can't differ per lane (shared by all lanes)")
-            per_lane.setdefault(lane, []).append(f"{m.group(2)}={val}")
-        else:
-            base.append(pair)
-    return base, per_lane, block
-
-
 def _backup_config_once(suffix: str, reason: str) -> None:
     """Copy the config file to CONFIG_PATH + suffix (0600) unless that copy already exists."""
     backup = CONFIG_PATH + suffix
@@ -7700,48 +7653,6 @@ def _lane_config_or_fail() -> dict:
         raise _CliError("no_config", "No config saved yet: run the wizard first.",
                         exit_code=1) from None
     return raw if isinstance(raw, dict) else {}
-
-
-def _next_lane_id(raw: dict, reg: dict) -> int:
-    """The id the next new lane gets: never one a removed lane had."""
-    try:
-        stored = int((raw.get("lanes") or {}).get("next_id") or 0)
-    except (TypeError, ValueError):
-        stored = 0
-    return max(stored, max(reg) + 1)
-
-
-def _lanes_block(raw: dict, reg: dict, next_id: int, split=None, lanes_max=None) -> dict:
-    """The `lanes` block to write: split, the owner limit when set, next_id and the items."""
-    block = {"split": split if split is not None else _lane_split(raw)}
-    limit = lanes_max if lanes_max is not None else (raw.get("lanes") or {}).get("max")
-    if limit is not None:
-        block["max"] = limit
-    block["next_id"] = next_id
-    block["items"] = {str(lane): reg[lane] for lane in sorted(reg)}
-    return block
-
-
-def _set_enabled_count(reg: dict, count: int, next_id: int) -> int:
-    """Enable `count` lanes: disabled lanes come back first (lowest id), then new ids.
-
-    Lowering the count disables the highest enabled ids; lane 1 always stays. Returns next_id.
-    """
-    enabled = [lane for lane in sorted(reg) if reg[lane]["enabled"]]
-    for lane in enabled[count:]:
-        reg[lane]["enabled"] = False
-    need = count - len(enabled)
-    for lane in sorted(reg):
-        if need > 0 and not reg[lane]["enabled"]:
-            reg[lane]["enabled"] = True
-            need -= 1
-    while need > 0:
-        if next_id > LANE_ID_MAX:
-            raise ValueError(f"lane ids run out at {LANE_ID_MAX}: removed ids are never reused")
-        reg[next_id] = {"name": _default_lane_name(next_id), "enabled": True, "overrides": {}}
-        next_id += 1
-        need -= 1
-    return next_id
 
 
 def _plan_lane_changes(per_lane: dict, block: dict) -> dict:

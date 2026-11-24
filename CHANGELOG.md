@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.61.2 - lane registry writes come from casino-shared (2026-11-24)
+
+- The config-set lane pair parser, the next lane id, the enabled-count change and the written `lanes` block now come from casino-shared 0.10.0 instead of copies in `wolfbet.py`, so goated and the other bots use the same code. Nothing changes in what the bot or `wolfctl` does or prints.
+- With casino-shared older than 0.10.0 the CLI now prints `casino-shared 0.10.0 or newer is needed: run wolfctl update` and exits 1. Push casino-shared first.
+
+**Tests**: the whole suite passes unchanged. The version pins are updated.
+
+`VERSION` `2.61.1` -> `2.61.2`.
+
 ## v2.61.1 / TG v1.26.1 - lanes, session-end requests and vault reads come from casino-shared (2026-11-24)
 
 - The lane registry (named lanes and the older `lanes.count` shape), the lane file paths, the session-end request file and the vault reads now come from casino-shared 0.9.0 instead of copies in `wolfbet.py`, so the other bots reuse them. Nothing changes in what the bot or `wolfctl` does or prints.
