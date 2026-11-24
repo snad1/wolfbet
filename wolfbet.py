@@ -996,7 +996,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.53.0"
+VERSION      = "2.54.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1213,6 +1213,14 @@ def _split_lanes(data: dict, lane: int) -> int:
     mine = _lane_account(data, lane)[:2]
     return sum(1 for k, entry in reg.items()
                if entry["enabled"] and _lane_account(data, k)[:2] == mine) or 1
+
+
+def _key_lanes(data: dict, lane: int) -> int:
+    """Enabled lanes on the same key as `lane`: they share one rate limit, whatever the currency."""
+    reg = _lane_registry(data)
+    mine = _lane_account(data, lane)[0]
+    return sum(1 for k, entry in reg.items()
+               if entry["enabled"] and _lane_account(data, k)[0] == mine) or 1
 
 
 def _lane_config(data: dict, lane: int) -> dict:
@@ -1514,6 +1522,7 @@ def load_config() -> bool:
         # v2.35.0: lane count + this lane's overrides on top of the base.
         state.lanes_count = _lanes_count(data)
         state.split_lanes = _split_lanes(data, state.lane)
+        state.key_lanes = _key_lanes(data, state.lane)
         state.lane_split = _lane_split(data)
         _set_lane_log_prefix(state.lane, _lane_name(data, state.lane))
         merged = _resolve_lane_secrets(_lane_config(data, state.lane))
@@ -1645,6 +1654,7 @@ def _reload_live_config() -> dict:
         return {}
     state.lanes_count = _lanes_count(data)
     state.split_lanes = _split_lanes(data, getattr(state, "lane", 1))
+    state.key_lanes = _key_lanes(data, getattr(state, "lane", 1))
     _set_lane_log_prefix(getattr(state, "lane", 1), _lane_name(data, getattr(state, "lane", 1)))
     data = _resolve_lane_secrets(_lane_config(data, getattr(state, "lane", 1)))
     data.pop("_account_problem", None)
@@ -1917,6 +1927,7 @@ class BotState:
         self.lane            = 1
         self.lanes_count     = 1
         self.split_lanes     = 1     # lanes sharing this lane's account (key + currency)
+        self.key_lanes       = 1     # lanes sharing this lane's key, so its rate limit
         self.key_ref         = "default"
         self.proxy_ref       : Optional[str] = None
         self.account_problem : Optional[str] = None
@@ -2162,8 +2173,8 @@ SOFT_PACE_MAX_DELAY = 0.25   # seconds per bet when the quota is nearly gone
 def soft_pace_delay(remaining: int, limit: int) -> float:
     """v2.35.0: per-bet delay that rises smoothly as the shared quota runs out.
 
-    The rate-limit headers are account-wide, so every lane sees the same
-    `remaining`. Above the low-water mark this is 0, so a single lane never
+    The rate-limit headers are per key, so every lane on the same key sees the
+    same `remaining`. Above the low-water mark this is 0, so a single lane never
     slows down. Below it, lanes ease off together instead of all hitting
     the hard 'remaining <= 2 → pause' cliff at the same instant.
     """
@@ -2178,21 +2189,31 @@ def soft_pace_delay(remaining: int, limit: int) -> float:
     return round(SOFT_PACE_MAX_DELAY * frac, 4)
 
 
-def _autostart_global_pace() -> None:
-    """v2.35.0: space /auto/start calls across ALL lane processes.
+def _autostart_lock_path() -> str:
+    """The lock file the lanes on this lane's key share; the main key keeps the original path."""
+    key_ref = getattr(state, "key_ref", VAULT_KEY_ID) or VAULT_KEY_ID
+    if key_ref == VAULT_KEY_ID:
+        return AUTOSTART_LOCK_PATH
+    root, ext = os.path.splitext(AUTOSTART_LOCK_PATH)
+    return f"{root}.{key_ref}{ext}"
 
-    Each lane restarts its auto-cycle every session. A shared lock file holds
-    the last start time so lanes never fire /auto/start in the same instant
-    (which only buys 429s). No-op for a single lane or without fcntl.
+
+def _autostart_global_pace() -> None:
+    """v2.35.0: space /auto/start calls across the lane processes on the same key.
+
+    Each lane restarts its auto-cycle every session. A lock file per key holds
+    the last start time so lanes on one key never fire /auto/start in the same
+    instant (which only buys 429s); lanes on other keys have their own limit and
+    never wait. No-op for a lane alone on its key or without fcntl.
     """
-    if getattr(state, "lanes_count", 1) <= 1:
+    if getattr(state, "key_lanes", 1) <= 1:
         return
     try:
         import fcntl
     except ImportError:          # pragma: no cover: non-POSIX
         return
     try:
-        fd = os.open(AUTOSTART_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(_autostart_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
     except OSError:
         return
     try:

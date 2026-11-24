@@ -27,7 +27,7 @@ os.environ.setdefault("APP_ENV", "testing")
 
 import wolfbet as wb  # noqa: E402
 
-_LANE_ATTRS = ("lane", "lanes_count", "split_lanes", "key_ref", "proxy_ref", "lane_share", "lane_run_profit", "profit",
+_LANE_ATTRS = ("lane", "lanes_count", "split_lanes", "key_lanes", "key_ref", "proxy_ref", "lane_share", "lane_run_profit", "profit",
                "current_bet", "current_balance", "base_bet", "max_wins",
                "streak_reset_losses", "recurring", "currency", "loss_mult",
                "multiplier", "bet_value", "rule", "streak_delay_loss",
@@ -408,7 +408,7 @@ def test_update_rate_limit_sets_soft_pace():
 def test_autostart_global_pace_spaces_lanes(monkeypatch, tmp_path):
     monkeypatch.setattr(wb, "AUTOSTART_LOCK_PATH", str(tmp_path / "as.lock"))
     monkeypatch.setattr(wb, "AUTO_START_MIN_INTERVAL", 0.15)
-    wb.state.lanes_count = 3
+    wb.state.key_lanes = 3
     stamps = []
     lock = threading.Lock()
 
@@ -429,7 +429,7 @@ def test_autostart_global_pace_spaces_lanes(monkeypatch, tmp_path):
 
 def test_autostart_pace_noop_single_lane(monkeypatch, tmp_path):
     monkeypatch.setattr(wb, "AUTOSTART_LOCK_PATH", str(tmp_path / "as.lock"))
-    wb.state.lanes_count = 1
+    wb.state.key_lanes = 1
     t0 = time.time()
     for _ in range(5):
         wb._autostart_global_pace()
@@ -817,3 +817,39 @@ def test_one_account_splits_exactly_as_before(monkeypatch, tmp_path):
     data = {**BASE, "base_bet": 0.0003, "lanes": {"count": 3, "split": "bet"}}
     assert [wb._split_lanes(data, k) for k in (1, 2, 3)] == [3, 3, 3]
     assert wb._lane_config(data, 2)["base_bet"] == 0.0001
+
+
+# ── pacing is per key: lanes on other keys never wait for each other ──
+def test_key_lanes_count_by_key_only():
+    items = {"1": {}, "2": {"currency": "trx"}, "3": {"key_ref": "friend-a"},
+             "4": {"key_ref": "friend-a", "currency": "btc"}, "5": {"key_ref": "solo"}}
+    data = {**BASE, "lanes": {"split": "none", "next_id": 6, "items": {
+        k: {"name": f"Lane {k}", "enabled": True, "overrides": ov} for k, ov in items.items()}}}
+    assert [wb._key_lanes(data, k) for k in (1, 2, 3, 4, 5)] == [2, 2, 2, 2, 1]
+
+
+def test_each_key_has_its_own_autostart_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(wb, "AUTOSTART_LOCK_PATH", str(tmp_path / ".wolfbet_autostart.lock"))
+    wb.state.key_ref = "default"
+    assert wb._autostart_lock_path() == str(tmp_path / ".wolfbet_autostart.lock")
+    wb.state.key_ref = "friend-a"
+    assert wb._autostart_lock_path() == str(tmp_path / ".wolfbet_autostart.friend-a.lock")
+
+
+def test_a_lane_alone_on_its_key_never_waits(monkeypatch, tmp_path):
+    monkeypatch.setattr(wb, "AUTOSTART_LOCK_PATH", str(tmp_path / "as.lock"))
+    monkeypatch.setattr(wb, "AUTO_START_MIN_INTERVAL", 5.0)
+    wb.state.key_ref, wb.state.key_lanes = "friend-a", 1
+    t0 = time.time()
+    wb._autostart_global_pace()
+    wb._autostart_global_pace()
+    assert time.time() - t0 < 0.5
+    assert not os.listdir(tmp_path)
+
+
+def test_lanes_on_one_key_share_only_that_keys_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(wb, "AUTOSTART_LOCK_PATH", str(tmp_path / "as.lock"))
+    monkeypatch.setattr(wb, "AUTO_START_MIN_INTERVAL", 0.0)
+    wb.state.key_ref, wb.state.key_lanes = "friend-a", 2
+    wb._autostart_global_pace()
+    assert os.listdir(tmp_path) == ["as.friend-a.lock"]

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.54.0 - lanes on different keys never slow each other (2026-11-24)
+
+- The `/auto/start` spacing between lanes now applies per key: lanes on the same key share one lock file and still never fire `/auto/start` in the same instant, while a lane on another key uses its own file and never waits for them. The main key keeps the original `~/.wolfbet_autostart.lock`; another key uses `~/.wolfbet_autostart.<key>.lock`. A lane alone on its key takes no lock at all.
+- The per-bet soft pace was already per lane process, from that lane's own rate-limit headers, so it already follows each key; unchanged.
+- A bot with one key for every lane paces exactly as before.
+
+**Tests**: `tests/test_phase10_lanes.py` (lanes counted per key whatever the currency, lock path per key, a lane alone on its key never waits and creates no file, two lanes on one key share only that key's file). The version pins are updated.
+
+`VERSION` `2.53.0` -> `2.54.0`.
+
 ## v2.53.0 - each lane bets with its own key, currency and proxy (2026-11-24)
 
 Needs casino-shared v0.7.0.
