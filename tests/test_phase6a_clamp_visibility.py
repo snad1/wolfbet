@@ -30,7 +30,7 @@ import wolfbet as wb  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.52.0"
+    assert wb.VERSION == "2.53.0"
 
 
 # ── recurring_delay accepts values previously clamped ────
@@ -118,7 +118,7 @@ def test_clamped_helper_source_present():
 
 
 def test_cmd_config_set_captures_and_prints_warnings():
-    src = inspect.getsource(wb.cmd_config_set)
+    src = inspect.getsource(wb._config_set_write)
     # mutation_msgs captured (was: discarded return value in v2.30.5).
     assert "mutation_msgs" in src
     # Warnings surfaced via console.print.

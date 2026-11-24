@@ -1,4 +1,4 @@
-Invalid lane2 override: proxy can't differ per lane (shared by all lanes)
+Invalid lane2 override: purge_days can't differ per lane (shared by all lanes)
 [exit 2]
 {
   "api_key": "wb_live_0123456789abcdefSECRET9876",

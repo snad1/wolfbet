@@ -259,3 +259,128 @@ def test_key_verbs_without_a_vault_module_say_so(monkeypatch, capsys, lanes_cfg)
     monkeypatch.setattr(wb, "_vault", lambda: None)
     doc, code, _ = _key(monkeypatch, capsys, "list")
     assert code == 1 and doc["error"]["code"] == "vault_unavailable"
+
+
+# ── each lane may bet with its own key, currency and proxy ──
+PROXY_URL = "socks5://friend:pw-SECRET-1@10.0.0.9:1080"
+
+
+def _lanes(monkeypatch, tmp_path, items, **base):
+    lanes = {"split": "budget", "next_id": max(int(k) for k in items) + 1, "items": {
+        k: {"name": f"Lane {k}", "enabled": True, "overrides": ov} for k, ov in items.items()}}
+    return _config(monkeypatch, tmp_path, {**BASE, **base, "lanes": lanes})
+
+
+def _vault_with_friend():
+    vault = Vault("wolfbet")
+    vault.put("default", ENV_KEY, "Main")
+    vault.put("friend-a", FRIEND_KEY, "Friend A")
+    vault.put("friend-a-proxy", PROXY_URL, "Friend proxy", kind="proxy")
+    return vault
+
+
+def test_a_lane_bets_with_its_own_key_currency_and_proxy(monkeypatch, tmp_path):
+    _vault_with_friend()
+    monkeypatch.setenv("WOLFBET_API_KEY", ENV_KEY)
+    _lanes(monkeypatch, tmp_path, {"1": {}, "3": {
+        "key_ref": "friend-a", "currency": "trx", "proxy_ref": "friend-a-proxy"}})
+    wb.state.lane = 3
+    assert wb.load_config()
+    assert (wb.state.api_key, wb.state.currency, wb.state.proxy) == (FRIEND_KEY, "trx", PROXY_URL)
+    assert wb.state.account_problem is None
+    wb.state.lane = 1
+    assert wb.load_config()
+    assert (wb.state.api_key, wb.state.currency) == (ENV_KEY, "usdt")
+
+
+def test_a_reload_keeps_the_vault_proxy(monkeypatch, tmp_path):
+    _vault_with_friend()
+    _lanes(monkeypatch, tmp_path, {"1": {}, "3": {"proxy_ref": "friend-a-proxy"}})
+    wb.state.lane = 3
+    assert wb.load_config()
+    wb._reload_live_config()
+    assert wb.state.proxy == PROXY_URL
+
+
+@pytest.mark.parametrize("override,problem", [
+    ({"key_ref": "nobody"}, "Lane 3: key nobody is not in the vault"),
+    ({"proxy_ref": "nobody"}, "Lane 3: proxy nobody is not in the vault"),
+    ({"key_ref": "friend-a-proxy"}, "Lane 3: key friend-a-proxy is not in the vault"),
+])
+def test_a_missing_account_never_falls_back_to_another(monkeypatch, tmp_path, override, problem):
+    _vault_with_friend()
+    monkeypatch.setenv("WOLFBET_API_KEY", ENV_KEY)
+    _lanes(monkeypatch, tmp_path, {"1": {}, "3": override})
+    wb.state.lane = 3
+    assert wb.load_config()
+    assert wb.state.account_problem == problem
+    assert wb.state.api_key != ENV_KEY or "proxy_ref" in override
+
+
+@pytest.mark.parametrize("pair,message", [
+    ("lane3.key_ref=nobody", "no key named nobody in the vault"),
+    ("lane3.key_ref=friend-a-proxy", "no key named friend-a-proxy in the vault"),
+    ("lane3.proxy_ref=friend-a", "no proxy named friend-a in the vault"),
+    ("lane3.proxy=socks5://u:pw-SECRET-2@10.0.0.9:1080", "a proxy with a password goes in the vault"),
+])
+def test_bad_lane_accounts_are_refused_without_echoing(monkeypatch, tmp_path, capsys, pair, message):
+    _vault_with_friend()
+    path = _lanes(monkeypatch, tmp_path, {"1": {}, "3": {}})
+    before = open(path).read()
+    with pytest.raises(SystemExit) as e:
+        wb.cmd_config_set([pair])
+    out = capsys.readouterr().out
+    assert e.value.code == 2 and message in out and "SECRET" not in out
+    assert open(path).read() == before
+
+
+def test_saving_a_lane_account_restarts_only_that_lane(monkeypatch, tmp_path, capsys):
+    _vault_with_friend()
+    path = _lanes(monkeypatch, tmp_path, {"1": {}, "2": {}, "3": {}})
+    monkeypatch.setattr(wb, "_signal_lane_daemons", lambda *a, **k: 0)
+    monkeypatch.setattr(wb, "_lane_running", lambda lane: True)
+    restarted = []
+    monkeypatch.setattr(wb, "_restart_lane", lambda lane: restarted.append(lane) or True)
+    wb.cmd_config_set(["lane3.key_ref=friend-a", "lane3.currency=trx",
+                       "lane3.proxy_ref=friend-a-proxy"])
+    assert restarted == [3]
+    assert "Lane 3 restarted: its key, currency or proxy changed." in capsys.readouterr().out
+    ov = json.load(open(path))["lanes"]["items"]["3"]["overrides"]
+    assert ov == {"key_ref": "friend-a", "currency": "trx", "proxy_ref": "friend-a-proxy"}
+    restarted.clear()
+    wb.cmd_config_set(["lane3.max_wins=4"])
+    assert restarted == []
+
+
+def test_a_base_currency_change_restarts_the_lanes_that_inherit_it(monkeypatch, tmp_path, capsys):
+    _vault_with_friend()
+    _lanes(monkeypatch, tmp_path, {"1": {}, "2": {}, "3": {"currency": "trx"}})
+    monkeypatch.setattr(wb, "_signal_lane_daemons", lambda *a, **k: 0)
+    monkeypatch.setattr(wb, "_lane_running", lambda lane: lane != 2)
+    restarted = []
+    monkeypatch.setattr(wb, "_restart_lane", lambda lane: restarted.append(lane) or False)
+    wb.state.lane = 1
+    wb.cmd_config_set(["currency=btc"])
+    assert restarted == [1]
+    assert "Restart lane 1 to apply: wolfctl restart 1" in capsys.readouterr().out
+
+
+def test_key_and_proxy_users_follow_the_lanes(monkeypatch, tmp_path, capsys):
+    _vault_with_friend()
+    _lanes(monkeypatch, tmp_path, {"1": {}, "2": {}, "3": {
+        "key_ref": "friend-a", "proxy_ref": "friend-a-proxy"}})
+    doc, _, raw = _key(monkeypatch, capsys, "list")
+    assert PROXY_URL not in raw and "pw-SECRET" not in raw
+    assert {(k["id"], k["kind"]): k["used_by_lanes"] for k in doc["keys"]} == {
+        ("default", "key"): [1, 2], ("friend-a", "key"): [3],
+        ("friend-a-proxy", "proxy"): [3]}
+    doc, code, _ = _key(monkeypatch, capsys, "delete", "friend-a-proxy")
+    assert code == 2 and doc["error"]["message"] == (
+        "This key is used by lane 3. Move the lanes to another key first.")
+
+
+def test_a_proxy_entry_must_be_a_proxy_url(monkeypatch, capsys, lanes_cfg):
+    doc, code, raw = _key(monkeypatch, capsys, "put", "p1", "ftp://x:pw-SECRET-3@h", kind="proxy")
+    assert code == 2 and doc["error"]["code"] == "invalid_secret" and "SECRET" not in raw
+    doc, code, raw = _key(monkeypatch, capsys, "put", "p1", PROXY_URL, kind="proxy")
+    assert code == 0 and doc["key"]["kind"] == "proxy" and PROXY_URL not in raw

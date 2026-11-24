@@ -50,6 +50,8 @@
 │ proxy                   │ http://10.0.0.1:8080                    │ HTTP/HTTPS/SOCKS5 proxy URL (credentials masked)                                       │
 │ purge_days              │ 3                                       │ Bet-row retention window in days (1-30)                                                │
 │ db_write_mode           │ async                                   │ Bet DB writer: async (default, batched) or sync (legacy, per-bet fsync)                │
+│ key_ref                 │ default                                 │ Vault key the lane bets with (default: the main key)                                   │
+│ proxy_ref               │ off                                     │ Vault proxy the lane bets through, for a proxy with a password                         │
 │ events_enabled          │ on                                      │ Send bets, status and lifecycle events to Redis for the dashboard                      │
 │ events_url              │ redis://127.0.0.1:6379                  │ Redis URL for events (set via config-set or WOLFBET_EVENTS_URL)                        │
 │ custom_rules_text       │                                         │ Rule-Based custom rules (JSON per line)                                                │

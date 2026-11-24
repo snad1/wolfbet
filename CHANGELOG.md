@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.53.0 - each lane bets with its own key, currency and proxy (2026-11-24)
+
+Needs casino-shared v0.7.0.
+
+- New config keys `key_ref` (default `default`) and `proxy_ref` (default off), both lane-overridable: `wolfctl config-set lane3.key_ref=friend-a lane3.proxy_ref=friend-a-proxy`. Each must name a vault entry of the right kind, or the set is refused (`Invalid lane3 override: no key named friend-a in the vault`) and nothing is written. `--config-schema` gives them the format `vault_id`.
+- `currency` and `proxy` may now differ per lane. A lane proxy that carries a password is refused (`a proxy with a password goes in the vault: add it as a proxy key and set proxy_ref`) without repeating it; the base `proxy` works as before.
+- Key resolution: `default` keeps the order from v2.51.0 (`WOLFBET_API_KEY`, the vault, the config copy). Any other `key_ref` comes from the vault only. A lane whose key or proxy is missing from the vault logs `Lane 3: key friend-a is not in the vault` and stops at start instead of betting from another account. `proxy_ref` is read at start and on every reload, so a reload never drops the vault proxy.
+- **Bet maths:** the lane split now counts only the enabled lanes on the same account (same `key_ref` and currency). With `budget`, lanes 1-2 on `default` each risk half of that balance and a lane on its own key risks all of its own; with `bet`, the base bet is divided the same way. A bot with one key and one currency splits exactly as before.
+- After `--config-set`, the running lanes whose key, currency or `proxy_ref` changed are restarted one by one (`Lane 3 restarted: its key, currency or proxy changed.`); every other lane keeps its process. A plain `proxy` URL still applies live without a restart. Without systemd the command prints `Restart lane 3 to apply: wolfctl restart 3`.
+- `--key-put ID --key-kind proxy` stores a proxy URL (http, https or socks5) in the vault from stdin; a bad one is refused without repeating it. `--key-list` rows carry `kind`, and `used_by_lanes` now follows each lane's `key_ref` or `proxy_ref`, so deleting an entry a lane uses is refused.
+- The saved config gains `"key_ref": "default"` and `"proxy_ref": null`; `--config-show` lists both.
+- **Rollback:** v2.52.0 ignores `key_ref` and `proxy_ref` and would bet every lane with the main key and the base currency. Remove the lane overrides `key_ref`, `proxy_ref` and `currency` (`laneK.key_ref=default`) before rolling back.
+
+**Tests**: `tests/test_phase15_vault.py` (a lane's own key, currency and vault proxy; the proxy kept on reload; a missing key or proxy never falling back; four refusals without echo; only the changed lane restarted; a base currency change restarting the lanes that inherit it; key and proxy users; proxy entries), `tests/test_phase10_lanes.py` (split per account; one account as before). The tests that pinned `currency` and `proxy` as lane-forbidden now use `purge_days` and `db_write_mode`. The config-set and config-show snapshots, the config-schema fixture (`vault_id` format, checksum) and the version pins are updated.
+
+`VERSION` `2.52.0` -> `2.53.0`.
+
 ## v2.52.0 - add, rotate, list and delete vault keys from the command line (2026-11-23)
 
 Needs casino-shared v0.6.0. The dashboard agent calls these; nothing here prints a secret.

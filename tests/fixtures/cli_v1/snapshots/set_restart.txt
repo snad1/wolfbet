@@ -35,6 +35,8 @@ Daemon reloaded live config.
   "proxy": "http://proxyuser:proxypass@10.0.0.1:8080",
   "purge_days": 3,
   "db_write_mode": "async",
+  "key_ref": "default",
+  "proxy_ref": null,
   "recurring": true,
   "basebet_pct": 0.0,
   "milestone_bets": 100,

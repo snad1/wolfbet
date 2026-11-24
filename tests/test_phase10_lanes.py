@@ -27,7 +27,7 @@ os.environ.setdefault("APP_ENV", "testing")
 
 import wolfbet as wb  # noqa: E402
 
-_LANE_ATTRS = ("lane", "lanes_count", "lane_share", "lane_run_profit", "profit",
+_LANE_ATTRS = ("lane", "lanes_count", "split_lanes", "key_ref", "proxy_ref", "lane_share", "lane_run_profit", "profit",
                "current_bet", "current_balance", "base_bet", "max_wins",
                "streak_reset_losses", "recurring", "currency", "loss_mult",
                "multiplier", "bet_value", "rule", "streak_delay_loss",
@@ -98,7 +98,7 @@ def test_load_config_applies_lane_overrides(monkeypatch, tmp_path):
     assert wb.state.lanes_count == 3
     assert wb.state.base_bet == 0.0005 and wb.state.current_bet == 0.0005
     assert wb.state.max_wins == 2
-    assert wb.state.currency == "usdt"           # forbidden per lane → base kept
+    assert wb.state.currency == "btc"            # a lane may bet its own currency
     assert wb.state.streak_delay_loss == (3, 1.5)
     wb.state.lane = 1
     assert wb.load_config()
@@ -182,7 +182,7 @@ def test_config_set_forbidden_lane_key_exits(monkeypatch, tmp_path):
     monkeypatch.setattr(wb, "_apply_proxy_to_session", lambda: None)
     wb.state.lane = 1
     with pytest.raises(SystemExit) as e:
-        wb.cmd_config_set(["lane2.currency=btc"])
+        wb.cmd_config_set(["lane2.purge_days=5"])
     assert e.value.code == 2
 
 
@@ -355,7 +355,7 @@ def test_no_budget_without_lanes():
 
 
 def test_init_lane_budget():
-    wb.state.lanes_count, wb.state.current_balance = 4, 1.0
+    wb.state.split_lanes, wb.state.current_balance = 4, 1.0
     wb.state.lane_split = "none"                 # v2.36.0 default: no lane budget
     wb._init_lane_budget()
     assert wb.state.lane_share is None
@@ -368,7 +368,7 @@ def test_init_lane_budget():
     assert wb.state.lane_share is None
     wb.state.lane_split = "budget"
     wb._init_lane_budget()
-    wb.state.lanes_count = 1
+    wb.state.split_lanes = 1
     wb._init_lane_budget()
     assert wb.state.lane_share is None
 
@@ -376,7 +376,7 @@ def test_init_lane_budget():
 def test_risky_config_uses_lane_share():
     wb.state.strategy_key, wb.state.streak_reset_losses, wb.state.max_loss = "2", 2, None
     wb.state.base_bet, wb.state.loss_mult = 0.001, 2.0
-    wb.state.current_balance, wb.state.lanes_count = 4.0, 4   # share 1.0 → 9-loss chain
+    wb.state.current_balance, wb.state.split_lanes = 4.0, 4   # share 1.0 → 9-loss chain
     wb.state.lane_split = "budget"
     warns = wb._check_risky_config()
     assert any("lane share covers a 9-loss chain" in w for w in warns)
@@ -602,7 +602,7 @@ def test_split_bet_save_config_writes_full_bet(monkeypatch, tmp_path):
 
 
 def test_split_basebet_pct_divided(monkeypatch):
-    wb.state.lanes_count, wb.state.lane_split = 2, "bet"
+    wb.state.split_lanes, wb.state.lane_split = 2, "bet"
     wb.state.current_balance, wb.state.basebet_pct, wb.state.base_bet = 10.0, 0.001, 0.0
     assert wb._apply_basebet_pct()
     assert wb.state.base_bet == pytest.approx(0.005)
@@ -800,3 +800,20 @@ def test_a_live_reload_picks_up_a_rename(monkeypatch, tmp_path):
     assert wb.state.lane_name == "night-run"
     assert "[L3 night-run]" in wb._log_handler.formatter._fmt
     assert json.load(open(path))["lanes"]["items"]["3"]["name"] == "night-run"
+
+
+# ── a split stays inside one account (key and currency) ──
+def test_split_shares_only_count_lanes_on_the_same_account(monkeypatch, tmp_path):
+    items = {"1": {}, "2": {}, "3": {"key_ref": "friend-a"}, "4": {"currency": "trx"}}
+    lanes = {"split": "both", "next_id": 5, "items": {
+        k: {"name": f"Lane {k}", "enabled": True, "overrides": ov} for k, ov in items.items()}}
+    data = {**BASE, "base_bet": 0.0004, "lanes": lanes}
+    assert [wb._split_lanes(data, k) for k in (1, 2, 3, 4)] == [2, 2, 1, 1]
+    assert wb._lane_config(data, 1)["base_bet"] == 0.0002
+    assert wb._lane_config(data, 3)["base_bet"] == 0.0004
+
+
+def test_one_account_splits_exactly_as_before(monkeypatch, tmp_path):
+    data = {**BASE, "base_bet": 0.0003, "lanes": {"count": 3, "split": "bet"}}
+    assert [wb._split_lanes(data, k) for k in (1, 2, 3)] == [3, 3, 3]
+    assert wb._lane_config(data, 2)["base_bet"] == 0.0001

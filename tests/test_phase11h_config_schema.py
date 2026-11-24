@@ -70,7 +70,7 @@ _SET_CASES = {
     "set_mixed":          ["lane2.maxloss=0.003", "maxbets=100"],
     "err_unknown_key":    ["foo=1"],
     "err_bad_value":      ["maxloss=abc"],
-    "err_lane_forbidden": ["lane2.proxy=http://10.0.0.9:80"],
+    "err_lane_forbidden": ["lane2.purge_days=5"],
     "err_api_key":        ["api_key=zzz"],
     "err_lanes_count":    ["lanes=99"],
     "err_malformed":      ["maxloss"],
@@ -235,7 +235,7 @@ _BAD_INPUTS = [
     ("invalid_argument", ["foo=1"]),
     ("invalid_argument", ["maxloss"]),
     ("invalid_argument", ["lanes=99"]),
-    ("invalid_lane_override", ["lane2.proxy=http://10.0.0.9:80"]),
+    ("invalid_lane_override", ["lane2.purge_days=5"]),
     ("api_key_refused", ["api_key=zzz"]),
 ]
 
@@ -272,7 +272,7 @@ def test_rich_dry_run(env, capsys):
 @pytest.mark.parametrize("pairs", [
     ["lane2.multiplier=3", "maxloss=abc"],
     ["lanes=4", "lane3.maxwins=5", "foo=1"],
-    ["lane_split=both", "lane2.proxy=http://10.0.0.9:80"],
+    ["lane_split=both", "lane2.purge_days=5"],
 ])
 def test_failed_pair_writes_nothing_and_signals_no_lane(env, pairs):
     before = _files()
@@ -356,7 +356,7 @@ def test_custom_rules_are_parsed_and_bad_text_is_refused(env, capsys):
     assert code == 0 and _rows(doc)["custom_rules_text"] == ""
 
 
-@pytest.mark.parametrize("pair", ["lane2.delay_martin_threshold=4", "lane2.currency=btc"])
+@pytest.mark.parametrize("pair", ["lane2.delay_martin_threshold=4", "lane2.db_write_mode=sync"])
 def test_wizard_keys_cannot_differ_per_lane(env, capsys, pair):
     doc, code = _dry(env, capsys, pair)
     assert code == 2
