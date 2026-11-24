@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.56.0 - a saved events feed beats the host env (2026-11-24)
+
+- `events_url` saved in the config (from `wolfctl config-set` or the dashboard) now applies at start even when `WOLFBET_EVENTS_URL` is set on the host. The env var only fills in a config that has no `events_url`, so fresh installs keep working as before. The Telegram bot's own `WOLFBET_EVENTS_URL` is unchanged.
+
+**Tests**: `tests/test_phase11e_events_config.py` (a saved URL beats the env, the env seeds an empty config). The version pins are updated.
+
+`VERSION` `2.55.0` -> `2.56.0`.
+
 ## v2.55.0 - every setting says what a change costs (2026-11-24)
 
 - One table now holds every setting with how a change reaches running lanes (`live`: a reload applies it now; `lane`: the lanes using it restart; `service`: shared by every lane, so every lane restarts) and whether one lane may override it. The live-reload and shared-key lists are read from it; their contents are unchanged.

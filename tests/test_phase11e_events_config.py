@@ -135,16 +135,24 @@ def test_redacted_url_hides_credentials_and_query():
     assert _PASSWORD not in wb._fmt_config_value("events_url", _URL)
 
 
-def test_config_round_trip_and_env_override(cfg, monkeypatch):
+def test_a_saved_events_url_beats_the_host_env(cfg, monkeypatch):
     wb.state.events_enabled, wb.state.events_url = True, _URL
     wb.save_config()
     wb.state.events_enabled, wb.state.events_url = False, None
     assert wb.load_config()
     assert wb.state.events_enabled is True and wb.state.events_url == _URL
 
-    monkeypatch.setenv("WOLFBET_EVENTS_URL", "redis://override:6379")
+    monkeypatch.setenv("WOLFBET_EVENTS_URL", "redis://from-env:6379")
     assert wb.load_config()
-    assert wb.state.events_url == "redis://override:6379"
+    assert wb.state.events_url == _URL
+
+
+def test_the_host_env_seeds_an_events_url_the_config_lacks(cfg, monkeypatch):
+    wb.state.events_url = None
+    wb.save_config()
+    monkeypatch.setenv("WOLFBET_EVENTS_URL", "redis://from-env:6379")
+    assert wb.load_config()
+    assert wb.state.events_url == "redis://from-env:6379"
 
 
 def test_config_set_bad_url_exits_2_and_keeps_the_file(cfg):

@@ -996,7 +996,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.55.0"
+VERSION      = "2.56.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1605,7 +1605,7 @@ def load_config() -> bool:
             None if state.api_key or state.key_ref == VAULT_KEY_ID
             else f"Lane {state.lane}: key {state.key_ref} is not in the vault")
         env_events_url = os.environ.get("WOLFBET_EVENTS_URL")
-        if env_events_url:
+        if env_events_url and not merged.get("events_url"):
             state.events_url = env_events_url
         secure_path(CONFIG_PATH)
         state.current_bet = state.base_bet
