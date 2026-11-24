@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.52.0 - add, rotate, list and delete vault keys from the command line (2026-11-23)
+
+Needs casino-shared v0.6.0. The dashboard agent calls these; nothing here prints a secret.
+
+- `--key-list --json`: every vault key with `id`, `label`, `last4`, `owner_user_id`, `created_at`, `rotated_at` and `used_by_lanes`. Every enabled lane uses `default` until lanes can pick their own key.
+- `--key-put ID [--key-label TEXT] [--key-owner USER] --json` and `--key-rotate ID --json` read the key from one line of stdin, so it never shows in a process list. A key must be 8-4096 printable characters with no spaces. `--key-put` refuses an id that exists (`key_exists`), `--key-rotate` one that does not (`key_unknown`). A rotate keeps the label and owner and notes that lanes pick the new key up when they restart; rotating `default` while `WOLFBET_API_KEY` is set adds that `.env` still replaces it when lane 1 starts.
+- `--key-delete ID --json` refuses a key a lane uses: `This key is used by lane 1, 2. Move the lanes to another key first.` (`key_in_use`).
+- Refusals exit 2 with `{"error": {"code", "message"}}`; a vault that can't be used exits 1 with `vault_unavailable`. The log records the key id and what was done, never the key.
+
+**Tests**: `tests/test_phase15_vault.py` (put from stdin with nothing printed, list with lanes, six refusals that leave the vault alone, rotate keeping label and owner, the `.env` warning, delete, no vault module). The version pins are updated.
+
+`VERSION` `2.51.0` -> `2.52.0`.
+
 ## v2.51.0 - the API key lives in the host key vault (2026-11-23)
 
 Needs casino-shared v0.5.0 (`wolfctl update` installs it).

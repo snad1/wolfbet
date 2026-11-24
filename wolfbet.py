@@ -980,7 +980,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.51.0"
+VERSION      = "2.52.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1304,6 +1304,83 @@ def _sync_vault_key() -> None:
     raw.pop("api_key")
     _write_config_raw(raw)
     logger.info("API key removed from %s; the vault keeps it", CONFIG_PATH)
+
+
+KEY_SECRET_RE = re.compile(r"^[\x21-\x7e]{8,4096}$")
+KEY_SECRET_HELP = "the key must be 8-4096 printable characters with no spaces"
+
+
+def _key_users(key_id: str) -> list:
+    """The enabled lanes that bet with `key_id`: every lane uses the default key for now."""
+    if key_id != VAULT_KEY_ID:
+        return []
+    reg = _lane_registry(_read_config_raw())
+    return [lane for lane in sorted(reg) if reg[lane]["enabled"]]
+
+
+def _key_row(info) -> dict:
+    return {"id": info.key_id, "label": info.label, "last4": info.last4,
+            "owner_user_id": info.owner_user_id, "created_at": info.created_at,
+            "rotated_at": info.rotated_at, "used_by_lanes": _key_users(info.key_id)}
+
+
+def _read_key_secret() -> str:
+    """One line of stdin: the key travels there so it never shows in a process list."""
+    secret = sys.stdin.readline().rstrip("\r\n")
+    if not KEY_SECRET_RE.match(secret):
+        raise _CliError("invalid_secret", KEY_SECRET_HELP, style="red", exit_code=2)
+    return secret
+
+
+def cmd_key(action: str, key_id: Optional[str] = None, label: Optional[str] = None,
+            owner: Optional[int] = None) -> None:
+    """List, add, rotate or delete vault keys as one JSON document; no secret is ever printed."""
+    vault = _vault()
+    if vault is None:
+        _cli_fail(_CliError("vault_unavailable", "The key vault can't be used on this host.",
+                            exit_code=1), True)
+        return
+    from shared.core.vault import KEY_ID_RE, VaultError
+    try:
+        if action != "list" and not KEY_ID_RE.match(key_id or ""):
+            raise _CliError("invalid_argument", "key id must be 1-32 lowercase letters, digits, "
+                            "_ or -", style="red", exit_code=2)
+        if action == "list":
+            _print_json({"keys": [_key_row(i) for i in vault.keys()]})
+            return
+        if vault.info(key_id) is None and action != "put":
+            raise _CliError("key_unknown", f"No key named {key_id}.", style="red", exit_code=2)
+        if action == "delete":
+            users = _key_users(key_id)
+            if users:
+                lanes = ", ".join(str(lane) for lane in users)
+                raise _CliError("key_in_use", f"This key is used by lane {lanes}. "
+                                "Move the lanes to another key first.", style="red", exit_code=2)
+            vault.delete(key_id)
+            logger.info("Vault key %s deleted", key_id)
+            _print_json({"deleted": key_id})
+            return
+        if action == "put" and vault.info(key_id) is not None:
+            raise _CliError("key_exists", f"A key named {key_id} already exists.",
+                            style="red", exit_code=2)
+        secret = _read_key_secret()
+        old = vault.info(key_id)
+        info = vault.put(key_id, secret, label or (old.label if old else key_id),
+                         owner if action == "put" else (old.owner_user_id if old else None))
+        logger.info("Vault key %s %s", key_id, "added" if action == "put" else "rotated")
+        note = None
+        if action == "rotate":
+            note = "Lanes using this key pick up the new one when they restart."
+            if key_id == VAULT_KEY_ID and os.environ.get("WOLFBET_API_KEY"):
+                note += (" WOLFBET_API_KEY in .env still replaces it when lane 1 starts:"
+                         " remove it from .env to keep this key.")
+        _print_json({"key": _key_row(info), "note": note})
+    except VaultError as e:
+        logger.warning("Key vault unavailable: %s", e)
+        _cli_fail(_CliError("vault_unavailable", "The key vault can't be used on this host.",
+                            exit_code=1), True)
+    except _CliError as e:
+        _cli_fail(e, True)
 
 
 def save_config():
@@ -6622,7 +6699,8 @@ def cmd_monitor():
 # ══════════════════════════════════════════════════════════
 CLI_JSON_VERSION = 1
 _JSON_COMMANDS = ("status", "lanes_status", "config_show", "stats", "analytics",
-                  "last_bets", "session_bets", "export", "backtest")
+                  "last_bets", "session_bets", "export", "backtest",
+                  "key_list", "key_put", "key_rotate", "key_delete")
 
 
 class _CliError(Exception):
@@ -9216,6 +9294,19 @@ def main():
                        help="Add one lane named NAME (copies --lane-from K's overrides)")
     group.add_argument("--lane-remove", type=int, metavar="K",
                        help="Remove lane K from the config; its id is never reused")
+    group.add_argument("--key-list", action="store_true",
+                       help="List the vault keys as JSON (label, last 4 characters, lanes); "
+                            "never a secret")
+    group.add_argument("--key-put", metavar="ID",
+                       help="Add vault key ID; the key itself is read from stdin")
+    group.add_argument("--key-rotate", metavar="ID",
+                       help="Replace vault key ID; the new key is read from stdin")
+    group.add_argument("--key-delete", metavar="ID",
+                       help="Delete vault key ID unless a lane uses it")
+    parser.add_argument("--key-label", metavar="TEXT", default=None,
+                        help="With --key-put: the key's label")
+    parser.add_argument("--key-owner", type=int, metavar="USER", default=None,
+                        help="With --key-put: the dashboard user who owns the key")
     parser.add_argument("--lane-from", type=int, metavar="K", default=None,
                         help="With --lane-add: copy lane K's overrides (default: lane 1, none)")
     group.add_argument("--config-schema", action="store_true",
@@ -9362,6 +9453,14 @@ def main():
     if args.lane_remove is not None:
         cmd_lane_remove(args.lane_remove)
         return
+    if args.key_list:
+        cmd_key("list")
+        return
+    for action in ("put", "rotate", "delete"):
+        key_id = getattr(args, f"key_{action}")
+        if key_id is not None:
+            cmd_key(action, key_id, args.key_label, args.key_owner)
+            return
     if args.cleanup is not None:
         init_db()
         # `--cleanup` with no value comes through as -1 (const), meaning "use configured default".

@@ -169,3 +169,93 @@ def test_the_key_never_reaches_the_log(monkeypatch, tmp_path, caplog):
     assert "API key stored in the vault as default" in text
     for key in (ENV_KEY, FILE_KEY):
         assert key not in text and key[8:-4] not in text
+
+
+# ── key verbs for the dashboard: JSON out, the secret only ever on stdin ──
+FRIEND_KEY = "wb_live_FRIEND_0123456789abcdef7777"
+
+
+def _key(monkeypatch, capsys, action, key_id=None, secret=None, **kw):
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("" if secret is None else secret + "\n"))
+    code = 0
+    try:
+        wb.cmd_key(action, key_id, **kw)
+    except SystemExit as e:
+        code = e.code
+    out = capsys.readouterr().out
+    return json.loads(out), code, out
+
+
+@pytest.fixture
+def lanes_cfg(monkeypatch, tmp_path):
+    return _config(monkeypatch, tmp_path, {**BASE, "lanes": {"count": 2}})
+
+
+def test_key_put_reads_stdin_and_never_prints_the_secret(monkeypatch, capsys, lanes_cfg):
+    doc, code, raw = _key(monkeypatch, capsys, "put", "friend-a", FRIEND_KEY,
+                          label="Friend A", owner=7)
+    assert code == 0 and FRIEND_KEY not in raw
+    assert doc["key"] == {**doc["key"], "id": "friend-a", "label": "Friend A", "last4": "7777",
+                          "owner_user_id": 7, "used_by_lanes": []}
+    assert Vault("wolfbet").secret("friend-a") == FRIEND_KEY
+
+
+def test_key_list_shows_which_lanes_use_each_key(monkeypatch, capsys, lanes_cfg):
+    Vault("wolfbet").put("default", ENV_KEY, "Main")
+    Vault("wolfbet").put("friend-a", FRIEND_KEY, "Friend A")
+    doc, code, raw = _key(monkeypatch, capsys, "list")
+    assert code == 0 and ENV_KEY not in raw and FRIEND_KEY not in raw
+    assert [(k["id"], k["used_by_lanes"]) for k in doc["keys"]] == [
+        ("default", [1, 2]), ("friend-a", [])]
+
+
+@pytest.mark.parametrize("action,key_id,secret,code", [
+    ("put", "friend-a", FRIEND_KEY, "key_exists"),
+    ("put", "new", "short", "invalid_secret"),
+    ("put", "new", "has space in it", "invalid_secret"),
+    ("rotate", "nobody", FRIEND_KEY, "key_unknown"),
+    ("delete", "default", None, "key_in_use"),
+    ("delete", "../x", None, "invalid_argument"),
+])
+def test_refused_key_changes_leave_the_vault_alone(monkeypatch, capsys, lanes_cfg,
+                                                   action, key_id, secret, code):
+    vault = Vault("wolfbet")
+    vault.put("default", ENV_KEY, "Main")
+    vault.put("friend-a", FRIEND_KEY, "Friend A")
+    before = [(k.key_id, k.last4, k.rotated_at) for k in vault.keys()]
+    doc, exit_code, raw = _key(monkeypatch, capsys, action, key_id, secret)
+    assert exit_code == 2 and doc["error"]["code"] == code
+    assert [(k.key_id, k.last4, k.rotated_at) for k in vault.keys()] == before
+    assert "short" not in raw or code != "invalid_secret"
+    if code == "key_in_use":
+        assert doc["error"]["message"] == ("This key is used by lane 1, 2. "
+                                           "Move the lanes to another key first.")
+
+
+def test_key_rotate_keeps_label_and_owner_and_says_when_it_applies(monkeypatch, capsys, lanes_cfg):
+    Vault("wolfbet").put("friend-a", FRIEND_KEY, "Friend A", owner_user_id=7)
+    doc, code, _ = _key(monkeypatch, capsys, "rotate", "friend-a", "wb_live_ROTATED_000000008888")
+    assert code == 0 and doc["key"]["last4"] == "8888" and doc["key"]["rotated_at"]
+    assert (doc["key"]["label"], doc["key"]["owner_user_id"]) == ("Friend A", 7)
+    assert doc["note"] == "Lanes using this key pick up the new one when they restart."
+
+
+def test_rotating_default_warns_while_the_env_key_is_set(monkeypatch, capsys, lanes_cfg):
+    Vault("wolfbet").put("default", ENV_KEY, "Main")
+    monkeypatch.setenv("WOLFBET_API_KEY", ENV_KEY)
+    doc, _, _ = _key(monkeypatch, capsys, "rotate", "default", FRIEND_KEY)
+    assert "remove it from .env" in doc["note"]
+
+
+def test_an_unused_key_is_deleted(monkeypatch, capsys, lanes_cfg):
+    Vault("wolfbet").put("friend-a", FRIEND_KEY, "Friend A")
+    doc, code, _ = _key(monkeypatch, capsys, "delete", "friend-a")
+    assert code == 0 and doc == {"v": 1, "deleted": "friend-a"}
+    assert Vault("wolfbet").info("friend-a") is None
+
+
+def test_key_verbs_without_a_vault_module_say_so(monkeypatch, capsys, lanes_cfg):
+    monkeypatch.setattr(wb, "_vault", lambda: None)
+    doc, code, _ = _key(monkeypatch, capsys, "list")
+    assert code == 1 and doc["error"]["code"] == "vault_unavailable"
