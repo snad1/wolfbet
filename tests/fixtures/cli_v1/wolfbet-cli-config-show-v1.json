@@ -24,7 +24,8 @@
         "lane_split",
         "lane_overrides",
         "config_file",
-        "pending"
+        "pending",
+        "rollout"
       ],
       "properties": {
         "v": {
@@ -190,6 +191,20 @@
                   "saved": {}
                 }
               }
+            }
+          },
+          "additionalProperties": false
+        },
+        "rollout": {
+          "type": "object",
+          "description": "Which code each running lane runs during an update",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "enum": [
+                "new",
+                "waiting for session end",
+                "old"
+              ]
             }
           },
           "additionalProperties": false

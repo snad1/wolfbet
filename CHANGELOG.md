@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.61.0 - config-show reports the update rollout (2026-11-24)
+
+- `--config-show --json` gains `rollout`: for each running lane, which code it runs during an update (`new`, `waiting for session end` or `old`, the same rule as the **Code** column in `wolfctl status`). The dashboard Control page shows it beside each lane's pending changes. Stopped lanes are left out. The table output is unchanged.
+
+**Tests**: `tests/test_phase16_pending_restart.py` (rollout for running lanes only), the config-show contract. The version pins are updated.
+
+`VERSION` `2.60.0` -> `2.61.0`.
+
 ## v2.60.0 / wolfctl v3.26 - an update rolls through the lanes (2026-11-24)
 
 - `wolfctl update` installs the new code, then asks each running lane to restart at its own session end (the `--at-boundary` restart from v2.59.0) instead of stopping every lane at once: `Lane 1 restarts on the new code when its session ends.` per lane, then `Betting goes on; use wolfctl update --critical to restart every lane now.` Stopped lanes start on the new code whenever they are started. The Telegram bot restart is unchanged.

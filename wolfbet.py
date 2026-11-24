@@ -998,7 +998,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.60.0"
+VERSION      = "2.61.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -7429,6 +7429,11 @@ def _pending_restarts() -> dict:
     return pending
 
 
+def _lane_rollout() -> dict:
+    """Which code each running lane runs during an update: {lane: new | waiting for session end | old}."""
+    return {str(lane): _lane_code(lane, d) for lane, d, alive in _read_lane_states() if alive}
+
+
 def _config_show_data() -> dict:
     """Saved config (secrets masked), the running daemon's live base bet, lanes and the file's metadata."""
     if not load_config():
@@ -7468,6 +7473,7 @@ def _config_show_data() -> dict:
         "lane_split": _lane_split(raw),
         "lane_overrides": overrides,
         "pending": _pending_restarts(),
+        "rollout": _lane_rollout(),
         "config_file": config_file,
     }
 

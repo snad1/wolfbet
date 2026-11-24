@@ -89,3 +89,12 @@ def test_a_session_row_keeps_the_settings_it_started_with(lane, monkeypatch, tmp
     assert snapshot["multiplier"] == 3.0 and snapshot["max_loss"] == 0.02
     assert snapshot["proxy"] == "http://10.0.0.2:3128"
     assert "secret-pw" not in raw and "api_key" not in snapshot
+
+
+def test_config_show_says_which_code_each_running_lane_runs(lane, monkeypatch):
+    monkeypatch.setattr(wb, "_read_lane_states", lambda: [
+        (1, {"code_version": wb.VERSION}, True),
+        (2, {"code_version": "2.0.0"}, True),
+        (3, {"code_version": "2.0.0"}, False),
+    ])
+    assert wb._config_show_data()["rollout"] == {"1": "new", "2": "old"}
