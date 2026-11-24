@@ -384,3 +384,37 @@ def test_a_proxy_entry_must_be_a_proxy_url(monkeypatch, capsys, lanes_cfg):
     assert code == 2 and doc["error"]["code"] == "invalid_secret" and "SECRET" not in raw
     doc, code, raw = _key(monkeypatch, capsys, "put", "p1", PROXY_URL, kind="proxy")
     assert code == 0 and doc["key"]["kind"] == "proxy" and PROXY_URL not in raw
+
+
+TG_TOKEN = "123456789:AAH-telegram-bot-token-x9Yz0123456789ab"
+
+
+def test_the_telegram_token_is_stored_only_as_telegram(monkeypatch, capsys, lanes_cfg):
+    doc, code, raw = _key(monkeypatch, capsys, "put", "tg2", TG_TOKEN, kind="telegram")
+    assert code == 2 and doc["error"]["code"] == "invalid_argument" and TG_TOKEN not in raw
+    doc, code, raw = _key(monkeypatch, capsys, "put", "telegram", FRIEND_KEY)
+    assert code == 2 and doc["error"]["code"] == "invalid_argument"
+    doc, code, raw = _key(monkeypatch, capsys, "put", "telegram", "not-a-token-at-all",
+                          kind="telegram", label="Telegram bot")
+    assert code == 2 and doc["error"]["message"] == "That doesn't look like a Telegram bot token."
+    assert "not-a-token" not in raw
+    doc, code, raw = _key(monkeypatch, capsys, "put", "telegram", TG_TOKEN, kind="telegram",
+                          label="Telegram bot")
+    assert code == 0 and TG_TOKEN not in raw
+    assert (doc["key"]["kind"], doc["key"]["last4"]) == ("telegram", "89ab")
+    assert doc["note"] == "Restart the Telegram bot to use the new token."
+    new = TG_TOKEN[:-4] + "zzzz"
+    doc, code, raw = _key(monkeypatch, capsys, "rotate", "telegram", new)
+    assert code == 0 and new not in raw
+    assert doc["note"] == "Restart the Telegram bot to use the new token."
+
+
+def test_the_telegram_bot_reads_its_token_from_the_vault_then_the_env(monkeypatch, lanes_cfg):
+    import importlib
+    import tg.config as tg_config
+
+    monkeypatch.setenv("WOLFBET_TG_TOKEN", "999:from-env")
+    assert tg_config.bot_token() == "999:from-env"
+    Vault("wolfbet").put("telegram", TG_TOKEN, "Telegram bot", kind="telegram")
+    assert tg_config.bot_token() == TG_TOKEN
+    assert importlib.reload(tg_config).BOT_TOKEN == TG_TOKEN

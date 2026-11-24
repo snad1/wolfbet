@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.57.0 / TG v1.26.0 - the Telegram bot token lives in the key vault (2026-11-24)
+
+Needs casino-shared v0.8.0.
+
+- `--key-put telegram --key-kind=telegram` (token on stdin) stores the Telegram bot token in the host vault, encrypted and never printed; `--key-rotate telegram` replaces it. The kind is only accepted under the id `telegram`, and a value that isn't a bot token is refused with `That doesn't look like a Telegram bot token.` without repeating it. Both answer `Restart the Telegram bot to use the new token.`
+- The Telegram bot reads its token from the vault at start and falls back to `WOLFBET_TG_TOKEN`, so hosts that keep the token in `.env` work as before. A vault it can't open is logged without the token.
+
+**Tests**: `tests/test_phase15_vault.py` (stored only as `telegram`, bad token refused without echo, put and rotate notes, the bot reads the vault first and the env second). The version pins are updated.
+
+`VERSION` `2.56.0` -> `2.57.0`; TG `VERSION` `1.25.0` -> `1.26.0`.
+
 ## v2.56.0 - a saved events feed beats the host env (2026-11-24)
 
 - `events_url` saved in the config (from `wolfctl config-set` or the dashboard) now applies at start even when `WOLFBET_EVENTS_URL` is set on the host. The env var only fills in a config that has no `events_url`, so fresh installs keep working as before. The Telegram bot's own `WOLFBET_EVENTS_URL` is unchanged.

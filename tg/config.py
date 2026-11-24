@@ -2,10 +2,33 @@
 
 import os
 import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+TG_KEY_ID = "telegram"
+
+
+def bot_token() -> str:
+    """The bot token from the host key vault, else WOLFBET_TG_TOKEN; never logged."""
+    try:
+        from shared.core.vault import Vault, VaultError
+    except ImportError:
+        return os.environ.get("WOLFBET_TG_TOKEN", "")
+    try:
+        vault = Vault("wolfbet")
+        info = vault.info(TG_KEY_ID)
+        if info is not None and info.kind == "telegram":
+            return vault.secret(TG_KEY_ID) or os.environ.get("WOLFBET_TG_TOKEN", "")
+    except VaultError as e:
+        logging.getLogger("wolfbot").warning("Key vault unavailable for the bot token: %s", e)
+    return os.environ.get("WOLFBET_TG_TOKEN", "")
+
 
 # ── Environment ──────────────────────────────────────────
 APP_ENV    = os.environ.get("APP_ENV", "production")
-BOT_TOKEN  = os.environ.get("WOLFBET_TG_TOKEN", "")
+BOT_TOKEN  = bot_token()
 DATA_DIR   = os.environ.get("WOLFBET_TG_DATA", os.path.expanduser("~/.wolfbot_tg"))
 API_BASE   = os.environ.get("WOLFBET_API_BASE", "https://wolfbet.com/api")
 

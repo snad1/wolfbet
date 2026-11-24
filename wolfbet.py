@@ -996,7 +996,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.56.0"
+VERSION      = "2.57.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1346,6 +1346,8 @@ def _mask_key(key: str) -> str:
 
 VAULT_SERVICE = "wolfbet"
 VAULT_KEY_ID = "default"
+TG_KEY_ID = "telegram"
+TG_TOKEN_RE = re.compile(r"^\d{5,12}:[A-Za-z0-9_-]{30,64}$")
 
 
 def _vault():
@@ -1462,6 +1464,9 @@ def _read_key_secret(kind: str = "key") -> str:
     secret = sys.stdin.readline().rstrip("\r\n")
     if not KEY_SECRET_RE.match(secret):
         raise _CliError("invalid_secret", KEY_SECRET_HELP, style="red", exit_code=2)
+    if kind == "telegram" and not TG_TOKEN_RE.match(secret):
+        raise _CliError("invalid_secret", "That doesn't look like a Telegram bot token.",
+                        style="red", exit_code=2)
     if kind == "proxy":
         try:
             ok = _validate_proxy(secret) is not None
@@ -1489,6 +1494,9 @@ def cmd_key(action: str, key_id: Optional[str] = None, label: Optional[str] = No
         if action == "list":
             _print_json({"keys": [_key_row(i) for i in vault.keys()]})
             return
+        if action == "put" and (kind == "telegram") != (key_id == TG_KEY_ID):
+            raise _CliError("invalid_argument", f"The Telegram bot token is stored as {TG_KEY_ID}, "
+                            "and only there.", style="red", exit_code=2)
         if vault.info(key_id) is None and action != "put":
             raise _CliError("key_unknown", f"No key named {key_id}.", style="red", exit_code=2)
         if action == "delete":
@@ -1519,6 +1527,8 @@ def cmd_key(action: str, key_id: Optional[str] = None, label: Optional[str] = No
             if key_id == VAULT_KEY_ID and os.environ.get("WOLFBET_API_KEY"):
                 note += (" WOLFBET_API_KEY in .env still replaces it when lane 1 starts:"
                          " remove it from .env to keep this key.")
+        if kind == "telegram":
+            note = "Restart the Telegram bot to use the new token."
         _print_json({"key": _key_row(info), "note": note})
     except VaultError as e:
         logger.warning("Key vault unavailable: %s", e)
@@ -9523,8 +9533,9 @@ def main():
                         help="With --key-put: the key's label")
     parser.add_argument("--key-owner", type=int, metavar="USER", default=None,
                         help="With --key-put: the dashboard user who owns the key")
-    parser.add_argument("--key-kind", choices=("key", "proxy"), default="key",
-                        help="With --key-put: a casino key (default) or a proxy URL with a password")
+    parser.add_argument("--key-kind", choices=("key", "proxy", "telegram"), default="key",
+                        help="With --key-put: a casino key (default), a proxy URL with a password, "
+                             "or the Telegram bot token (stored as telegram)")
     parser.add_argument("--lane-from", type=int, metavar="K", default=None,
                         help="With --lane-add: copy lane K's overrides (default: lane 1, none)")
     group.add_argument("--config-schema", action="store_true",
