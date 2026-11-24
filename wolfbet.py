@@ -996,7 +996,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.54.0"
+VERSION      = "2.55.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1025,12 +1025,72 @@ LANE_ID_MAX = 99
 LANES_MAX_DEFAULT = 10
 AUTOSTART_LOCK_PATH = os.environ.get(
     "WOLFBET_AUTOSTART_LOCK", os.path.expanduser("~/.wolfbet_autostart.lock"))
-# Never overridable per lane: the raw key and the shared storage and publishing settings.
-# A lane picks its own account through key_ref, currency and proxy / proxy_ref.
-_LANE_FORBIDDEN_KEYS = {
-    "api_key", "purge_days", "db_write_mode",
-    "pipeline_depth", "events_enabled", "events_url", "delay_martin_threshold",
+# Every setting: how a change reaches running lanes, and whether one lane may override it.
+#   live    - a SIGHUP re-reads it into each running lane; the session keeps going.
+#   lane    - read at start: restart the lanes using the changed value.
+#   service - shared by every lane and read at start: restart every lane.
+# Shared settings (False) are the raw key and the storage and publishing settings; a lane
+# picks its own account through key_ref, currency and proxy / proxy_ref.
+_SETTINGS = {
+    "api_key": ("service", False),
+    "balance_goal": ("lane", True),
+    "base_bet": ("live", True),
+    "basebet_pct": ("live", True),
+    "bet_delay": ("live", True),
+    "currency": ("lane", True),
+    "custom_rules_text": ("live", True),
+    "db_write_mode": ("live", False),
+    "delay_martin_threshold": ("service", False),
+    "events_enabled": ("live", False),
+    "events_url": ("live", False),
+    "game": ("lane", True),
+    "hard_cap": ("lane", True),
+    "hybrid_press_at": ("lane", True),
+    "hybrid_press_bet": ("lane", True),
+    "hybrid_press_floor": ("lane", True),
+    "hybrid_press_strategy": ("lane", True),
+    "hybrid_recover_at": ("lane", True),
+    "hybrid_recover_bet": ("lane", True),
+    "hybrid_recover_strategy": ("lane", True),
+    "key_ref": ("lane", True),
+    "loss_mult": ("lane", True),
+    "max_bets": ("live", True),
+    "max_loss": ("live", True),
+    "max_profit": ("live", True),
+    "max_wins": ("live", True),
+    "milestone_bets": ("live", True),
+    "milestone_losses": ("live", True),
+    "milestone_profit": ("live", True),
+    "milestone_wins": ("live", True),
+    "multiplier": ("lane", True),
+    "pipeline_depth": ("live", False),
+    "profit_increment": ("live", True),
+    "profit_increment_scope": ("lane", True),
+    "profit_threshold": ("live", True),
+    "proxy": ("live", True),
+    "proxy_ref": ("lane", True),
+    "purge_days": ("live", False),
+    "recurring": ("live", True),
+    "recurring_delay": ("live", True),
+    "restart_after_loss": ("lane", True),
+    "rule": ("lane", True),
+    "stop_on_balance": ("live", True),
+    "strategy_key": ("lane", True),
+    "streak_delay_bets": ("live", True),
+    "streak_delay_loss": ("live", True),
+    "streak_delay_win": ("live", True),
+    "streak_reset_delay": ("live", True),
+    "streak_reset_losses": ("live", True),
+    "streakbet_loss": ("live", True),
+    "win_mult": ("lane", True),
 }
+_LIVE_RELOAD_KEYS = frozenset(k for k, (apply, _) in _SETTINGS.items() if apply == "live")
+_LANE_FORBIDDEN_KEYS = frozenset(k for k, (_, per_lane) in _SETTINGS.items() if not per_lane)
+
+
+def _restart_only(keys) -> list:
+    """The keys among `keys` that a running lane picks up only when it restarts."""
+    return sorted(k for k in keys if k not in _LIVE_RELOAD_KEYS)
 
 
 def _lane_path(path: str, lane: int) -> str:
@@ -1611,30 +1671,6 @@ _STREAK_TUPLE_KEYS = [
     "streak_delay_loss", "streak_delay_win", "streak_delay_bets",
     "streakbet_loss",
 ]
-
-# v2.28.3: fields that can safely be re-read from disk into a running daemon
-# on SIGHUP without corrupting the active session identity or the Martingale
-# ladder. Everything NOT in this set requires `wolfctl restart`.
-_LIVE_RELOAD_KEYS = {
-    # Recurring + delays
-    "recurring", "recurring_delay",
-    "streak_reset_losses", "streak_reset_delay",
-    # Stop conditions
-    "max_profit", "max_loss", "max_bets", "max_wins", "stop_on_balance",
-    # Pacing + basebet scaling
-    "bet_delay", "basebet_pct", "base_bet",
-    # Streak-based pacing
-    "streak_delay_loss", "streak_delay_win", "streak_delay_bets", "streakbet_loss",
-    # Milestones + profit ramp
-    "milestone_bets", "milestone_wins", "milestone_losses", "milestone_profit",
-    "profit_increment", "profit_threshold",
-    # Concurrency + retention + network
-    "pipeline_depth", "proxy", "purge_days", "db_write_mode",
-    "events_enabled", "events_url",
-    # Rule DSL (regenerated wholesale by _load_rules_from_text; strategy_key stays)
-    "custom_rules_text",
-}
-
 
 def _reload_live_config() -> dict:
     """Re-read CONFIG_PATH and apply only safe fields; return {field: (old, new)}.
@@ -7515,6 +7551,7 @@ def _config_schema_data() -> dict:
              "default": _config_show_value(key, getattr(defaults, key, None)),
              "live_reload": key in _LIVE_RELOAD_KEYS,
              "lane_overridable": key not in _LANE_FORBIDDEN_KEYS,
+             "restart": _SETTINGS[key][0],
              "help": helps[key]}
             for key in sorted(_TWEAK_PARAMS)]
     for entry in keys:
@@ -7983,8 +8020,15 @@ def _write_lane_plan(lp: dict) -> None:
     if lp["lanes"]:
         n = _signal_lane_daemons(lp["lanes"])
         if n:
-            console.print(f"[dim]{n} running lane(s) reloaded live config "
-                          "(restart-only fields apply on the next start).[/]")
+            console.print(f"[dim]{n} running lane(s) reloaded live config.[/]")
+        waiting: dict = {}
+        for c in lp["changes"]:
+            if c["lane"] is not None and c["key"] != "name":
+                waiting.setdefault(c["lane"], []).append(c["key"])
+        for lane, keys in sorted(waiting.items()):
+            if later := _restart_only(keys):
+                console.print(f"[yellow]Restart lane {lane} to apply:[/] {', '.join(later)} "
+                              f"([cyan]wolfctl restart {lane}[/]).")
     _signal_share_change(lp["before"], lp["raw"])
     count = next((c["new"] for c in lp["changes"] if c["lane"] is None and c["key"] == "lanes"), None)
     if count is not None:
@@ -8095,16 +8139,11 @@ def _config_set_write(pairs: list, dry_run: bool = False, as_json: bool = False)
             console.print(f"  [yellow]{m}[/]")
     console.print(f"\n[dim]Saved to[/] [cyan]{CONFIG_PATH}[/]")
 
-    # v2.28.3: hot-reload the running daemon via SIGHUP so mid-session
-    # tweaks (recurring, stop conditions, delays, milestones, proxy, etc.)
-    # take effect immediately without `wolfctl restart`. Unsafe keys
-    # (game / strategy_key / base_bet / api_key / ...) get a heads-up here
-    # AND are logged by the daemon's SIGHUP handler.
-    unsafe = [k for k in parsed if k not in _LIVE_RELOAD_KEYS]
+    unsafe = _restart_only(parsed)
     if unsafe:
         console.print(
-            f"[yellow]Note:[/] {len(unsafe)} field(s) need a full restart to apply: "
-            f"{', '.join(sorted(unsafe))}. Run [cyan]wolfctl restart[/] when ready."
+            f"[yellow]Restart every lane to apply:[/] {', '.join(unsafe)} "
+            "([cyan]wolfctl restart[/])."
         )
 
     try:

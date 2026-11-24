@@ -127,7 +127,47 @@ def test_schema_flags_match_the_reload_and_lane_tables(env, capsys):
     for k in _schema_doc(capsys)["keys"]:
         assert k["live_reload"] == (k["key"] in wb._LIVE_RELOAD_KEYS)
         assert k["lane_overridable"] == (k["key"] not in wb._LANE_FORBIDDEN_KEYS)
+        assert k["restart"] == wb._SETTINGS[k["key"]][0]
         assert k["help"] == dict(wb._CONFIG_SHOW_FIELDS)[k["key"]]
+
+
+_LIVE_BEFORE = {
+    "base_bet", "basebet_pct", "bet_delay", "custom_rules_text", "db_write_mode",
+    "events_enabled", "events_url", "max_bets", "max_loss", "max_profit", "max_wins",
+    "milestone_bets", "milestone_losses", "milestone_profit", "milestone_wins",
+    "pipeline_depth", "profit_increment", "profit_threshold", "proxy", "purge_days",
+    "recurring", "recurring_delay", "stop_on_balance", "streak_delay_bets",
+    "streak_delay_loss", "streak_delay_win", "streak_reset_delay", "streak_reset_losses",
+    "streakbet_loss",
+}
+_SHARED_BEFORE = {
+    "api_key", "db_write_mode", "delay_martin_threshold", "events_enabled", "events_url",
+    "pipeline_depth", "purge_days",
+}
+
+
+def test_every_setting_has_one_class_and_the_old_sets_are_unchanged():
+    assert set(wb._SETTINGS) == wb._TWEAK_PARAMS | {"api_key"}
+    assert {apply for apply, _ in wb._SETTINGS.values()} == {"live", "lane", "service"}
+    assert wb._LIVE_RELOAD_KEYS == _LIVE_BEFORE
+    assert wb._LANE_FORBIDDEN_KEYS == _SHARED_BEFORE
+    for key, (apply, per_lane) in wb._SETTINGS.items():
+        assert apply != "service" or not per_lane, key
+    classes = {k: apply for k, (apply, _) in wb._SETTINGS.items()}
+    assert (classes["max_profit"], classes["game"], classes["delay_martin_threshold"]) == (
+        "live", "lane", "service")
+
+
+def test_a_lane_override_names_the_lane_to_restart(env):
+    wb.cmd_config_set(["lane2.game=limbo", "lane2.maxwins=5"])
+    out = env["buf"].getvalue()
+    assert "Restart lane 2 to apply: game (wolfctl restart 2)." in out
+    assert "max_wins" not in out.split("Restart lane 2")[1]
+
+
+def test_a_live_lane_override_asks_for_no_restart(env):
+    wb.cmd_config_set(["lane2.maxloss=0.003"])
+    assert "Restart lane" not in env["buf"].getvalue()
 
 
 def test_schema_defaults_and_lanes(env, capsys):

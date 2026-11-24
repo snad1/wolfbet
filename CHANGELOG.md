@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.55.0 - every setting says what a change costs (2026-11-24)
+
+- One table now holds every setting with how a change reaches running lanes (`live`: a reload applies it now; `lane`: the lanes using it restart; `service`: shared by every lane, so every lane restarts) and whether one lane may override it. The live-reload and shared-key lists are read from it; their contents are unchanged.
+- `--config-schema --json` gives each key `"restart": "live" | "lane" | "service"`, next to `live_reload` and `lane_overridable`, which keep their values.
+- `wolfctl config-set` names the cost: a restart-only base change prints `Restart every lane to apply: game (wolfctl restart).`, and a restart-only lane override (set or removed) prints `Restart lane 3 to apply: game (wolfctl restart 3).` A live change prints neither.
+- No bet maths, stop logic or reload behaviour changed.
+
+**Tests**: `tests/test_phase11h_config_schema.py` (one class per setting, both lists equal their old contents, `restart` in the schema, the lane and base notes), the config-set output snapshots, `tests/test_phase14_session_box.py` (the base note). The config-schema contract copy and its checksum are updated; the version pins are updated.
+
+`VERSION` `2.54.0` -> `2.55.0`.
+
 ## v2.54.0 - lanes on different keys never slow each other (2026-11-24)
 
 - The `/auto/start` spacing between lanes now applies per key: lanes on the same key share one lock file and still never fire `/auto/start` in the same instant, while a lane on another key uses its own file and never waits for them. The main key keeps the original `~/.wolfbet_autostart.lock`; another key uses `~/.wolfbet_autostart.<key>.lock`. A lane alone on its key takes no lock at all.

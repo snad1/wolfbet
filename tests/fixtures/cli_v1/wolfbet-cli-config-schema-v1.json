@@ -25,6 +25,7 @@
           "default",
           "live_reload",
           "lane_overridable",
+          "restart",
           "help"
         ],
         "properties": {
@@ -109,6 +110,13 @@
           },
           "lane_overridable": {
             "type": "boolean"
+          },
+          "restart": {
+            "enum": [
+              "live",
+              "lane",
+              "service"
+            ]
           },
           "help": {
             "type": "string"

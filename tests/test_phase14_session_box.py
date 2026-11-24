@@ -905,9 +905,9 @@ def test_config_set_prints_the_warning(monkeypatch, tmp_path, capsys):
     wb.cmd_config_set(["max_loss=off"])
     out = capsys.readouterr().out
     assert "hard_cap needs max_loss" in out
-    assert "need a full restart" not in out
+    assert "Restart every lane to apply" not in out
     wb.cmd_config_set(["hard_cap=off"])
-    assert "need a full restart" in capsys.readouterr().out
+    assert "Restart every lane to apply: hard_cap" in capsys.readouterr().out
 
 
 # ── start-up check ────────────────────────────────────────
@@ -1133,7 +1133,7 @@ def test_backtest_command_refuses_rules_that_cannot_work(monkeypatch, tmp_path, 
 
 
 def test_version():
-    assert wb.VERSION == "2.54.0"
+    assert wb.VERSION == "2.55.0"
 
 
 # ── the switching is visible in the live log ──────────────

@@ -4,7 +4,7 @@
   profit_increment_scope: session  →  run
 
 Saved to config.json
-Note: 3 field(s) need a full restart to apply: multiplier, profit_increment_scope, strategy_key. Run wolfctl restart when ready.
+Restart every lane to apply: multiplier, profit_increment_scope, strategy_key (wolfctl restart).
 Daemon reloaded live config.
 1 more lane(s) reloaded live config.
 [exit 0]

@@ -2,7 +2,7 @@
   lane2.max_loss  →  0.00300000
 
 Saved to config.json
-1 running lane(s) reloaded live config (restart-only fields apply on the next start).
+1 running lane(s) reloaded live config.
 ──────────────────────────────────────────────────────────────────────── Config updated ────────────────────────────────────────────────────────────────────────
   max_bets: off  →  100
 
