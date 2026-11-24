@@ -996,7 +996,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.57.0"
+VERSION      = "2.58.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1749,6 +1749,9 @@ def _reload_live_config() -> dict:
             "live reload: skipped %d unsafe field(s): restart daemon to apply: %s",
             len(skipped_unsafe), ", ".join(sorted(skipped_unsafe)),
         )
+    state.pending_restart = {
+        k: [_config_show_value(k, getattr(state, k, None)), _config_show_value(k, data[k])]
+        for k in sorted(skipped_unsafe) if k in _SETTINGS and k != "api_key"}
     return applied
 
 
@@ -1979,6 +1982,7 @@ class BotState:
         self.account_problem : Optional[str] = None
         self.lane_share      : Optional[float] = None
         self.lane_name       : Optional[str] = None
+        self.pending_restart : dict = {}
         self.lane_split      = "none"     # v2.36.0: see LANE_SPLIT_MODES
         self.base_bet_disk   = None       # base_bet as saved (before the bet split)
         self.base_bet_split  = None       # split base_bet applied at load, else None
@@ -4299,18 +4303,31 @@ def _export_session(session_id: int, path: str) -> tuple:
                 w.writerows(bets)
     return (len(bets), fmt)
 
+def _session_config_snapshot() -> str:
+    """The settings a session starts with, as JSON, with proxy and events URL masked."""
+    values = {}
+    for field, _ in _CONFIG_SHOW_FIELDS:
+        try:
+            values[field] = _config_show_value(field, getattr(state, field))
+        except AttributeError:
+            continue
+    return json.dumps(values, default=str, sort_keys=True)
+
+
 def _db_start_session() -> int:
     conn = _db_conn()
     c = conn.cursor()
     c.execute("""
         INSERT INTO sessions
-            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane)
-        VALUES (?,?,?,?,?,?,?,?)
+            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane,
+             config_snapshot)
+        VALUES (?,?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
         state.currency, state.game, _strategy_label(),
         state.base_bet, state.multiplier, state.start_balance,
         getattr(state, "lane", 1),
+        _session_config_snapshot(),
     ))
     conn.commit()
     sid = c.lastrowid
@@ -4783,6 +4800,7 @@ def _state_snapshot() -> dict:
         "lane_share": state.lane_share,
         "lane_split": state.lane_split,
         "lane_name": state.lane_name,
+        "pending_restart": state.pending_restart,
         # v2.37.0: run-wide profit increment
         "profit_increment_scope": state.profit_increment_scope,
         "run_profit_total": run_profit_total(),
@@ -7371,6 +7389,18 @@ def _config_show_value(field: str, val):
     return val
 
 
+def _pending_restarts() -> dict:
+    """Each running lane's saved changes it picks up only on a restart: {lane: [{key, running, saved}]}."""
+    pending = {}
+    for lane, d, alive in _read_lane_states():
+        rows = (d or {}).get("pending_restart") or {}
+        if alive and isinstance(rows, dict) and rows:
+            pending[str(lane)] = [{"key": k, "running": v[0], "saved": v[1]}
+                                  for k, v in sorted(rows.items())
+                                  if isinstance(v, list) and len(v) == 2]
+    return pending
+
+
 def _config_show_data() -> dict:
     """Saved config (secrets masked), the running daemon's live base bet, lanes and the file's metadata."""
     if not load_config():
@@ -7409,6 +7439,7 @@ def _config_show_data() -> dict:
         "lanes": _lanes_count(raw),
         "lane_split": _lane_split(raw),
         "lane_overrides": overrides,
+        "pending": _pending_restarts(),
         "config_file": config_file,
     }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.58.0 - see which lanes still wait for a restart (2026-11-24)
+
+- On every reload a running lane records the saved restart-only settings it is not using yet (for example `multiplier` 3 while 4 is saved). `--config-show --json` lists them per running lane under `pending` (`{"2": [{"key": "multiplier", "running": 3.0, "saved": 4.0}]}`); a restart clears them. Live settings still apply at once, as before. The raw key is never listed, and the proxy and events URL are masked.
+- Each new session row stores the settings it started with in `config_snapshot`, masked the same way, written once when the session opens.
+- No bet maths, stop logic or schema changed (`config_snapshot` already existed).
+
+**Tests**: `tests/test_phase16_pending_restart.py` (a restart-only change is pending while a live one applies, a change set back clears it, a stopped lane lists nothing, no secret in the list, a session keeps a masked snapshot). The config-show contract copy and its checksum are updated; the version pins are updated.
+
+`VERSION` `2.57.0` -> `2.58.0`.
+
 ## v2.57.0 / TG v1.26.0 - the Telegram bot token lives in the key vault (2026-11-24)
 
 Needs casino-shared v0.8.0.

@@ -23,7 +23,8 @@
         "lanes",
         "lane_split",
         "lane_overrides",
-        "config_file"
+        "config_file",
+        "pending"
       ],
       "properties": {
         "v": {
@@ -166,6 +167,32 @@
               "type": "null"
             }
           ]
+        },
+        "pending": {
+          "type": "object",
+          "description": "Saved changes a running lane picks up only when it restarts",
+          "patternProperties": {
+            "^[0-9]+$": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "key",
+                  "running",
+                  "saved"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "running": {},
+                  "saved": {}
+                }
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
