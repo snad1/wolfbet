@@ -998,7 +998,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.59.0"
+VERSION      = "2.60.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -4813,6 +4813,7 @@ def _state_snapshot() -> dict:
         "lane_split": state.lane_split,
         "lane_name": state.lane_name,
         "pending_restart": state.pending_restart,
+        "code_version": VERSION,
         # v2.37.0: run-wide profit increment
         "profit_increment_scope": state.profit_increment_scope,
         "run_profit_total": run_profit_total(),
@@ -6981,6 +6982,20 @@ def _lanes_status_data() -> dict:
                                        "count": len(lanes)}}
 
 
+def _lane_code(lane: int, d: Optional[dict]) -> str:
+    """Which code a lane runs during an update: `new` (this installed version), `waiting for
+    session end` (old code, a restart asked for), or `old`."""
+    if d and d.get("code_version") == VERSION:
+        return "new"
+    try:
+        with open(_lane_path(DRAIN_PATH, lane)) as f:
+            if f.read().strip() == "restart":
+                return "waiting for session end"
+    except OSError:
+        pass
+    return "old"
+
+
 def cmd_lanes_status(as_json: bool = False):
     """v2.35.0: one row per lane + totals (wolfctl status when lanes > 1)."""
     try:
@@ -6995,14 +7010,14 @@ def cmd_lanes_status(as_json: bool = False):
              if entry["name"] != _default_lane_name(lane)}
     t = Table(title="Parallel lanes", title_style="bold cyan", box=box.SIMPLE)
     cols = ("Lane",) + (("Name",) if names else ()) + (
-        "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps", "Pace")
+        "State", "Session", "Uptime", "Run", "Profit", "Equity", "bps", "Pace", "Code")
     for col in cols:
         t.add_column(col, justify="left" if col in ("Name", "State") else "right")
     for row in data["lanes"]:
         k, d, alive = row["lane"], row["state"], row["alive"]
         lead = (str(k), escape(names.get(k, ""))) if names else (str(k),)
         if d is None:
-            t.add_row(*lead, "[red]unreadable[/]", *["-"] * 7)
+            t.add_row(*lead, "[red]unreadable[/]", *["-"] * 8)
             continue
         p = float(d.get("profit", 0) or 0)
         bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
@@ -7016,7 +7031,8 @@ def cmd_lanes_status(as_json: bool = False):
                   f"[{'green' if p >= 0 else 'red'}]{p:+.8f}[/]",
                   f"{eq:.8f}" if isinstance(eq, (int, float)) else "-",
                   f"{bps:.1f}",
-                  f"{float(d.get('soft_pace_delay', 0) or 0) * 1000:.0f}ms")
+                  f"{float(d.get('soft_pace_delay', 0) or 0) * 1000:.0f}ms",
+                  _lane_code(k, d) if alive else "-")
     console.print(t)
     tot = data["totals"]
     console.print(f"  [dim]Total:[/] [bold]{tot['bps']:.1f}[/] bps   "

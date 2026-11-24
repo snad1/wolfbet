@@ -141,3 +141,13 @@ def test_with_recurring_off_the_loop_stops_as_before(bot, tmp_path, monkeypatch)
     monkeypatch.setattr(wb.os, "execv", lambda exe, argv: pytest.fail("must not restart"))
     bot.betting_loop()
     assert bot.state.total_bets == BETS and bot.state.running is False
+
+
+def test_each_lane_says_which_code_it_runs(lanes):
+    assert wb._state_snapshot()["code_version"] == wb.VERSION
+    assert wb._lane_code(2, {"code_version": wb.VERSION}) == "new"
+    assert wb._lane_code(2, {"code_version": "2.0.0"}) == "old"
+    wb.cmd_lane_drain(2, "restart")
+    assert wb._lane_code(2, {"code_version": "2.0.0"}) == "waiting for session end"
+    assert wb._lane_code(2, {"code_version": wb.VERSION}) == "new"
+    assert wb._lane_code(3, None) == "old"

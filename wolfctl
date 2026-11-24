@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.25
+# WolfBet AutoBot - Unified Management Command v3.26
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -28,6 +28,7 @@ WEB_SERVICE="wolfbet-web"
 # v3.24 - lane add/remove/rename change one lane; lanes N starts or stops only the difference;
 #         lanes --max N sets the lane limit; lane ids come from the config registry
 # v3.25 - restart K --at-boundary and lane remove K --after-session wait for the session end
+# v3.26 - update rolls: each lane restarts on the new code at its session end; --critical now
 # v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
 LANE_ID_MAX=99
@@ -41,7 +42,7 @@ PROC_DIR="${WOLFCTL_PROC_DIR:-/proc}"
 # wolfctl (from before the self-copy block landed) see a warning instead
 # of a silent "already up to date". This constant is grep-parsed by
 # cmd_update's drift check - keep the format `WOLFCTL_VERSION=X.Y`.
-WOLFCTL_VERSION=3.25
+WOLFCTL_VERSION=3.26
 
 usage() {
     echo ""
@@ -111,7 +112,8 @@ usage() {
     echo "                                Examples: --simulate 10000 --seed 42"
     echo "                                          --replay-session 42 --preset foo"
     echo "    wolfctl preset NAME         Load preset + start daemon"
-    echo "    wolfctl update              Pull latest + reinstall (git repo required)"
+    echo "    wolfctl update              Pull latest + reinstall; each lane restarts at its session end"
+    echo "    wolfctl update --critical   Same, but restart every lane now"
     echo "    wolfctl update --branch NAME  Switch the checkout to NAME (fetch, switch, fast-forward"
     echo "                                only; refuses local changes), then update"
     echo "    wolfctl version             Show CLI + wolfctl versions"
@@ -647,7 +649,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.25"
+    echo "  wolfctl v3.26"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1042,17 +1044,32 @@ repo_code_line() {
     fi
 }
 
+# Ask every running lane to restart on the installed code at its own session end.
+roll_lanes() {
+    local k
+    for k in $(lane_ids); do
+        systemctl --user is-active --quiet "$(lane_unit "$k")" 2>/dev/null || continue
+        if "$PYTHON" "$BOT" --lane-drain "$k" restart >/dev/null; then
+            echo "Lane $k restarts on the new code when its session ends."
+        else
+            echo "Lane $k: could not ask for a restart; it stays on the old code until restarted." >&2
+        fi
+    done
+    echo "Betting goes on; use wolfctl update --critical to restart every lane now."
+}
+
 cmd_update() {
-    local branch="" branch_given=0
+    local branch="" branch_given=0 critical=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --branch)
-                [ $# -ge 2 ] || { echo "Usage: wolfctl update [--branch NAME] [--yes]" >&2; exit 2; }
+                [ $# -ge 2 ] || { echo "Usage: wolfctl update [--branch NAME] [--critical] [--yes]" >&2; exit 2; }
                 branch="$2"; branch_given=1; shift 2 ;;
             --branch=*) branch="${1#--branch=}"; branch_given=1; shift ;;
             --yes|-y) shift ;;
+            --critical) critical=1; shift ;;
             *) echo "Unknown option: $1" >&2
-               echo "Usage: wolfctl update [--branch NAME] [--yes]" >&2
+               echo "Usage: wolfctl update [--branch NAME] [--critical] [--yes]" >&2
                exit 2 ;;
         esac
     done
@@ -1187,7 +1204,9 @@ cmd_update() {
     # wolfbet.py. Before this, `wolfctl update` only refreshed the file on
     # disk and left the daemon on the pre-pull code until manual restart.
     # --resume preserves session state across the restart.
-    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+    if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null && [ "$critical" = "0" ]; then
+        roll_lanes
+    elif systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
         stop_all_lanes
         systemctl --user restart "$SERVICE"
         sleep 1

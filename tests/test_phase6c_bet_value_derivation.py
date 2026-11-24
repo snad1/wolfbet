@@ -37,7 +37,7 @@ import wolfbet as wb  # noqa: E402
 
 # ── VERSION ──────────────────────────────────────────────
 def test_version_bumped():
-    assert wb.VERSION == "2.59.0"
+    assert wb.VERSION == "2.60.0"
 
 
 # ── _derive_bet_value ───────────────────────────────────

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.60.0 / wolfctl v3.26 - an update rolls through the lanes (2026-11-24)
+
+- `wolfctl update` installs the new code, then asks each running lane to restart at its own session end (the `--at-boundary` restart from v2.59.0) instead of stopping every lane at once: `Lane 1 restarts on the new code when its session ends.` per lane, then `Betting goes on; use wolfctl update --critical to restart every lane now.` Stopped lanes start on the new code whenever they are started. The Telegram bot restart is unchanged.
+- `wolfctl update --critical` keeps the old behaviour: every lane stops and restarts at once.
+- The lanes table in `wolfctl status` gains a **Code** column: `new` (running the installed version), `waiting for session end` (old code, restart pending) or `old`. Each lane's state file now records the version it runs (`code_version`). `--lanes-status --json` is unchanged.
+
+**Tests**: `tests/test_phase16_rolling_update.py` (an update asks only the running lanes to restart and stops none, `--critical` restarts now, a stopped bot asks nothing, a bad option exits 2), `tests/test_phase16_lane_drain.py` (which code each lane runs), the lanes table snapshot. The version pins are updated.
+
+`VERSION` `2.59.0` -> `2.60.0`; wolfctl `3.25` -> `3.26`.
+
 ## v2.59.0 / wolfctl v3.25 - restart or remove a lane at its session end (2026-11-24)
 
 - `wolfctl restart K --at-boundary` asks lane K to restart when its current session ends: `Lane K restarts when its session ends. It keeps betting until then.` At that session close the lane flushes its bet writer, state file and events, then re-executes itself in place (same unit), so the next session runs on the saved config and code. Other lanes are not touched. `--cancel-boundary` forgets the request.
