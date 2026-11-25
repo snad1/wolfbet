@@ -113,7 +113,7 @@ def test_owner_gets_the_list_from_wolfctl_with_a_refresh_button(ctl):
     text, opts = sent[0]
     assert text.startswith("Lane 1: running, key default")
     assert "Lane 2 · friend-A: paused, key friend (...a1b2)" in text
-    button = opts["reply_markup"].inline_keyboard[0][0]
+    button = opts["reply_markup"].inline_keyboard[-1][0]
     assert (button.text, button.callback_data) == ("Refresh", "lanes_refresh")
     assert "parse_mode" not in opts
 
@@ -165,3 +165,130 @@ def test_refresh_from_another_chat_is_refused(ctl):
     asyncio.run(tg_handlers.callback_handler(upd, types.SimpleNamespace(args=[])))
     assert log == [("answer", "Only the owner can manage lanes.", {"show_alert": True})]
     assert ctl.calls == []
+
+
+def test_each_lane_gets_the_buttons_its_state_allows():
+    assert tg_handlers._lane_buttons(LANES) == [
+        [("Pause 1", "lane:pause:1"), ("Restart 1", "lane:restart:1"), ("Stop 1", "lane:stop:1")],
+        [("Resume 2", "lane:resume:2"), ("Restart 2", "lane:restart:2"), ("Stop 2", "lane:stop:2")],
+        [("Start 3", "lane:start:3")],
+        [("Restart 4", "lane:restart:4"), ("Stop 4", "lane:stop:4")],
+    ]
+    for row in tg_handlers._lane_buttons(LANES):
+        assert all(len(cb.encode()) <= 64 for _, cb in row)
+
+
+@pytest.mark.parametrize("data", [
+    "lane:pause:0", "lane:pause:100", "lane:pause:2;rm -rf /", "lane:delete:2", "lanego:stop:-1",
+    "lanego:stop:2 --all", "lane:pause:02", "lanego::2", "lane:pause"])
+def test_hostile_or_unknown_lane_callbacks_are_refused_and_nothing_runs(ctl, data):
+    log = _tap(data)
+    assert log == [("answer", "Unknown button.", {"show_alert": True})]
+    assert ctl.calls == []
+
+
+def _tap(data, user_id=OWNER_ID):
+    upd, log = _query(user_id)
+    upd.callback_query.data = data
+    asyncio.run(tg_handlers.callback_handler(upd, types.SimpleNamespace(args=[])))
+    return log
+
+
+def test_another_chat_tapping_a_lane_button_is_refused(ctl):
+    assert _tap("lanego:stop:2", OWNER_ID + 1) == [
+        ("answer", "Only the owner can manage lanes.", {"show_alert": True})]
+    assert ctl.calls == []
+
+
+def _buttons(markup):
+    return [[(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard]
+
+
+def test_restart_asks_now_or_at_session_end_and_runs_nothing(ctl):
+    log = _tap("lane:restart:2")
+    kind, text, kw = log[1]
+    assert (kind, text) == ("edit", "Restart lane 2?")
+    assert _buttons(kw["reply_markup"]) == [[("Restart now", "lanego:restart:2"),
+                                             ("At session end", "lanego:restart_end:2"),
+                                             ("Cancel", "lanes_refresh")]]
+    assert ctl.calls == []
+
+
+def test_stopping_lane_1_warns_it_is_the_main_lane(ctl):
+    assert _tap("lane:stop:1")[1][1] == "Stop lane 1? It is the main lane."
+    assert _tap("lane:stop:2")[1][1] == "Stop lane 2?"
+
+
+def _ran(ctl):
+    return [cmd for cmd, _ in ctl.calls if cmd[1:] != ["lanes", "--json"]]
+
+
+@pytest.mark.parametrize("data, argv", [
+    ("lanego:pause:1", [CTL, "pause", "1"]),
+    ("lanego:resume:2", [CTL, "resume", "2"]),
+    ("lanego:stop:2", [CTL, "stop", "2"]),
+    ("lanego:start:3", [CTL, "start", "3"]),
+    ("lanego:restart:4", [CTL, "restart", "4"]),
+    ("lanego:restart_end:1", [CTL, "restart", "1", "--at-boundary"]),
+])
+def test_a_confirmed_action_runs_one_verb_on_that_lane_only(ctl, monkeypatch, data, argv):
+    real = tg_handlers.subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[1:] == ["lanes", "--json"]:
+            return real(cmd, **kw)
+        ctl.calls.append((cmd, kw))
+        return types.SimpleNamespace(returncode=0, stdout="\x1b[32mLane done.\x1b[0m\n\n", stderr="")
+
+    monkeypatch.setattr(tg_handlers.subprocess, "run", run)
+    log = _tap(data)
+    assert _ran(ctl) == [argv]
+    assert [kw for cmd, kw in ctl.calls if cmd == argv][0]["timeout"] == 30
+    kind, text, _ = log[1]
+    assert kind == "edit" and text.startswith("Lane done.\n\nLane 1: running")
+
+
+@pytest.mark.parametrize("data, reason", [
+    ("lanego:stop:3", "Lane 3 is already stopped."),
+    ("lanego:start:1", "Lane 1 is already running."),
+    ("lanego:pause:2", "Lane 2 is already paused."),
+    ("lanego:resume:1", "Lane 1 is not paused."),
+    ("lanego:restart:9", "Lane 9 is not configured."),
+])
+def test_a_stale_button_reads_the_lane_again_and_runs_nothing(ctl, data, reason):
+    text = _tap(data)[1][1]
+    assert text.startswith(reason + "\n\n")
+    assert _ran(ctl) == []
+
+
+def test_a_failed_action_shows_what_wolfctl_said(ctl, monkeypatch):
+    real = tg_handlers.subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[1:] == ["lanes", "--json"]:
+            return real(cmd, **kw)
+        return types.SimpleNamespace(returncode=1, stdout="",
+                                     stderr="Lane 3 did not start (failed).\nmore detail\n")
+
+    monkeypatch.setattr(tg_handlers.subprocess, "run", run)
+    assert _tap("lanego:start:3")[1][1].startswith("Lane 3 did not start (failed).\n\n")
+
+
+def test_a_hung_wolfctl_gives_a_safe_message(ctl, monkeypatch):
+    monkeypatch.setattr(tg_handlers, "APP_ENV", "production")
+    real = tg_handlers.subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[1:] == ["lanes", "--json"]:
+            return real(cmd, **kw)
+        raise subprocess.TimeoutExpired(cmd, 30)
+
+    monkeypatch.setattr(tg_handlers.subprocess, "run", run)
+    assert _tap("lanego:stop:2")[1][1].startswith(
+        "Lane 2: wolfctl did not answer. Check /lanes again.\n\n")
+
+
+def test_cancel_brings_the_list_back(ctl):
+    kind, text, kw = _tap("lanes_refresh")[1]
+    assert kind == "edit" and text.startswith("Lane 1: running")
+    assert _buttons(kw["reply_markup"])[-1] == [("Refresh", "lanes_refresh")]

@@ -1,5 +1,17 @@
 # Changelog
 
+## TG v1.28.0 - one-lane buttons in /lanes (2026-11-25)
+
+- Each lane in `/lanes` now has buttons for what its state allows: a running lane **Pause K**, **Restart K**, **Stop K**; a paused one **Resume K** instead of Pause; a stopped one **Start K**; a lane with no state yet **Restart K**, **Stop K**.
+- Every button asks first: `Pause lane 2?`, `Stop lane 1? It is the main lane.`, and `Restart lane 2?` with **Restart now** or **At session end** (`wolfctl restart K --at-boundary`). **Cancel** brings the list back.
+- A confirmed action runs one `wolfctl` verb on that lane only (argv list, no shell, 30 s timeout) and shows the line wolfctl printed above the fresh list. The other lanes keep betting.
+- The lanes are read again before anything runs: a button from an old message answers `Lane 2 is already stopped.`, `Lane 1 is not paused.` or `Lane 9 is not configured.` and runs nothing.
+- Only the owner can use the buttons; button data is checked against a strict pattern (known action, lane 1-99), and anything else answers `Unknown button.`
+
+**Tests**: `tests/test_tg_lanes.py` (buttons per state, hostile callback data, owner gate, confirm texts, argv per action, stale buttons, failed and hung wolfctl, Cancel). TG version pins updated.
+
+TG `VERSION` `1.27.0` -> `1.28.0`.
+
 ## v2.62.0 / TG v1.27.0 - `/lanes` on Telegram (2026-11-25)
 
 - New Telegram command `/lanes` (owner only): one line per CLI lane with its name, state (running, paused, stopped, or no state yet), key, session id and session profit, plus a **Refresh** button that redraws the list in place. It reads `wolfctl lanes --json` (argv list, no shell, 10 s timeout). Any other chat gets `Only the owner can manage lanes.`, and the Refresh button checks the owner too.

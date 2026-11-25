@@ -1,6 +1,7 @@
 """Telegram command handlers: all bot commands and callback queries."""
 
 import os
+import re
 import json
 import time
 import shutil
@@ -445,33 +446,82 @@ def _key_label(key_ref: str) -> str:
     return f"{info.label} (...{info.last4})" if info else key_ref
 
 
-async def _lanes_text() -> str:
-    """Every CLI lane as text, from `wolfctl lanes --json`; a safe message when that fails."""
+def _error_suffix(e: Exception) -> str:
+    return "" if APP_ENV == "production" else f" ({type(e).__name__})"
+
+
+async def _read_lanes() -> dict:
+    """`wolfctl lanes --json` parsed; raises OSError, TimeoutExpired, RuntimeError or ValueError."""
     ctl = _ctl_path()
+    if not ctl:
+        raise FileNotFoundError(CTL_NAME)
+    result = await asyncio.to_thread(subprocess.run, [ctl, "lanes", "--json"],
+                                     capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(f"wolfctl lanes rc={result.returncode}")
+    return json.loads(result.stdout)
+
+
+_LANE_READ_ERRORS = (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError)
+_REFRESH_ROW = [InlineKeyboardButton("Refresh", callback_data="lanes_refresh")]
+
+
+def _lane_state(row: dict) -> str:
+    """`stopped`, `paused`, `running` or `nostate` for one `wolfctl lanes --json` row."""
+    if not row.get("alive"):
+        return "stopped"
+    if row.get("state") is None:
+        return "nostate"
+    return "paused" if row.get("paused") else "running"
+
+
+_LANE_BUTTONS = {
+    "running": ("pause", "restart", "stop"),
+    "paused": ("resume", "restart", "stop"),
+    "nostate": ("restart", "stop"),
+    "stopped": ("start",),
+}
+
+
+def _lane_buttons(data: dict) -> list:
+    """One row of (label, callback_data) per lane, in lane order, for the actions its state allows."""
+    rows = []
+    for row in sorted(data.get("lanes") or [], key=lambda r: r.get("lane", 0)):
+        k = row.get("lane")
+        rows.append([(f"{action.capitalize()} {k}", f"lane:{action}:{k}")
+                     for action in _LANE_BUTTONS[_lane_state(row)]])
+    return rows
+
+
+async def _lanes_view(note: str = "") -> tuple:
+    """(text, keyboard) for the lane list, `note` first; Refresh only when the read fails."""
     try:
-        if not ctl:
-            raise FileNotFoundError(CTL_NAME)
-        result = await asyncio.to_thread(subprocess.run, [ctl, "lanes", "--json"],
-                                         capture_output=True, text=True, timeout=10)
-        if result.returncode != 0:
-            raise RuntimeError(f"wolfctl lanes rc={result.returncode}")
-        data = json.loads(result.stdout)
-    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as e:
+        data = await _read_lanes()
+    except _LANE_READ_ERRORS as e:
         logger.warning("lanes: %s: %s", type(e).__name__, e)
-        return LANES_FAILED if APP_ENV == "production" else f"{LANES_FAILED} ({type(e).__name__})"
-    return format_lanes(data, _key_label)
-
-
-def _lanes_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Refresh", callback_data="lanes_refresh")]])
+        text = LANES_FAILED + _error_suffix(e)
+        return (f"{note}\n\n{text}" if note else text), InlineKeyboardMarkup([_REFRESH_ROW])
+    text = format_lanes(data, _key_label)
+    keyboard = [[InlineKeyboardButton(label, callback_data=cb) for label, cb in row]
+                for row in _lane_buttons(data)]
+    return (f"{note}\n\n{text}" if note else text), InlineKeyboardMarkup(keyboard + [_REFRESH_ROW])
 
 
 async def cmd_lanes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List every CLI lane with its state, key label and session (owner only)."""
+    """List every CLI lane with its state, key label, session and action buttons (owner only)."""
     if not _is_owner(update.effective_user.id):
         await update.message.reply_text(LANES_DENIED)
         return
-    await update.message.reply_text(await _lanes_text(), reply_markup=_lanes_keyboard())
+    text, keyboard = await _lanes_view()
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def _edit_lanes(query, note: str = "") -> None:
+    text, keyboard = await _lanes_view(note)
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except BadRequest:
+        pass
 
 
 async def _lanes_refresh(query) -> None:
@@ -479,10 +529,109 @@ async def _lanes_refresh(query) -> None:
         await query.answer(LANES_DENIED, show_alert=True)
         return
     await query.answer()
+    await _edit_lanes(query)
+
+
+_LANE_CALLBACK = re.compile(r"^(lane|lanego):(pause|resume|stop|start|restart|restart_end):([1-9][0-9]?)$")
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+_LANE_ARGV = {
+    "pause": ("pause",), "resume": ("resume",), "stop": ("stop",), "start": ("start",),
+    "restart": ("restart",), "restart_end": ("restart", "--at-boundary"),
+}
+_LANE_NEEDS = {
+    "pause": ("running",), "resume": ("paused",), "start": ("stopped",),
+    "stop": ("running", "paused", "nostate"), "restart": ("running", "paused", "nostate"),
+    "restart_end": ("running", "paused", "nostate"),
+}
+_LANE_IS = {"stopped": "already stopped", "paused": "already paused",
+            "running": "already running", "nostate": "already running"}
+
+
+def _parse_lane_callback(data: str):
+    """(stage, action, lane) from trusted-shape callback data, else None."""
+    m = _LANE_CALLBACK.match(data or "")
+    return (m.group(1), m.group(2), int(m.group(3))) if m else None
+
+
+def _lane_confirm(action: str, k: int) -> tuple:
+    """(question, buttons) asked before a lane action runs."""
+    cancel = InlineKeyboardButton("Cancel", callback_data="lanes_refresh")
+    if action == "restart":
+        return f"Restart lane {k}?", InlineKeyboardMarkup([[
+            InlineKeyboardButton("Restart now", callback_data=f"lanego:restart:{k}"),
+            InlineKeyboardButton("At session end", callback_data=f"lanego:restart_end:{k}"),
+            cancel]])
+    verb = action.capitalize()
+    question = f"{verb} lane {k}?"
+    if action == "stop" and k == 1:
+        question = "Stop lane 1? It is the main lane."
+    return question, InlineKeyboardMarkup([[
+        InlineKeyboardButton(verb, callback_data=f"lanego:{action}:{k}"), cancel]])
+
+
+def _stale_reason(data: dict, action: str, k: int) -> str | None:
+    """Why `action` no longer fits lane `k` (it changed since the message), else None."""
+    row = next((r for r in data.get("lanes") or [] if r.get("lane") == k), None)
+    if row is None:
+        return f"Lane {k} is not configured."
+    state = _lane_state(row)
+    if state in _LANE_NEEDS[action]:
+        return None
+    if action == "resume":
+        return f"Lane {k} is not paused."
+    return f"Lane {k} is {_LANE_IS[state]}."
+
+
+def _wolfctl_line(text: str, last: bool) -> str:
+    lines = [_ANSI.sub("", line).strip() for line in (text or "").splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    return (lines[-1] if last else lines[0])[:200]
+
+
+async def _run_lane_action(action: str, k: int) -> str:
+    """Run one wolfctl verb on lane `k` only; the line wolfctl printed, or a safe message."""
     try:
-        await query.edit_message_text(await _lanes_text(), reply_markup=_lanes_keyboard())
-    except BadRequest:
-        pass
+        data = await _read_lanes()
+    except _LANE_READ_ERRORS as e:
+        logger.warning("lane %s %d: %s", action, k, type(e).__name__)
+        return LANES_FAILED + _error_suffix(e)
+    reason = _stale_reason(data, action, k)
+    if reason:
+        return reason
+    argv = [_ctl_path() or CTL_NAME, _LANE_ARGV[action][0], str(k), *_LANE_ARGV[action][1:]]
+    try:
+        result = await asyncio.to_thread(subprocess.run, argv, capture_output=True,
+                                         text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("lane %s %d: %s", action, k, type(e).__name__)
+        return f"Lane {k}: wolfctl did not answer. Check /lanes again.{_error_suffix(e)}"
+    logger.info("lane %s %d: rc=%d", action, k, result.returncode)
+    if result.returncode != 0:
+        return _wolfctl_line(result.stderr, last=False) or f"Lane {k}: {action} failed."
+    return _wolfctl_line(result.stdout, last=True) or f"Lane {k}: done."
+
+
+async def _lane_callback(query) -> None:
+    if not _is_owner(query.from_user.id):
+        await query.answer(LANES_DENIED, show_alert=True)
+        return
+    parsed = _parse_lane_callback(query.data)
+    if parsed is None:
+        await query.answer("Unknown button.", show_alert=True)
+        return
+    stage, action, k = parsed
+    await query.answer()
+    if stage == "lane":
+        question, keyboard = _lane_confirm(action, k)
+        try:
+            await query.edit_message_text(question, reply_markup=keyboard)
+        except BadRequest:
+            pass
+        return
+    await _edit_lanes(query, await _run_lane_action(action, k))
 
 
 def _update_argv(ctl_path: str, repo_dir: str, log_file: str) -> list[str]:
@@ -1764,6 +1913,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.data == "lanes_refresh":
         await _lanes_refresh(query)
+        return
+    if (query.data or "").startswith(("lane:", "lanego:")):
+        await _lane_callback(query)
         return
     await query.answer()
     user_id = query.from_user.id
