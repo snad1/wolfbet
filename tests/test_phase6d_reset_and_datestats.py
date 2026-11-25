@@ -38,7 +38,7 @@ def test_wolfbet_version():
 def test_wolfctl_version_constant_3_9():
     src = _wolfctl_src()
     assert re.search(r"^WOLFCTL_VERSION=3\.26\b", src, re.MULTILINE)
-    assert "Management Command v3.26" in src
+    assert "Management Command v3.27" in src
 
 
 # ── wolfctl reset: archive-first design ─────────────────
@@ -58,10 +58,11 @@ def test_reset_archives_never_deletes():
     src = _wolfctl_src()
     reset_body = re.search(r"cmd_reset\(\)\s*\{.*?^\}", src, re.DOTALL | re.MULTILINE).group(0)
     assert "mv \"$db\" \"$archive\"" in reset_body
-    # rm only allowed for the stale live-state / run files, never the DB.
+    # rm only allowed for the stale live-state, run and session-end files, never the DB.
     rm_lines = [l for l in reset_body.splitlines() if re.search(r"\brm ", l)]
-    assert all("wolfbet_autobot_live.json" in l or "wolfbet_run.json" in l for l in rm_lines), \
-        f"rm must only target stale live-state, got: {rm_lines}"
+    assert all("wolfbet_autobot_live.json" in l or "wolfbet_run.json" in l or ".drain" in l
+               for l in rm_lines), f"rm must only target stale live-state, got: {rm_lines}"
+    assert not any(".db" in l for l in rm_lines)
 
 
 def test_reset_clears_stale_live_state():

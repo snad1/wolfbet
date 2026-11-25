@@ -1,5 +1,14 @@
 # Changelog
 
+## wolfctl v3.27 - removed lanes leave nothing behind; session-end requests on a stopped lane; reset keeps the WAL with its database (2026-11-25)
+
+- `wolfctl lane remove K` now deletes the lane's live state, pid, run and session-end files once its unit is stopped. Its sessions and bets stay in the database. Left behind, those files kept the dashboard showing a removed lane.
+- `wolfctl lane remove K --after-session` on a lane that is not running removes it at once and says `Lane K is not running, so it is removed now.` A stopped lane never reaches a session end, so the request used to wait forever.
+- `wolfctl restart K --at-boundary` on a stopped lane answers `Lane K is stopped; start it with: wolfctl start K` (exit 1) instead of queueing a restart that never comes.
+- `wolfctl reset` moves the database's `-wal` and `-shm` files with it to the archive name, and drops any session-end request. A leftover write-ahead log next to the new, empty database would be read as part of it.
+
+**Tests**: `tests/test_phase11i_wolfctl_verbs.py` (stopped-lane remove at session end, file cleanup, a refused remove keeps the files, restart at boundary on a stopped lane, cancel still works, reset moves the WAL). wolfctl version pins updated.
+
 ## v2.63.0 / TG v1.31.0 - `/sessions` on Telegram; `wolfctl stats --before ID` (2026-11-25)
 
 - New Telegram command `/sessions [lane]` (owner only): the last 10 CLI sessions, one line each, such as `#14 · 11-25 12:04-12:31 · 9,812 bets · +0.00012000 USDT` (`12:04-running` while open). Without a lane every lane is listed and lines of lanes above 1 start with `L2 ·`. One button per session, and **Older** pages back in place.

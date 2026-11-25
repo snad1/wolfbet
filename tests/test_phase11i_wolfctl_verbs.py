@@ -224,6 +224,21 @@ def test_reset_yes_archives_without_asking(host):
     assert any(n.startswith(".wolfbet_autobot-") for n in os.listdir(host["home"]))
 
 
+def test_reset_moves_the_wal_with_the_database_and_drops_session_end_requests(host):
+    db = _db(host)
+    for name in (".wolfbet_autobot.db-wal", ".wolfbet_autobot.db-shm",
+                 ".wolfbet_autobot.lane3.drain", ".wolfbet_autobot.drain"):
+        _write(os.path.join(host["home"], name), "x")
+    r = _wolfctl(host, "reset", "--yes")
+    assert r.returncode == 0, r.stderr
+    names = os.listdir(host["home"])
+    archive = next(n for n in names if n.startswith(".wolfbet_autobot-") and n.endswith(".db"))
+    assert {archive + "-wal", archive + "-shm"} <= set(names)
+    assert not any(n in names for n in (".wolfbet_autobot.db-wal", ".wolfbet_autobot.db-shm",
+                                        ".wolfbet_autobot.lane3.drain", ".wolfbet_autobot.drain"))
+    assert not os.path.exists(db)
+
+
 def test_run_reset_without_terminal_refuses_with_exit_3(host):
     r = _wolfctl(host, "run-reset")
     assert r.returncode == 3 and "--run-reset" not in " ".join(_python_calls(host))
@@ -306,7 +321,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.26" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.27" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():
@@ -467,8 +482,13 @@ def test_lane_remove_refused_by_the_bot_touches_no_unit(host):
     assert _systemctl_calls(host) == []
 
 
+def _active(host, *units):
+    _write(os.path.join(host["home"], "active.txt"), "".join(f"{u}\n" for u in units))
+
+
 def test_session_end_requests_go_to_the_bot_and_touch_no_unit(host):
     _lanes(host, "1 2 3")
+    _active(host, "wolfbet-lane@2", "wolfbet-lane@3")
     for args, call in (
         (("restart", "2", "--at-boundary"), "--lane-drain 2 restart"),
         (("restart", "2", "--cancel-boundary"), "--lane-drain 2 cancel"),
@@ -478,6 +498,58 @@ def test_session_end_requests_go_to_the_bot_and_touch_no_unit(host):
         assert r.returncode == 0, r.stderr
         assert _python_calls(host)[-1].endswith(f"wolfbet.py {call}")
     assert _systemctl_calls(host) == []
+
+
+def test_removing_a_stopped_lane_at_session_end_removes_it_now(host):
+    _lanes(host, "1 2 3", after="1 2")
+    lane3 = [".wolfbet_autobot_live.lane3.json", ".wolfbet_autobot.lane3.pid",
+             ".wolfbet_run.lane3.json", ".wolfbet_autobot.lane3.drain"]
+    for name in lane3 + [".wolfbet_autobot_live.lane2.json"]:
+        _write(os.path.join(host["home"], name), "{}")
+    r = _wolfctl(host, "lane", "remove", "3", "--after-session")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines()[0] == "Lane 3 is not running, so it is removed now."
+    assert "Lane 3 stopped. Other lanes keep betting." in r.stdout
+    assert _python_calls(host)[-1].endswith("wolfbet.py --lane-remove 3")
+    assert not any("--lane-drain" in c for c in _python_calls(host))
+    assert _systemctl_calls(host) == ["--user disable --now wolfbet-lane@3"]
+    assert not any(os.path.exists(os.path.join(host["home"], n)) for n in lane3)
+    assert os.path.exists(os.path.join(host["home"], ".wolfbet_autobot_live.lane2.json"))
+
+
+def test_removing_a_lane_now_clears_its_files(host):
+    _lanes(host, "1 2", after="1")
+    names = [".wolfbet_autobot_live.lane2.json", ".wolfbet_autobot.lane2.pid",
+             ".wolfbet_run.lane2.json", ".wolfbet_autobot.lane2.drain"]
+    for name in names:
+        _write(os.path.join(host["home"], name), "{}")
+    r = _wolfctl(host, "lane", "remove", "2")
+    assert r.returncode == 0, r.stderr
+    assert not any(os.path.exists(os.path.join(host["home"], n)) for n in names)
+
+
+def test_a_refused_remove_keeps_the_lane_files(host):
+    _lanes(host, "1 2")
+    _write(os.path.join(host["home"], "python-fails"), "No lane 5.\n")
+    _write(os.path.join(host["home"], ".wolfbet_autobot_live.lane2.json"), "{}")
+    r = _wolfctl(host, "lane", "remove", "2")
+    assert r.returncode == 2
+    assert os.path.exists(os.path.join(host["home"], ".wolfbet_autobot_live.lane2.json"))
+
+
+def test_restarting_a_stopped_lane_at_session_end_says_to_start_it(host):
+    _lanes(host, "1 2")
+    r = _wolfctl(host, "restart", "2", "--at-boundary")
+    assert r.returncode == 1
+    assert "Lane 2 is stopped; start it with: wolfctl start 2" in r.stderr
+    assert not any("--lane-drain" in c for c in _python_calls(host))
+
+
+def test_cancelling_a_session_end_restart_works_on_a_stopped_lane(host):
+    _lanes(host, "1 2")
+    r = _wolfctl(host, "restart", "2", "--cancel-boundary")
+    assert r.returncode == 0, r.stderr
+    assert _python_calls(host)[-1].endswith("wolfbet.py --lane-drain 2 cancel")
 
 
 @pytest.mark.parametrize("args", [("restart", "x", "--at-boundary"), ("restart", "2", "--soon"),
