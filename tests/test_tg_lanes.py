@@ -170,9 +170,10 @@ def test_refresh_from_another_chat_is_refused(ctl):
 def test_each_lane_gets_the_buttons_its_state_allows():
     assert tg_handlers._lane_buttons(LANES) == [
         [("Pause 1", "lane:pause:1"), ("Restart 1", "lane:restart:1"), ("Stop 1", "lane:stop:1")],
-        [("Resume 2", "lane:resume:2"), ("Restart 2", "lane:restart:2"), ("Stop 2", "lane:stop:2")],
-        [("Start 3", "lane:start:3")],
-        [("Restart 4", "lane:restart:4"), ("Stop 4", "lane:stop:4")],
+        [("Resume 2", "lane:resume:2"), ("Restart 2", "lane:restart:2"), ("Stop 2", "lane:stop:2"),
+         ("Remove 2", "lane:remove:2")],
+        [("Start 3", "lane:start:3"), ("Remove 3", "lane:remove:3")],
+        [("Restart 4", "lane:restart:4"), ("Stop 4", "lane:stop:4"), ("Remove 4", "lane:remove:4")],
     ]
     for row in tg_handlers._lane_buttons(LANES):
         assert all(len(cb.encode()) <= 64 for _, cb in row)
@@ -230,6 +231,8 @@ def _ran(ctl):
     ("lanego:start:3", [CTL, "start", "3"]),
     ("lanego:restart:4", [CTL, "restart", "4"]),
     ("lanego:restart_end:1", [CTL, "restart", "1", "--at-boundary"]),
+    ("lanego:remove:3", [CTL, "lane", "remove", "3"]),
+    ("lanego:remove_end:2", [CTL, "lane", "remove", "2", "--after-session"]),
 ])
 def test_a_confirmed_action_runs_one_verb_on_that_lane_only(ctl, monkeypatch, data, argv):
     real = tg_handlers.subprocess.run
@@ -292,3 +295,154 @@ def test_cancel_brings_the_list_back(ctl):
     kind, text, kw = _tap("lanes_refresh")[1]
     assert kind == "edit" and text.startswith("Lane 1: running")
     assert _buttons(kw["reply_markup"])[-1] == [("Refresh", "lanes_refresh")]
+
+
+def test_remove_asks_now_or_at_session_end_and_runs_nothing(ctl):
+    kind, text, kw = _tap("lane:remove:4")[1]
+    assert (kind, text) == ("edit", "Remove lane 4?")
+    assert _buttons(kw["reply_markup"]) == [[("Now", "lanego:remove:4"),
+                                             ("At session end", "lanego:remove_end:4"),
+                                             ("Cancel", "lanes_refresh")]]
+    assert ctl.calls == []
+
+
+@pytest.mark.parametrize("data, reason", [
+    ("lanego:remove:1", "Lane 1 is the main lane and can't be removed."),
+    ("lanego:remove_end:1", "Lane 1 is the main lane and can't be removed."),
+    ("lanego:remove_end:3", "Lane 3 is stopped. Remove it with Now."),
+    ("lanego:remove:9", "Lane 9 is not configured."),
+])
+def test_remove_refuses_lane_1_a_stopped_drain_and_a_missing_lane(ctl, data, reason):
+    assert _tap(data)[1][1].startswith(reason + "\n\n")
+    assert _ran(ctl) == []
+
+
+def test_a_cli_error_printed_on_stdout_is_shown(ctl, monkeypatch):
+    real = tg_handlers.subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[1:] == ["lanes", "--json"]:
+            return real(cmd, **kw)
+        return types.SimpleNamespace(returncode=2, stdout="\x1b[31mNo lane 3.\x1b[0m\n", stderr="")
+
+    monkeypatch.setattr(tg_handlers.subprocess, "run", run)
+    assert _tap("lanego:remove:3")[1][1].startswith("No lane 3.\n\n")
+
+
+@pytest.mark.parametrize("name, ok", [
+    ("friend-B", True), ("night run", True), ("a" * 32, True), ("x_1", True),
+    ("-x", False), ("a" * 33, False), ("bad;name", False), ("tab\tname", False), ("", False),
+    (" lead", False), ("na\u00efve", False),
+])
+def test_lane_names_follow_the_cli_rule(name, ok):
+    assert tg_handlers._lane_name_ok(name) is ok
+
+
+def test_the_name_rule_is_the_clis_own_pattern():
+    from shared.core.lanes import LANE_NAME_RE
+    assert tg_handlers.LANE_NAME_RE is LANE_NAME_RE
+
+
+def _command(handler, args, user_id=OWNER_ID):
+    upd, sent = _update(user_id)
+    asyncio.run(handler(upd, types.SimpleNamespace(args=args)))
+    return sent
+
+
+@pytest.mark.parametrize("args, question, data", [
+    (["friend-B", "from", "2"], "Add the lane friend-B, copying lane 2's settings?",
+     "laneadd:2:friend-B"),
+    (["night", "run"], "Add the lane night run?", "laneadd:1:night run"),
+    (["from", "x", "FROM", "4"], "Add the lane from x, copying lane 4's settings?",
+     "laneadd:4:from x"),
+])
+def test_laneadd_asks_first_and_runs_nothing(ctl, args, question, data):
+    (text, opts), = _command(tg_handlers.cmd_laneadd, args)
+    assert text == question
+    assert _buttons(opts["reply_markup"]) == [[("Add", data), ("Cancel", "lanes_refresh")]]
+    assert len(data.encode()) <= 64
+    assert ctl.calls == []
+
+
+def test_lanerename_asks_first_and_runs_nothing(ctl):
+    (text, opts), = _command(tg_handlers.cmd_lanerename, ["4", "night-run"])
+    assert text == "Rename lane 4 to night-run?"
+    assert _buttons(opts["reply_markup"]) == [[("Rename", "lanern:4:night-run"),
+                                               ("Cancel", "lanes_refresh")]]
+    assert ctl.calls == []
+
+
+@pytest.mark.parametrize("handler, args, reply", [
+    ("cmd_laneadd", [], "Usage: /laneadd NAME [from K]"),
+    ("cmd_laneadd", ["-x"], tg_handlers.LANE_NAME_RULE),
+    ("cmd_laneadd", ["a" * 33], tg_handlers.LANE_NAME_RULE),
+    ("cmd_laneadd", ["x", "from", "0"], "Usage: /laneadd NAME [from K]"),
+    ("cmd_lanerename", ["4"], "Usage: /lanerename K NAME"),
+    ("cmd_lanerename", ["0", "x"], "Usage: /lanerename K NAME"),
+    ("cmd_lanerename", ["4", "bad;name"], tg_handlers.LANE_NAME_RULE),
+])
+def test_bad_lane_commands_say_why_and_run_nothing(ctl, handler, args, reply):
+    assert [t for t, _ in _command(getattr(tg_handlers, handler), args)] == [reply]
+    assert ctl.calls == []
+
+
+@pytest.mark.parametrize("handler, args", [
+    ("cmd_laneadd", ["friend-B"]), ("cmd_lanerename", ["4", "x"])])
+def test_lane_commands_from_another_chat_are_refused(ctl, handler, args):
+    sent = _command(getattr(tg_handlers, handler), args, OWNER_ID + 1)
+    assert [t for t, _ in sent] == ["Only the owner can manage lanes."]
+    assert ctl.calls == []
+
+
+def _run_named(ctl, monkeypatch, out, rc=0):
+    real = tg_handlers.subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[1:] == ["lanes", "--json"]:
+            return real(cmd, **kw)
+        ctl.calls.append((cmd, kw))
+        return types.SimpleNamespace(returncode=rc, stdout=out, stderr="")
+
+    monkeypatch.setattr(tg_handlers.subprocess, "run", run)
+
+
+def test_a_confirmed_add_runs_lane_add_and_shows_what_wolfctl_said(ctl, monkeypatch):
+    _run_named(ctl, monkeypatch, "Lane 5 (friend-B) added with lane 2's overrides.\n"
+                                 "  lane 5 started\nOther lanes keep betting.\n")
+    kind, text, _ = _tap("laneadd:2:friend-B")[1]
+    assert _ran(ctl) == [[CTL, "lane", "add", "friend-B", "--from", "2"]]
+    assert [kw for cmd, kw in ctl.calls if cmd[1] == "lane"][0]["timeout"] == 30
+    assert kind == "edit" and text.startswith(
+        "Lane 5 (friend-B) added with lane 2's overrides. Other lanes keep betting.\n\nLane 1:")
+
+
+def test_an_add_over_the_limit_shows_the_cli_line(ctl, monkeypatch):
+    _run_named(ctl, monkeypatch, "This bot already runs 3 lane(s), the limit.\n"
+                                 "  Raise it with: wolfctl lanes --max N\n", rc=2)
+    assert _tap("laneadd:1:x")[1][1].startswith("This bot already runs 3 lane(s), the limit.\n\n")
+
+
+def test_a_confirmed_rename_runs_lane_rename_on_that_lane(ctl, monkeypatch):
+    _run_named(ctl, monkeypatch, "Lane config updated\n  lane4.name: lane4 -> night-run\n")
+    text = _tap("lanern:4:night-run")[1][1]
+    assert _ran(ctl) == [[CTL, "lane", "rename", "4", "night-run"]]
+    assert text.startswith("Lane 4 renamed to night-run.\n\n")
+
+
+def test_renaming_a_missing_lane_runs_nothing(ctl):
+    assert _tap("lanern:9:x")[1][1].startswith("Lane 9 is not configured.\n\n")
+    assert _ran(ctl) == []
+
+
+@pytest.mark.parametrize("data", [
+    "laneadd:2:-x", "laneadd:0:x", "laneadd:2:a;b", "lanern:4:" + "a" * 33, "lanern:4:",
+    "laneadd:2", "lanern:x:y", "laneadd:2:x\nrm"])
+def test_forged_add_or_rename_buttons_are_refused(ctl, data):
+    assert _tap(data) == [("answer", "Unknown button.", {"show_alert": True})]
+    assert ctl.calls == []
+
+
+def test_another_chat_tapping_add_is_refused(ctl):
+    assert _tap("laneadd:1:x", OWNER_ID + 1) == [
+        ("answer", "Only the owner can manage lanes.", {"show_alert": True})]
+    assert ctl.calls == []

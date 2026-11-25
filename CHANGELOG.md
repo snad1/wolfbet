@@ -1,5 +1,17 @@
 # Changelog
 
+## TG v1.29.0 - add, rename and remove a lane from Telegram (2026-11-25)
+
+- `/laneadd NAME [from K]` (owner only) asks `Add the lane friend-B, copying lane 2's settings?` and, on **Add**, runs `wolfctl lane add NAME --from K` (K defaults to 1, which copies nothing). The reply shows what wolfctl printed, such as `Lane 5 (friend-B) added. Other lanes keep betting.`, above the fresh list. No other lane restarts.
+- `/lanerename K NAME` asks `Rename lane 4 to night-run?` and, on **Rename**, runs `wolfctl lane rename K NAME`. The lane keeps betting and picks the name up on its next reload.
+- Every lane but lane 1 gets a **Remove K** button: `Remove lane 4?` with **Now** (`wolfctl lane remove K`) or **At session end** (`wolfctl lane remove K --after-session`). Lane 1 has no Remove; forged data for it answers `Lane 1 is the main lane and can't be removed.` A stopped lane can't wait for a session end: `Lane 3 is stopped. Remove it with Now.`
+- Names follow the CLI's own rule (casino-shared `LANE_NAME_RE`) and may not start with `-`, which wolfctl would read as an option: `Lane names are 1-32 letters, digits, space, _ or -, not starting with - or a space.` The name in the button data is checked again before anything runs; anything else answers `Unknown button.`
+- A failed lane action now shows wolfctl's own error line. The CLI prints its errors on stdout, so `No lane 3.` or `This bot already runs 3 lane(s), the limit.` used to show as `Lane 3: stop failed.`
+
+**Tests**: `tests/test_tg_lanes.py` (name rule, command parsing and usage, confirm texts and button bytes, forged add and rename data, argv per verb, lane 1 and stopped-drain refusals, a CLI error on stdout, owner gate). TG version pins updated.
+
+TG `VERSION` `1.28.0` -> `1.29.0`.
+
 ## TG v1.28.0 - one-lane buttons in /lanes (2026-11-25)
 
 - Each lane in `/lanes` now has buttons for what its state allows: a running lane **Pause K**, **Restart K**, **Stop K**; a paused one **Resume K** instead of Pause; a stopped one **Start K**; a lane with no state yet **Restart K**, **Stop K**.

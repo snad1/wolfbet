@@ -25,7 +25,7 @@ from .handlers import (
     cmd_rules, cmd_addrule, cmd_delrule, cmd_editrule, cmd_clearrules,
     cmd_presets, cmd_savepreset, cmd_loadpreset,
     cmd_session, cmd_web,
-    cmd_cleanup, cmd_delsession, cmd_lanes,
+    cmd_cleanup, cmd_delsession, cmd_lanes, cmd_laneadd, cmd_lanerename,
     callback_handler,
     save_resume_state, load_resume_state,
 )
@@ -123,6 +123,8 @@ def main():
             BotCommand("resume",      "Resume betting"),
             BotCommand("status",      "Live status with refresh button"),
             BotCommand("lanes",       "CLI lanes, their key and session"),
+            BotCommand("laneadd",     "Add a CLI lane: NAME [from K]"),
+            BotCommand("lanerename",  "Rename a CLI lane: K NAME"),
             BotCommand("monitor",     "Auto-updating live status"),
             BotCommand("stats",       "Session history"),
             BotCommand("lastbets",    "Recent bets"),
@@ -177,6 +179,8 @@ def main():
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("lanes", cmd_lanes))
+    app.add_handler(CommandHandler("laneadd", cmd_laneadd))
+    app.add_handler(CommandHandler("lanerename", cmd_lanerename))
     app.add_handler(CommandHandler("monitor", cmd_monitor))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("diagnose", cmd_diagnose))

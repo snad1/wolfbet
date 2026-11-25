@@ -20,6 +20,7 @@ from telegram.ext import ContextTypes
 # mask_proxy: port-safe (previously leaked "None" when the URL had no port).
 # percentile + benchmark_verdict: TG /benchmark gains p50/p99 + plain verdict.
 from core.net_helpers import validate_proxy, mask_proxy
+from shared.core.lanes import LANE_NAME_RE
 from core.validation import finite_float
 from core.diagnostics import percentile, benchmark_verdict
 
@@ -220,6 +221,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/resume: Resume (`/resume all` or `/resume 2`)\n"
         "/status: Live status (`/status 2` for specific slot)\n"
         "/lanes: CLI lanes, their key and session (owner)\n"
+        "/laneadd NAME [from K]: add a CLI lane (owner)\n"
+        "/lanerename K NAME: rename a CLI lane (owner)\n"
         "/monitor: Auto-updating status (default 5s)\n"
         "/stats: Session history\n"
         "/session: Detailed session report\n"
@@ -488,8 +491,8 @@ def _lane_buttons(data: dict) -> list:
     rows = []
     for row in sorted(data.get("lanes") or [], key=lambda r: r.get("lane", 0)):
         k = row.get("lane")
-        rows.append([(f"{action.capitalize()} {k}", f"lane:{action}:{k}")
-                     for action in _LANE_BUTTONS[_lane_state(row)]])
+        actions = _LANE_BUTTONS[_lane_state(row)] + (("remove",) if k != 1 else ())
+        rows.append([(f"{action.capitalize()} {k}", f"lane:{action}:{k}") for action in actions])
     return rows
 
 
@@ -532,20 +535,36 @@ async def _lanes_refresh(query) -> None:
     await _edit_lanes(query)
 
 
-_LANE_CALLBACK = re.compile(r"^(lane|lanego):(pause|resume|stop|start|restart|restart_end):([1-9][0-9]?)$")
+_LANE_CALLBACK = re.compile(
+    r"^(lane|lanego):(pause|resume|stop|start|restart|restart_end|remove|remove_end):([1-9][0-9]?)$")
+_LANE_NAMED_CALLBACK = re.compile(r"^(laneadd|lanern):([1-9][0-9]?):(.{1,32})$")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_LANE_K = re.compile(r"^[1-9][0-9]?$")
+_CANCEL = InlineKeyboardButton("Cancel", callback_data="lanes_refresh")
+
+LANE_NAME_RULE = ("Lane names are 1-32 letters, digits, space, _ or -, "
+                  "not starting with - or a space.")
+LANE_ONE_KEPT = "Lane 1 is the main lane and can't be removed."
 
 _LANE_ARGV = {
-    "pause": ("pause",), "resume": ("resume",), "stop": ("stop",), "start": ("start",),
-    "restart": ("restart",), "restart_end": ("restart", "--at-boundary"),
+    "pause": (("pause",), ()), "resume": (("resume",), ()), "stop": (("stop",), ()),
+    "start": (("start",), ()), "restart": (("restart",), ()),
+    "restart_end": (("restart",), ("--at-boundary",)),
+    "remove": (("lane", "remove"), ()), "remove_end": (("lane", "remove"), ("--after-session",)),
 }
+_ALIVE = ("running", "paused", "nostate")
 _LANE_NEEDS = {
     "pause": ("running",), "resume": ("paused",), "start": ("stopped",),
-    "stop": ("running", "paused", "nostate"), "restart": ("running", "paused", "nostate"),
-    "restart_end": ("running", "paused", "nostate"),
+    "stop": _ALIVE, "restart": _ALIVE, "restart_end": _ALIVE,
+    "remove": _ALIVE + ("stopped",), "remove_end": _ALIVE,
 }
 _LANE_IS = {"stopped": "already stopped", "paused": "already paused",
             "running": "already running", "nostate": "already running"}
+
+
+def _lane_name_ok(name: str) -> bool:
+    """The CLI's lane-name rule; a leading - would also reach wolfctl as an option."""
+    return bool(LANE_NAME_RE.match(name)) and not name.startswith(("-", " "))
 
 
 def _parse_lane_callback(data: str):
@@ -554,41 +573,81 @@ def _parse_lane_callback(data: str):
     return (m.group(1), m.group(2), int(m.group(3))) if m else None
 
 
+def _parse_named_callback(data: str):
+    """(verb, lane, name) from `laneadd:K:NAME` or `lanern:K:NAME`, else None."""
+    m = _LANE_NAMED_CALLBACK.match(data or "")
+    if not m or not _lane_name_ok(m.group(3)):
+        return None
+    return m.group(1), int(m.group(2)), m.group(3)
+
+
 def _lane_confirm(action: str, k: int) -> tuple:
     """(question, buttons) asked before a lane action runs."""
-    cancel = InlineKeyboardButton("Cancel", callback_data="lanes_refresh")
-    if action == "restart":
-        return f"Restart lane {k}?", InlineKeyboardMarkup([[
-            InlineKeyboardButton("Restart now", callback_data=f"lanego:restart:{k}"),
-            InlineKeyboardButton("At session end", callback_data=f"lanego:restart_end:{k}"),
-            cancel]])
+    if action in ("restart", "remove"):
+        verb = action.capitalize()
+        return f"{verb} lane {k}?", InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"{verb} now" if action == "restart" else "Now",
+                                 callback_data=f"lanego:{action}:{k}"),
+            InlineKeyboardButton("At session end", callback_data=f"lanego:{action}_end:{k}"),
+            _CANCEL]])
     verb = action.capitalize()
     question = f"{verb} lane {k}?"
     if action == "stop" and k == 1:
         question = "Stop lane 1? It is the main lane."
     return question, InlineKeyboardMarkup([[
-        InlineKeyboardButton(verb, callback_data=f"lanego:{action}:{k}"), cancel]])
+        InlineKeyboardButton(verb, callback_data=f"lanego:{action}:{k}"), _CANCEL]])
+
+
+def _lane_row(data: dict, k: int):
+    return next((r for r in data.get("lanes") or [] if r.get("lane") == k), None)
 
 
 def _stale_reason(data: dict, action: str, k: int) -> str | None:
     """Why `action` no longer fits lane `k` (it changed since the message), else None."""
-    row = next((r for r in data.get("lanes") or [] if r.get("lane") == k), None)
+    if action.startswith("remove") and k == 1:
+        return LANE_ONE_KEPT
+    row = _lane_row(data, k)
     if row is None:
         return f"Lane {k} is not configured."
     state = _lane_state(row)
     if state in _LANE_NEEDS[action]:
         return None
+    if action == "remove_end":
+        return f"Lane {k} is stopped. Remove it with Now."
     if action == "resume":
         return f"Lane {k} is not paused."
     return f"Lane {k} is {_LANE_IS[state]}."
 
 
-def _wolfctl_line(text: str, last: bool) -> str:
+def _wolfctl_lines(text: str) -> list:
     lines = [_ANSI.sub("", line).strip() for line in (text or "").splitlines()]
-    lines = [line for line in lines if line]
+    return [line for line in lines if line]
+
+
+def _wolfctl_line(text: str, last: bool) -> str:
+    lines = _wolfctl_lines(text)
     if not lines:
         return ""
     return (lines[-1] if last else lines[0])[:200]
+
+
+async def _run_wolfctl(args: list, k: int, label: str):
+    """Run `wolfctl *args`; (ok, note) where a failure note is wolfctl's own first line.
+
+    The CLI prints its errors on stdout and bash usage errors on stderr, so both are read.
+    """
+    argv = [_ctl_path() or CTL_NAME, *args]
+    try:
+        result = await asyncio.to_thread(subprocess.run, argv, capture_output=True,
+                                         text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("lane %s %d: %s", label, k, type(e).__name__)
+        return False, f"Lane {k}: wolfctl did not answer. Check /lanes again.{_error_suffix(e)}"
+    logger.info("lane %s %d: rc=%d", label, k, result.returncode)
+    if result.returncode != 0:
+        return False, (_wolfctl_line(result.stderr, last=False)
+                       or _wolfctl_line(result.stdout, last=False) or f"Lane {k}: {label} failed.")
+    return True, result.stdout
 
 
 async def _run_lane_action(action: str, k: int) -> str:
@@ -601,17 +660,30 @@ async def _run_lane_action(action: str, k: int) -> str:
     reason = _stale_reason(data, action, k)
     if reason:
         return reason
-    argv = [_ctl_path() or CTL_NAME, _LANE_ARGV[action][0], str(k), *_LANE_ARGV[action][1:]]
-    try:
-        result = await asyncio.to_thread(subprocess.run, argv, capture_output=True,
-                                         text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("lane %s %d: %s", action, k, type(e).__name__)
-        return f"Lane {k}: wolfctl did not answer. Check /lanes again.{_error_suffix(e)}"
-    logger.info("lane %s %d: rc=%d", action, k, result.returncode)
-    if result.returncode != 0:
-        return _wolfctl_line(result.stderr, last=False) or f"Lane {k}: {action} failed."
-    return _wolfctl_line(result.stdout, last=True) or f"Lane {k}: done."
+    before, after = _LANE_ARGV[action]
+    ok, out = await _run_wolfctl([*before, str(k), *after], k, action)
+    return (_wolfctl_line(out, last=True) or f"Lane {k}: done.") if ok else out
+
+
+async def _run_named(verb: str, k: int, name: str) -> str:
+    """Add a lane named `name` copying lane `k`, or rename lane `k`; the note to show."""
+    if verb == "lanern":
+        try:
+            data = await _read_lanes()
+        except _LANE_READ_ERRORS as e:
+            logger.warning("lane rename %d: %s", k, type(e).__name__)
+            return LANES_FAILED + _error_suffix(e)
+        if _lane_row(data, k) is None:
+            return f"Lane {k} is not configured."
+        ok, out = await _run_wolfctl(["lane", "rename", str(k), name], k, "rename")
+        return f"Lane {k} renamed to {name}." if ok else out
+    ok, out = await _run_wolfctl(["lane", "add", name, "--from", str(k)], k, "add")
+    if not ok:
+        return out
+    lines = _wolfctl_lines(out)
+    added = next((line for line in lines if line.startswith("Lane ")), "")
+    note = " ".join(dict.fromkeys(line for line in (added, lines[-1] if lines else "") if line))
+    return note[:200] or f"Lane {name} added."
 
 
 async def _lane_callback(query) -> None:
@@ -632,6 +704,70 @@ async def _lane_callback(query) -> None:
             pass
         return
     await _edit_lanes(query, await _run_lane_action(action, k))
+
+
+async def _named_lane_callback(query) -> None:
+    if not _is_owner(query.from_user.id):
+        await query.answer(LANES_DENIED, show_alert=True)
+        return
+    parsed = _parse_named_callback(query.data)
+    if parsed is None:
+        await query.answer("Unknown button.", show_alert=True)
+        return
+    await query.answer()
+    await _edit_lanes(query, await _run_named(*parsed))
+
+
+def _named_confirm(verb: str, k: int, name: str) -> tuple:
+    if verb == "laneadd":
+        copying = f", copying lane {k}'s settings" if k != 1 else ""
+        question, button = f"Add the lane {name}{copying}?", "Add"
+    else:
+        question, button = f"Rename lane {k} to {name}?", "Rename"
+    return question, InlineKeyboardMarkup([[
+        InlineKeyboardButton(button, callback_data=f"{verb}:{k}:{name}"), _CANCEL]])
+
+
+def _parse_laneadd(args: list):
+    """(source lane, name) from `/laneadd NAME [from K]` args, else None."""
+    args = list(args or [])
+    k = 1
+    if len(args) >= 3 and args[-2].lower() == "from":
+        if not _LANE_K.match(args[-1]):
+            return None
+        k, args = int(args[-1]), args[:-2]
+    name = " ".join(args)
+    return (k, name) if args else None
+
+
+async def _reply_named(update: Update, usage: str, parsed) -> None:
+    if not _is_owner(update.effective_user.id):
+        await update.message.reply_text(LANES_DENIED)
+        return
+    if parsed is None:
+        await update.message.reply_text(f"Usage: {usage}")
+        return
+    verb, k, name = parsed
+    if not _lane_name_ok(name):
+        await update.message.reply_text(LANE_NAME_RULE)
+        return
+    question, keyboard = _named_confirm(verb, k, name)
+    await update.message.reply_text(question, reply_markup=keyboard)
+
+
+async def cmd_laneadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add one CLI lane, optionally copying lane K's settings, after a confirm (owner only)."""
+    parsed = _parse_laneadd(context.args)
+    await _reply_named(update, "/laneadd NAME [from K]",
+                       ("laneadd", *parsed) if parsed else None)
+
+
+async def cmd_lanerename(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Rename one CLI lane after a confirm; it keeps betting (owner only)."""
+    args = list(context.args or [])
+    ok = len(args) >= 2 and _LANE_K.match(args[0])
+    await _reply_named(update, "/lanerename K NAME",
+                       ("lanern", int(args[0]), " ".join(args[1:])) if ok else None)
 
 
 def _update_argv(ctl_path: str, repo_dir: str, log_file: str) -> list[str]:
@@ -1913,6 +2049,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.data == "lanes_refresh":
         await _lanes_refresh(query)
+        return
+    if (query.data or "").startswith(("laneadd:", "lanern:")):
+        await _named_lane_callback(query)
         return
     if (query.data or "").startswith(("lane:", "lanego:")):
         await _lane_callback(query)
