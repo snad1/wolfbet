@@ -1,5 +1,17 @@
 # Changelog
 
+## TG v1.30.0 - pick a lane's key and proxy from Telegram (2026-11-25)
+
+- Lanes 2-99 in `/lanes` get **Key K** and **Proxy K**. Each lists the saved keys or proxies from the vault by label and last 4 only (`friend (...a1b2)`); the proxy list adds **No proxy**. The secret is never read, sent or logged. The picker says `Add keys on the dashboard Keys page.` and, when the dashboard sign-in is set up, has an **Open dashboard** button with the same one-use link as `/web`.
+- Picking one asks `Use friend (...a1b2) on lane 2? Lane 2 restarts.` with **Use now** or **At session end**. It runs `wolfctl config-set lane2.key_ref=friend` (or `lane2.proxy_ref=...`, `off` for no proxy), then `wolfctl restart 2`, with `--at-boundary` for the session end. Only that lane restarts; a stopped lane keeps the new key for its next start.
+- Lane 1 has no Key or Proxy button: its key is the base key that lanes without their own inherit, so it changes on the dashboard Config page. Forged data for lane 1 says so and runs nothing.
+- The vault is read again before anything runs: a key deleted since the list answers `friend is no longer in the vault.`, and a key the lane already uses answers `Lane 2 already uses friend (...a1b2).`
+- `/setkey` still sets only the Telegram bot's own key. Its reply now says CLI lanes use the saved keys and points at `/lanes`. If Telegram refuses to delete the message holding the key, the bot now says `I could not delete your message. Delete it now: it holds your key.` instead of staying silent.
+
+**Tests**: `tests/test_tg_lanes.py` (picker labels and kinds, empty and unreadable vault, lane 1 refused, forged ids, confirm texts, argv per choice, stopped lane, key already in use, deleted key, failed config-set, owner gate, `/setkey` delete and its failure, no secret in replies or logs). TG version pins updated.
+
+TG `VERSION` `1.29.0` -> `1.30.0`.
+
 ## TG v1.29.0 - add, rename and remove a lane from Telegram (2026-11-25)
 
 - `/laneadd NAME [from K]` (owner only) asks `Add the lane friend-B, copying lane 2's settings?` and, on **Add**, runs `wolfctl lane add NAME --from K` (K defaults to 1, which copies nothing). The reply shows what wolfctl printed, such as `Lane 5 (friend-B) added. Other lanes keep betting.`, above the fresh list. No other lane restarts.

@@ -1,3 +1,3 @@
 """WolfBet Telegram Bot: Multi-tenant auto-betting via Telegram."""
 
-VERSION = "1.29.0"
+VERSION = "1.30.0"

@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 # percentile + benchmark_verdict: TG /benchmark gains p50/p99 + plain verdict.
 from core.net_helpers import validate_proxy, mask_proxy
 from shared.core.lanes import LANE_NAME_RE
+from shared.core.vault import VaultError
 from core.validation import finite_float
 from core.diagnostics import percentile, benchmark_verdict
 
@@ -252,10 +253,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /setkey ──────────────────────────────────────────────
 async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    deleted = True
     try:
         await update.message.delete()
-    except Exception:
-        pass
+    except Exception as e:
+        deleted = False
+        logger.warning("/setkey: could not delete the message: %s", type(e).__name__)
+        await update.effective_chat.send_message(
+            "I could not delete your message. Delete it now: it holds your key.")
 
     if not context.args:
         await update.effective_chat.send_message(
@@ -269,8 +274,10 @@ async def cmd_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_config(user_id, config)
 
     await update.effective_chat.send_message(
-        "API key saved. Your message was deleted for security.\n"
-        "Test with /balance", parse_mode="Markdown")
+        "API key saved for this Telegram bot's own betting."
+        + (" Your message was deleted for security." if deleted else "")
+        + "\nCLI lanes use the saved keys: pick one with /lanes.\nTest with /balance",
+        parse_mode="Markdown")
 
 
 # ── /benchmark ───────────────────────────────────────────
@@ -439,6 +446,10 @@ LANES_DENIED = "Only the owner can manage lanes."
 LANES_FAILED = "Could not read the lanes. Try again."
 
 
+def _vault_label(info) -> str:
+    return f"{info.label} (...{info.last4})"
+
+
 def _key_label(key_ref: str) -> str:
     """A vault key as `label (...last4)`; the bare id when the vault doesn't hold it."""
     try:
@@ -446,7 +457,7 @@ def _key_label(key_ref: str) -> str:
         info = vault_info("wolfbet", key_ref, log=logger)
     except ImportError:
         info = None
-    return f"{info.label} (...{info.last4})" if info else key_ref
+    return _vault_label(info) if info else key_ref
 
 
 def _error_suffix(e: Exception) -> str:
@@ -493,6 +504,8 @@ def _lane_buttons(data: dict) -> list:
         k = row.get("lane")
         actions = _LANE_BUTTONS[_lane_state(row)] + (("remove",) if k != 1 else ())
         rows.append([(f"{action.capitalize()} {k}", f"lane:{action}:{k}") for action in actions])
+        if k != 1:
+            rows.append([(f"Key {k}", f"lane:key:{k}"), (f"Proxy {k}", f"lane:proxy:{k}")])
     return rows
 
 
@@ -536,7 +549,8 @@ async def _lanes_refresh(query) -> None:
 
 
 _LANE_CALLBACK = re.compile(
-    r"^(lane|lanego):(pause|resume|stop|start|restart|restart_end|remove|remove_end):([1-9][0-9]?)$")
+    r"^(lane|lanego):(pause|resume|stop|start|restart|restart_end|remove|remove_end|key|proxy)"
+    r":([1-9][0-9]?)$")
 _LANE_NAMED_CALLBACK = re.compile(r"^(laneadd|lanern):([1-9][0-9]?):(.{1,32})$")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _LANE_K = re.compile(r"^[1-9][0-9]?$")
@@ -695,6 +709,13 @@ async def _lane_callback(query) -> None:
         await query.answer("Unknown button.", show_alert=True)
         return
     stage, action, k = parsed
+    if action in _PICK_KINDS:
+        if stage != "lane":
+            await query.answer("Unknown button.", show_alert=True)
+            return
+        await query.answer()
+        await _edit_text(query, *(await _account_picker(action, k, query.from_user.id)))
+        return
     await query.answer()
     if stage == "lane":
         question, keyboard = _lane_confirm(action, k)
@@ -704,6 +725,133 @@ async def _lane_callback(query) -> None:
             pass
         return
     await _edit_lanes(query, await _run_lane_action(action, k))
+
+
+_PICK_KINDS = ("key", "proxy")
+_ACCOUNT_CALLBACK = re.compile(
+    r"^(lanepick|laneuse|laneuse_end):(key|proxy):([1-9][0-9]?):([a-z0-9][a-z0-9_-]{0,31}|-)$")
+LANE_ONE_ACCOUNT = "Change lane 1's key or proxy on the dashboard Config page."
+VAULT_FAILED = "Could not read the saved keys. Try again."
+ADD_ON_DASHBOARD = "Add keys on the dashboard Keys page."
+
+
+async def _edit_text(query, text: str, keyboard) -> None:
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except BadRequest:
+        pass
+
+
+def _vault_entries(kind: str) -> list:
+    """(id, `label (...last4)`) for every saved entry of `kind`; never a secret."""
+    from shared.core.vault import Vault
+    return [(info.key_id, _vault_label(info)) for info in Vault("wolfbet").keys()
+            if info.kind == kind]
+
+
+def _vault_entry(kind: str, ref: str):
+    """`label (...last4)` of saved entry `ref` when it is of `kind`, else None."""
+    from shared.core.vault import vault_info
+    info = vault_info("wolfbet", ref, log=logger)
+    return _vault_label(info) if info is not None and info.kind == kind else None
+
+
+def _dashboard_login(user_id: int) -> str | None:
+    """A one-use dashboard sign-in link for `user_id`, or None when it isn't set up."""
+    from .config import DASHBOARD_SECRET, DASHBOARD_URL
+    if not (DASHBOARD_URL and DASHBOARD_SECRET):
+        return None
+    if dashboard_link.secret_problem(DASHBOARD_SECRET) is not None:
+        return None
+    return dashboard_link.login_url(DASHBOARD_URL, DASHBOARD_SECRET, user_id)
+
+
+async def _account_picker(kind: str, k: int, user_id: int) -> tuple:
+    """(text, keyboard) listing the saved keys or proxies lane `k` can switch to."""
+    if k == 1:
+        return LANE_ONE_ACCOUNT, InlineKeyboardMarkup([[_CANCEL]])
+    try:
+        entries = await asyncio.to_thread(_vault_entries, kind)
+    except (VaultError, OSError) as e:
+        logger.warning("lane %s picker %d: %s", kind, k, type(e).__name__)
+        return VAULT_FAILED + _error_suffix(e), InlineKeyboardMarkup([[_CANCEL]])
+    word, words = ("key", "keys") if kind == "key" else ("proxy", "proxies")
+    rows = [[InlineKeyboardButton(label, callback_data=f"lanepick:{kind}:{k}:{ref}")]
+            for ref, label in entries]
+    if kind == "proxy":
+        rows.append([InlineKeyboardButton("No proxy", callback_data=f"lanepick:proxy:{k}:-")])
+    if entries:
+        text = f"Pick a {word} for lane {k}. {ADD_ON_DASHBOARD}"
+    else:
+        text = f"No saved {words} yet. {ADD_ON_DASHBOARD}"
+    link = _dashboard_login(user_id)
+    rows.append(([InlineKeyboardButton("Open dashboard", url=link)] if link else []) + [_CANCEL])
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _parse_account_callback(data: str):
+    """(stage, kind, lane, ref or None for no proxy) from account button data, else None."""
+    m = _ACCOUNT_CALLBACK.match(data or "")
+    if not m or (m.group(4) == "-" and m.group(2) != "proxy"):
+        return None
+    return m.group(1), m.group(2), int(m.group(3)), (None if m.group(4) == "-" else m.group(4))
+
+
+def _account_label(kind: str, ref):
+    """The name to show for `ref` (None: no proxy), or None when the vault no longer has it."""
+    return "no proxy" if ref is None else _vault_entry(kind, ref)
+
+
+async def _run_account(kind: str, k: int, ref, at_end: bool) -> str:
+    """Point lane `k` at saved entry `ref`, then restart lane `k` only; the note to show."""
+    try:
+        data = await _read_lanes()
+    except _LANE_READ_ERRORS as e:
+        logger.warning("lane %s %d: %s", kind, k, type(e).__name__)
+        return LANES_FAILED + _error_suffix(e)
+    row = _lane_row(data, k)
+    if row is None:
+        return f"Lane {k} is not configured."
+    label = await asyncio.to_thread(_account_label, kind, ref)
+    if label is None:
+        return f"{ref} is no longer in the vault."
+    if kind == "key" and (row.get("state") or {}).get("key_ref") == ref:
+        return f"Lane {k} already uses {label}."
+    ok, out = await _run_wolfctl(["config-set", f"lane{k}.{kind}_ref={ref or 'off'}"], k, kind)
+    if not ok:
+        return out
+    if _lane_state(row) == "stopped":
+        return f"Lane {k} uses {label} when it starts."
+    ok, out = await _run_wolfctl(["restart", str(k), *(["--at-boundary"] if at_end else [])],
+                                 k, "restart")
+    return (_wolfctl_line(out, last=True) or f"Lane {k} uses {label}.") if ok else out
+
+
+async def _account_callback(query) -> None:
+    if not _is_owner(query.from_user.id):
+        await query.answer(LANES_DENIED, show_alert=True)
+        return
+    parsed = _parse_account_callback(query.data)
+    if parsed is None:
+        await query.answer("Unknown button.", show_alert=True)
+        return
+    stage, kind, k, ref = parsed
+    await query.answer()
+    if k == 1:
+        await _edit_text(query, LANE_ONE_ACCOUNT, InlineKeyboardMarkup([[_CANCEL]]))
+        return
+    if stage != "lanepick":
+        await _edit_lanes(query, await _run_account(kind, k, ref, stage == "laneuse_end"))
+        return
+    label = await asyncio.to_thread(_account_label, kind, ref)
+    if label is None:
+        await _edit_lanes(query, f"{ref} is no longer in the vault.")
+        return
+    tail = f"{kind}:{k}:{ref or '-'}"
+    await _edit_text(query, f"Use {label} on lane {k}? Lane {k} restarts.", InlineKeyboardMarkup([[
+        InlineKeyboardButton("Use now", callback_data=f"laneuse:{tail}"),
+        InlineKeyboardButton("At session end", callback_data=f"laneuse_end:{tail}"),
+        _CANCEL]]))
 
 
 async def _named_lane_callback(query) -> None:
@@ -2035,7 +2183,7 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning("/web: WOLFBET_TG_DASHBOARD_SECRET %s; no sign-in link sent", problem)
         await update.message.reply_text(NOT_SET_UP)
         return
-    link = dashboard_link.login_url(DASHBOARD_URL, DASHBOARD_SECRET, update.effective_user.id)
+    link = _dashboard_login(update.effective_user.id)
     await update.message.reply_text(
         f"🌐 *Web Dashboard*\n\n"
         f"[Open Dashboard]({link})\n\n"
@@ -2049,6 +2197,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.data == "lanes_refresh":
         await _lanes_refresh(query)
+        return
+    if (query.data or "").startswith(("lanepick:", "laneuse:", "laneuse_end:")):
+        await _account_callback(query)
         return
     if (query.data or "").startswith(("laneadd:", "lanern:")):
         await _named_lane_callback(query)

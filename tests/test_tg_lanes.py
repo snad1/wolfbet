@@ -172,8 +172,11 @@ def test_each_lane_gets_the_buttons_its_state_allows():
         [("Pause 1", "lane:pause:1"), ("Restart 1", "lane:restart:1"), ("Stop 1", "lane:stop:1")],
         [("Resume 2", "lane:resume:2"), ("Restart 2", "lane:restart:2"), ("Stop 2", "lane:stop:2"),
          ("Remove 2", "lane:remove:2")],
+        [("Key 2", "lane:key:2"), ("Proxy 2", "lane:proxy:2")],
         [("Start 3", "lane:start:3"), ("Remove 3", "lane:remove:3")],
+        [("Key 3", "lane:key:3"), ("Proxy 3", "lane:proxy:3")],
         [("Restart 4", "lane:restart:4"), ("Stop 4", "lane:stop:4"), ("Remove 4", "lane:remove:4")],
+        [("Key 4", "lane:key:4"), ("Proxy 4", "lane:proxy:4")],
     ]
     for row in tg_handlers._lane_buttons(LANES):
         assert all(len(cb.encode()) <= 64 for _, cb in row)
@@ -446,3 +449,216 @@ def test_another_chat_tapping_add_is_refused(ctl):
     assert _tap("laneadd:1:x", OWNER_ID + 1) == [
         ("answer", "Only the owner can manage lanes.", {"show_alert": True})]
     assert ctl.calls == []
+
+
+VAULT = {
+    "default": ("key", "default", "9f3c"),
+    "friend": ("key", "friend", "a1b2"),
+    "home": ("proxy", "home proxy", "8080"),
+}
+
+
+@pytest.fixture
+def vault(monkeypatch):
+    import shared.core.vault as shared_vault
+    entries = dict(VAULT)
+
+    def info(key_id):
+        if key_id not in entries:
+            return None
+        kind, label, last4 = entries[key_id]
+        return shared_vault.KeyInfo(key_id, label, kind, None, last4, "2026-11-25", None)
+
+    class FakeVault:
+        def __init__(self, service, *a, **kw):
+            assert service == "wolfbet"
+
+        def keys(self):
+            return [info(k) for k in sorted(entries)]
+
+        def info(self, key_id):
+            return info(key_id)
+
+        def secret(self, key_id):
+            raise AssertionError("the secret must never be read for Telegram")
+
+    monkeypatch.setattr(shared_vault, "Vault", FakeVault)
+    monkeypatch.setattr(shared_vault, "vault_info", lambda service, key_id, log=None: info(key_id))
+    monkeypatch.setattr(tg_handlers, "_dashboard_login", lambda uid: None)
+    return entries
+
+
+def test_the_key_picker_lists_saved_keys_by_label_and_last4_only(ctl, vault):
+    kind, text, kw = _tap("lane:key:2")[1]
+    assert (kind, text) == ("edit", "Pick a key for lane 2. Add keys on the dashboard Keys page.")
+    assert _buttons(kw["reply_markup"]) == [
+        [("default (...9f3c)", "lanepick:key:2:default")],
+        [("friend (...a1b2)", "lanepick:key:2:friend")],
+        [("Cancel", "lanes_refresh")]]
+    assert ctl.calls == []
+
+
+def test_the_proxy_picker_lists_proxies_and_no_proxy(ctl, vault):
+    _, text, kw = _tap("lane:proxy:4")[1]
+    assert text == "Pick a proxy for lane 4. Add keys on the dashboard Keys page."
+    assert _buttons(kw["reply_markup"]) == [
+        [("home proxy (...8080)", "lanepick:proxy:4:home")],
+        [("No proxy", "lanepick:proxy:4:-")],
+        [("Cancel", "lanes_refresh")]]
+
+
+def test_an_empty_vault_points_at_the_dashboard_with_a_sign_in_button(ctl, vault, monkeypatch):
+    vault.clear()
+    monkeypatch.setattr(tg_handlers, "_dashboard_login", lambda uid: "https://dash.test/tg/login#t")
+    _, text, kw = _tap("lane:key:2")[1]
+    assert text == "No saved keys yet. Add keys on the dashboard Keys page."
+    (open_btn, cancel), = kw["reply_markup"].inline_keyboard
+    assert (open_btn.text, open_btn.url) == ("Open dashboard", "https://dash.test/tg/login#t")
+    assert cancel.callback_data == "lanes_refresh"
+
+
+def test_an_unreadable_vault_gives_a_safe_message(ctl, vault, monkeypatch):
+    import shared.core.vault as shared_vault
+    monkeypatch.setattr(tg_handlers, "APP_ENV", "production")
+
+    class Broken:
+        def __init__(self, *a, **kw):
+            raise shared_vault.VaultError("the vault key file is damaged")
+
+    monkeypatch.setattr(shared_vault, "Vault", Broken)
+    assert _tap("lane:key:2")[1][1] == "Could not read the saved keys. Try again."
+
+
+@pytest.mark.parametrize("data", ["lane:key:1", "lanepick:key:1:friend", "laneuse:proxy:1:-"])
+def test_lane_1_keeps_its_account_off_telegram(ctl, vault, data):
+    assert _tap(data)[1][1] == "Change lane 1's key or proxy on the dashboard Config page."
+    assert ctl.calls == []
+
+
+@pytest.mark.parametrize("data", [
+    "lanego:key:2", "lanepick:key:2:-", "lanepick:key:2:Friend", "lanepick:key:2:-x",
+    "laneuse:key:2:friend;rm", "lanepick:secret:2:friend", "laneuse:key:0:friend",
+    "lanepick:key:2:" + "a" * 33, "laneuse_end:proxy:2"])
+def test_forged_account_buttons_are_refused(ctl, vault, data):
+    assert _tap(data) == [("answer", "Unknown button.", {"show_alert": True})]
+    assert ctl.calls == []
+
+
+def test_another_chat_picking_a_key_is_refused(ctl, vault):
+    assert _tap("laneuse:key:2:friend", OWNER_ID + 1) == [
+        ("answer", "Only the owner can manage lanes.", {"show_alert": True})]
+    assert ctl.calls == []
+
+
+def test_picking_a_key_asks_now_or_at_session_end(ctl, vault):
+    _, text, kw = _tap("lanepick:key:4:friend")[1]
+    assert text == "Use friend (...a1b2) on lane 4? Lane 4 restarts."
+    assert _buttons(kw["reply_markup"]) == [[("Use now", "laneuse:key:4:friend"),
+                                             ("At session end", "laneuse_end:key:4:friend"),
+                                             ("Cancel", "lanes_refresh")]]
+    assert all(len(cb.encode()) <= 64 for row in _buttons(kw["reply_markup"]) for _, cb in row)
+    assert ctl.calls == []
+
+
+def test_a_key_deleted_since_the_list_runs_nothing(ctl, vault):
+    del vault["friend"]
+    assert _tap("lanepick:key:4:friend")[1][1].startswith("friend is no longer in the vault.")
+    assert _tap("laneuse:key:4:friend")[1][1].startswith("friend is no longer in the vault.")
+    assert _ran(ctl) == []
+
+
+def _run_ok(ctl, monkeypatch, outputs):
+    real = tg_handlers.subprocess.run
+
+    def run(cmd, **kw):
+        if cmd[1:] == ["lanes", "--json"]:
+            return real(cmd, **kw)
+        ctl.calls.append((cmd, kw))
+        rc, out = outputs.pop(0)
+        return types.SimpleNamespace(returncode=rc, stdout=out, stderr="")
+
+    monkeypatch.setattr(tg_handlers.subprocess, "run", run)
+
+
+@pytest.mark.parametrize("data, argv", [
+    ("laneuse:key:4:friend", [[CTL, "config-set", "lane4.key_ref=friend"], [CTL, "restart", "4"]]),
+    ("laneuse_end:key:4:friend", [[CTL, "config-set", "lane4.key_ref=friend"],
+                                  [CTL, "restart", "4", "--at-boundary"]]),
+    ("laneuse:proxy:2:-", [[CTL, "config-set", "lane2.proxy_ref=off"], [CTL, "restart", "2"]]),
+    ("laneuse:proxy:2:home", [[CTL, "config-set", "lane2.proxy_ref=home"], [CTL, "restart", "2"]]),
+])
+def test_using_a_key_sets_that_lane_and_restarts_only_it(ctl, vault, monkeypatch, caplog,
+                                                         data, argv):
+    _run_ok(ctl, monkeypatch, [(0, "Lane config updated\n"),
+                               (0, "Lane 4 restarted. Other lanes keep betting.\n")])
+    caplog.set_level("DEBUG")
+    text = _tap(data)[1][1]
+    assert _ran(ctl) == argv
+    assert all(kw["timeout"] == 30 and "shell" not in kw
+               for cmd, kw in ctl.calls if cmd[1:] != ["lanes", "--json"])
+    assert text.startswith("Lane 4 restarted. Other lanes keep betting.\n\n")
+    assert SECRET not in text and SECRET not in caplog.text
+
+
+def test_a_stopped_lane_gets_the_key_without_a_restart(ctl, vault, monkeypatch):
+    _run_ok(ctl, monkeypatch, [(0, "Lane config updated\n")])
+    assert _tap("laneuse:key:3:friend")[1][1].startswith(
+        "Lane 3 uses friend (...a1b2) when it starts.\n\n")
+    assert _ran(ctl) == [[CTL, "config-set", "lane3.key_ref=friend"]]
+
+
+def test_a_key_the_lane_already_uses_runs_nothing(ctl, vault):
+    assert _tap("laneuse:key:2:friend")[1][1].startswith("Lane 2 already uses friend (...a1b2).")
+    assert _ran(ctl) == []
+
+
+def test_a_failed_config_set_shows_the_cli_line_and_does_not_restart(ctl, vault, monkeypatch):
+    _run_ok(ctl, monkeypatch, [(2, "Invalid lane4 override: no key named friend in the vault\n")])
+    assert _tap("laneuse:key:4:friend")[1][1].startswith(
+        "Invalid lane4 override: no key named friend in the vault\n\n")
+    assert len(_ran(ctl)) == 1
+
+
+def test_a_missing_lane_is_refused(ctl, vault):
+    assert _tap("laneuse:key:9:friend")[1][1].startswith("Lane 9 is not configured.")
+    assert _ran(ctl) == []
+
+
+def _setkey(delete_fails=False):
+    sent, deleted = [], []
+
+    async def delete():
+        if delete_fails:
+            raise RuntimeError("Message can't be deleted")
+        deleted.append(True)
+
+    async def send_message(text, **kw):
+        sent.append(text)
+
+    upd = types.SimpleNamespace(
+        effective_user=types.SimpleNamespace(id=OWNER_ID),
+        effective_chat=types.SimpleNamespace(send_message=send_message),
+        message=types.SimpleNamespace(delete=delete))
+    return upd, sent, deleted
+
+
+def test_setkey_deletes_the_message_and_never_echoes_the_key(monkeypatch, caplog):
+    saved = {}
+    monkeypatch.setattr(tg_handlers, "load_user_config", lambda uid: {})
+    monkeypatch.setattr(tg_handlers, "save_user_config", lambda uid, cfg: saved.update(cfg))
+    upd, sent, deleted = _setkey()
+    asyncio.run(tg_handlers.cmd_setkey(upd, types.SimpleNamespace(args=[SECRET])))
+    assert deleted == [True] and saved["api_key"] == SECRET
+    assert "own betting" in sent[0] and "pick one with /lanes" in sent[0]
+    assert "was deleted" in sent[0]
+    assert all(SECRET not in t for t in sent) and SECRET not in caplog.text
+
+
+def test_setkey_warns_when_the_message_could_not_be_deleted(monkeypatch):
+    monkeypatch.setattr(tg_handlers, "load_user_config", lambda uid: {})
+    monkeypatch.setattr(tg_handlers, "save_user_config", lambda uid, cfg: None)
+    upd, sent, _ = _setkey(delete_fails=True)
+    asyncio.run(tg_handlers.cmd_setkey(upd, types.SimpleNamespace(args=[SECRET])))
+    assert sent[0] == "I could not delete your message. Delete it now: it holds your key."
+    assert "was deleted" not in sent[1]
+    assert all(SECRET not in t for t in sent)

@@ -31,7 +31,7 @@ def test_wolfbet_version():
 
 
 def test_tg_version():
-    assert tg.VERSION == "1.29.0"
+    assert tg.VERSION == "1.30.0"
 
 
 # ── Seeded temp DB ───────────────────────────────────────
