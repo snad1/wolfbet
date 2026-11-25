@@ -321,11 +321,14 @@ def test_error_docs_for_bad_input_and_missing_files(env, capsys, monkeypatch, tm
     assert _error_doc(capsys, "status", lambda: wb.cmd_status(as_json=True),
                       exit_code=1)["code"] == "state_unreadable"
     monkeypatch.setattr(wb, "STATE_PATH", str(tmp_path / "none.json"))
-    assert _error_doc(capsys, "status", lambda: wb.cmd_status(as_json=True),
-                      exit_code=0)["code"] == "no_session"
+    wb.cmd_status(as_json=True)
+    doc = json.loads(capsys.readouterr().out)
+    assert (doc["running"], doc["state"]) == (False, None)
     monkeypatch.setattr(wb, "_BASE_STATE_PATH", str(tmp_path / "none.json"))
-    assert _error_doc(capsys, "lanes-status",
-                      lambda: wb.cmd_lanes_status(as_json=True))["code"] == "no_session"
+    wb.cmd_lanes_status(as_json=True)
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["lanes"][0]["lane"] == 1
+    assert all(not r["alive"] and r["state"] is None for r in doc["lanes"])
     monkeypatch.setattr(wb, "CONFIG_PATH", str(tmp_path / "none-config.json"))
     assert _error_doc(capsys, "config-show", lambda: wb.cmd_config_show(as_json=True),
                       exit_code=1)["code"] == "no_config"

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.64.0 / wolfctl v3.28 - every lane is seen and starts with the bot; rolling restart of all lanes (2026-11-25)
+
+- `wolfctl start 1` and `wolfctl restart 1` now also start the enabled lanes that are not running, like `wolfctl start` already did. Lanes added while the bot was stopped used to stay idle when the bot came back through lane 1. Running lanes are never restarted by this; `wolfctl stop 1` still stops lane 1 alone.
+- `wolfctl restart --rolling` asks every running lane to restart on its saved config at its own session end, so no lane is cut mid-session; lanes that are not running are named with the command that starts them. The plain `wolfctl restart` (every lane now) stays for emergencies over SSH.
+- A registered lane that never ran (no state file yet) is now listed: `wolfctl lanes` shows it as `NOT RUNNING`, `--lanes-status --json` includes it with `alive: false` and no state, and `--status --json --lane K` answers `{"running": false, "state": null}` instead of an error. The dashboard and Telegram `/lanes` can then show and start it.
+
+**Tests**: `tests/test_phase11i_wolfctl_verbs.py` (lane 1 start and restart bring up idle lanes, stop touches no other lane, rolling restart asks running lanes only and needs a running bot), `tests/test_phase10_lanes.py` (never-ran lane listed, status says not running), `tests/test_phase11g_json_outputs.py`. Version pins updated.
+
+`VERSION` `2.63.0` -> `2.64.0`; wolfctl `v3.27` -> `v3.28`.
+
 ## wolfctl v3.27 - removed lanes leave nothing behind; session-end requests on a stopped lane; reset keeps the WAL with its database (2026-11-25)
 
 - `wolfctl lane remove K` now deletes the lane's live state, pid, run and session-end files once its unit is stopped. Its sessions and bets stay in the database. Left behind, those files kept the dashboard showing a removed lane.

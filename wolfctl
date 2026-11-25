@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WolfBet AutoBot - Unified Management Command v3.27
+# WolfBet AutoBot - Unified Management Command v3.28
 # Wrapped in { } so bash reads entire script before executing -
 # prevents corruption when cmd_update replaces this file mid-run.
 {
@@ -31,6 +31,8 @@ WEB_SERVICE="wolfbet-web"
 # v3.26 - update rolls: each lane restarts on the new code at its session end; --critical now
 # v3.27 - lane remove clears the lane's state, pid, run and session-end files; a session-end
 #         remove or restart of a stopped lane acts at once or says so; reset moves the WAL along
+# v3.28 - restart --rolling restarts every running lane at its own session end; starting or
+#         restarting lane 1 also starts the enabled lanes that are not running
 # v3.20 - stop-all stops every lane and fails unless systemd confirms the bots are down
 LANE_SERVICE="wolfbet-lane"
 LANE_ID_MAX=99
@@ -56,6 +58,7 @@ usage() {
     echo "    wolfctl stop [K]      Stop CLI bot, or only lane K; the other lanes keep betting"
     echo "    wolfctl restart [K]   Restart CLI bot, or only lane K"
     echo "    wolfctl restart K --at-boundary      Restart lane K when its session ends"
+    echo "    wolfctl restart --rolling            Restart every running lane at its own session end"
     echo "    wolfctl restart K --cancel-boundary  Forget a session-end restart or removal"
     echo "    wolfctl status        Show CLI bot status (--json: session state only)"
     echo "    wolfctl monitor [K]   Attach live TUI to running daemon (lane K, default 1)"
@@ -530,6 +533,11 @@ cmd_lane_unit() {
             case "$state" in inactive|failed) ;; *) echo "Lane $k is still $state." >&2; exit 1 ;; esac
             echo "Lane $k stopped. Other lanes keep betting." ;;
     esac
+    # Lanes 2+ run beside lane 1: bringing lane 1 up starts the enabled lanes that are not
+    # running yet, and leaves the running ones alone.
+    if [ "$k" -eq 1 ] && [ "$verb" != stop ]; then
+        sync_lanes
+    fi
 }
 
 cmd_stop() {
@@ -558,6 +566,14 @@ cmd_restart() {
         '') ;;
         *) echo "Usage: wolfctl restart K [--at-boundary|--cancel-boundary]" >&2; exit 2 ;;
     esac
+    if [ "${1:-}" = "--rolling" ]; then
+        [ $# -eq 1 ] || { echo "Usage: wolfctl restart --rolling" >&2; exit 2; }
+        systemctl --user is-active --quiet "$SERVICE" 2>/dev/null \
+            || { echo "The CLI bot is not running; start it with: wolfctl start" >&2; exit 1; }
+        roll_lanes "on its saved config"
+        echo "Every other lane keeps betting until its own session ends."
+        return
+    fi
     if [ -n "${1:-}" ]; then cmd_lane_unit restart "$1"; return; fi
     stop_all_lanes
     systemctl --user restart "$SERVICE"
@@ -672,7 +688,7 @@ cmd_config_show() {
 
 cmd_version() {
     "$PYTHON" "$BOT" --version
-    echo "  wolfctl v3.27"
+    echo "  wolfctl v3.28"
 }
 
 # ── v2.25.0 parity - mutation ──────────────────────────
@@ -1075,18 +1091,20 @@ repo_code_line() {
     fi
 }
 
-# Ask every running lane to restart on the installed code at its own session end.
+# Ask every running lane to restart at its own session end; $1 says what the restart brings.
 roll_lanes() {
-    local k
+    local k what=${1:-on the new code}
     for k in $(lane_ids); do
-        systemctl --user is-active --quiet "$(lane_unit "$k")" 2>/dev/null || continue
+        if ! systemctl --user is-active --quiet "$(lane_unit "$k")" 2>/dev/null; then
+            [ "$what" = "on the new code" ] || echo "Lane $k is not running; start it with: wolfctl start $k"
+            continue
+        fi
         if "$PYTHON" "$BOT" --lane-drain "$k" restart >/dev/null; then
-            echo "Lane $k restarts on the new code when its session ends."
+            echo "Lane $k restarts $what when its session ends."
         else
-            echo "Lane $k: could not ask for a restart; it stays on the old code until restarted." >&2
+            echo "Lane $k: could not ask for a restart; it keeps running as it is until restarted." >&2
         fi
     done
-    echo "Betting goes on; use wolfctl update --critical to restart every lane now."
 }
 
 cmd_update() {
@@ -1237,6 +1255,7 @@ cmd_update() {
     # --resume preserves session state across the restart.
     if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null && [ "$critical" = "0" ]; then
         roll_lanes
+        echo "Betting goes on; use wolfctl update --critical to restart every lane now."
     elif systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
         stop_all_lanes
         systemctl --user restart "$SERVICE"

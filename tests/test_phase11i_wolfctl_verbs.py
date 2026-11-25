@@ -321,7 +321,7 @@ def test_usage_lists_verbs_and_exit_codes(host):
     for verb in ("wolfctl pause [K|all]", "wolfctl resume [K|all]", "wolfctl reload [K|all]"):
         assert verb in out
     assert "3 needs confirmation and there is no terminal" in out
-    assert "wolfctl v3.27" in _wolfctl(host, "version").stdout
+    assert "wolfctl v3.28" in _wolfctl(host, "version").stdout
 
 
 def test_wolfctl_syntax_valid():
@@ -391,7 +391,52 @@ def test_start_lane_one_checks_the_main_service_came_up(host):
     _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
     r = _wolfctl(host, "start", "1")
     assert r.returncode == 0 and "Lane 1 started." in r.stdout
-    assert _systemctl_calls(host) == ["--user start wolfbet"]
+    calls = _systemctl_calls(host)
+    assert calls[0] == "--user start wolfbet"
+    assert "--user enable --now wolfbet-lane@2" in calls
+    assert "--user enable --now wolfbet-lane@3" in calls
+    assert not any(c.startswith(("--user stop", "--user restart", "--user disable")) for c in calls)
+
+
+def test_restarting_lane_one_also_brings_up_lanes_that_are_not_running(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "1 5\n")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet\n")
+    r = _wolfctl(host, "restart", "1")
+    assert r.returncode == 0, r.stderr
+    calls = _systemctl_calls(host)
+    assert calls[0] == "--user restart wolfbet"
+    assert "--user enable --now wolfbet-lane@5" in calls
+
+
+def test_stopping_lane_one_touches_no_other_lane(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "1 5\n")
+    r = _wolfctl(host, "stop", "1")
+    assert r.returncode == 0, r.stderr
+    assert _systemctl_calls(host) == ["--user stop wolfbet"]
+
+
+def test_rolling_restart_asks_each_running_lane_and_restarts_none_now(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "1 5 6\n")
+    _write(os.path.join(host["home"], "active.txt"), "wolfbet\nwolfbet-lane@5\n")
+    r = _wolfctl(host, "restart", "--rolling")
+    assert r.returncode == 0, r.stderr
+    assert "Lane 1 restarts on its saved config when its session ends." in r.stdout
+    assert "Lane 5 restarts on its saved config when its session ends." in r.stdout
+    assert "Lane 6 is not running; start it with: wolfctl start 6" in r.stdout
+    drains = [c for c in _python_calls(host) if "--lane-drain" in c]
+    assert [d.split("--lane-drain ")[1] for d in drains] == ["1 restart", "5 restart"]
+    assert _systemctl_calls(host) == []
+
+
+def test_rolling_restart_needs_a_running_bot(host):
+    _saved_config(host)
+    _write(os.path.join(host["home"], "lanes.txt"), "1 5\n")
+    r = _wolfctl(host, "restart", "--rolling")
+    assert r.returncode == 1 and "start it with: wolfctl start" in r.stderr
+    assert not any("--lane-drain" in c for c in _python_calls(host))
 
 
 def test_start_one_lane_needs_a_saved_config(host):

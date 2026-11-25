@@ -521,6 +521,32 @@ def test_lanes_status_table_names_lanes_once_one_is_named(monkeypatch, tmp_path,
     assert "Name" in out and "friend-A" in out and "#12" in out
 
 
+def test_a_lane_that_never_ran_is_listed_not_running(monkeypatch, tmp_path, capsys):
+    base = str(tmp_path / "live.json")
+    monkeypatch.setattr(wb, "_BASE_STATE_PATH", base)
+    monkeypatch.setattr(wb.console, "width", 160)
+    with open(base, "w") as f:
+        json.dump({"pid": os.getpid(), "session_id": 3, "profit": 0.0}, f)
+    _config(monkeypatch, tmp_path, {**BASE, "lanes": {"items": {
+        "1": {"name": "Lane 1", "enabled": True, "overrides": {}},
+        "5": {"name": "l2", "enabled": True, "overrides": {}}}}})
+    data = wb._lanes_status_data()
+    assert [(r["lane"], r["alive"], r["state"] is None) for r in data["lanes"]] == [
+        (1, True, False), (5, False, True)]
+    assert data["totals"]["live"] == 1
+    wb.cmd_lanes_status()
+    assert "NOT RUNNING" in capsys.readouterr().out
+
+
+def test_status_of_a_lane_that_never_ran_says_not_running(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(wb, "STATE_PATH", str(tmp_path / "live.lane5.json"))
+    wb.cmd_status(as_json=True)
+    doc = json.loads(capsys.readouterr().out)
+    assert (doc["running"], doc["state"]) == (False, None)
+    wb.cmd_status()
+    assert "No running session found." in capsys.readouterr().out
+
+
 # ── wolfctl + systemd wiring ──────────────────────────────
 def _src(name):
     return open(os.path.join(_WOLFBET_DIR, name)).read()

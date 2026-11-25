@@ -1015,7 +1015,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.63.0"
+VERSION      = "2.64.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -6821,11 +6821,13 @@ def _span_range(span: dict) -> tuple:
 #  --status COMMAND
 # ══════════════════════════════════════════════════════════
 def _read_lane_states() -> list:
-    """v2.35.0: [(lane, state-dict | None, alive)] for registry lanes that have a state file."""
+    """[(lane, state-dict | None, alive)] for every registry lane; a lane that never ran (no
+    state file) is listed as not alive, so a lane that should bet but doesn't is still seen."""
     out = []
     for k in _lane_ids(_read_config_raw()):
         path = _lane_path(_BASE_STATE_PATH, k)
         if not os.path.exists(path):
+            out.append((k, None, False))
             continue
         try:
             with open(path) as f:
@@ -6898,7 +6900,8 @@ def cmd_lanes_status(as_json: bool = False):
         k, d, alive = row["lane"], row["state"], row["alive"]
         lead = (str(k), escape(names.get(k, ""))) if names else (str(k),)
         if d is None:
-            t.add_row(*lead, "[red]unreadable[/]", *["-"] * 8)
+            never = not os.path.exists(_lane_path(_BASE_STATE_PATH, k))
+            t.add_row(*lead, "[red]NOT RUNNING[/]" if never else "[red]unreadable[/]", *["-"] * 8)
             continue
         p = float(d.get("profit", 0) or 0)
         bps = float(d.get("bets_per_second", 0) or 0) if alive else 0.0
@@ -6959,9 +6962,10 @@ def cmd_events_check() -> None:
 
 
 def _status_data() -> dict:
-    """This lane's state file as the daemon wrote it, and whether its pid is alive."""
+    """This lane's state file as the daemon wrote it, and whether its pid is alive; a lane with
+    no state file yet is simply not running."""
     if not os.path.exists(STATE_PATH):
-        raise _CliError("no_session", "No running session found.", exit_code=0)
+        return {"running": False, "state": None}
     try:
         with open(STATE_PATH) as f:
             d = json.load(f)
@@ -6979,6 +6983,9 @@ def cmd_status(as_json: bool = False):
         return
     if as_json:
         _print_json(data)
+        return
+    if data["state"] is None:
+        console.print("No running session found.")
         return
     d, alive = data["state"], data["running"]
 
