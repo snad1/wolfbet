@@ -245,8 +245,8 @@ def test_dry_run_reports_the_diff_and_writes_and_signals_nothing(env, capsys):
     assert code == 0
     assert _files() == before and env["kills"] == []
     base = {e["key"]: e for e in doc["base"]}
-    assert base["lanes"] == {"key": "lanes", "old": 3, "new": 4, "apply": "restart"}
-    assert base["lane_split"]["new"] == "none" and base["lane_split"]["apply"] == "restart"
+    assert base["lanes"] == {"key": "lanes", "old": 3, "new": 4, "apply": "live"}
+    assert base["lane_split"]["new"] == "none" and base["lane_split"]["apply"] == "live"
     assert base["max_loss"] == {"key": "max_loss", "old": 0.005, "new": 0.02, "apply": "live"}
     assert base["recurring_delay"]["new"] == 86400.0
     assert base["multiplier"]["apply"] == "restart"
@@ -259,6 +259,23 @@ def test_dry_run_reports_the_diff_and_writes_and_signals_nothing(env, capsys):
         "3": [{"key": "streak_delay_loss", "old": None, "new": [2, 3.0], "apply": "live",
                "removed": False}]}
     assert doc["warnings"] == ["recurring_delay clamped from 99999 to 86400 (allowed: 0..86400)"]
+
+
+def test_dry_run_says_a_budget_split_waits_for_each_lane_restart(env, capsys):
+    doc, code = _dry(env, capsys, "lanes=4", "lane_split=budget")
+    assert code == 0
+    base = {e["key"]: e for e in doc["base"]}
+    assert base["lanes"]["apply"] == "live"
+    assert base["lane_split"] == {"key": "lane_split", "old": "bet", "new": "budget",
+                                  "apply": "restart"}
+    assert doc["warnings"] == ["Budget shares update when each lane restarts: wolfctl restart K."]
+
+
+def test_dry_run_of_a_split_without_budget_applies_live(env, capsys):
+    doc, code = _dry(env, capsys, "lane_split=none")
+    assert code == 0
+    assert {e["key"]: e["apply"] for e in doc["base"]} == {"lane_split": "live"}
+    assert doc["warnings"] == []
 
 
 def test_dry_run_never_prints_a_secret(env, capsys):

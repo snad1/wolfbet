@@ -78,10 +78,11 @@ try:
         lane_overrides as _shared_lane_overrides, request_drain, take_drain,
         next_lane_id as _next_lane_id, registry_block as _lanes_block,
         set_enabled_count as _set_enabled_count, split_registry_pairs as _split_lane_pairs,
+        account_lanes, lane_account,
     )
-    from shared.core.vault import vault_info, vault_secret
+    from shared.core.vault import check_secret, vault_info, vault_secret
 except ImportError:
-    print("casino-shared 0.10.0 or newer is needed: run wolfctl update", file=sys.stderr)
+    print("casino-shared 0.11.0 or newer is needed: run wolfctl update", file=sys.stderr)
     sys.exit(1)
 
 # ══════════════════════════════════════════════════════════
@@ -1014,7 +1015,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.61.2"
+VERSION      = "2.61.3"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -1179,18 +1180,12 @@ def _split_bet_divisor() -> int:
 
 def _lane_account(data: dict, lane: int) -> tuple:
     """(key_ref, currency, proxy, proxy_ref) lane `lane` bets with: base values, then its overrides."""
-    merged = {**data, **_lane_overrides(data, lane)}
-    return (merged.get("key_ref") or VAULT_KEY_ID, merged.get("currency"),
-            merged.get("proxy"), merged.get("proxy_ref"))
+    return lane_account(data, lane, _LANE_FORBIDDEN_KEYS, VAULT_KEY_ID)
 
 
 def _split_lanes(data: dict, lane: int) -> int:
-    """Enabled lanes on the same account (key and currency) as `lane`: a split never pools
-    the balances of different accounts."""
-    reg = _lane_registry(data)
-    mine = _lane_account(data, lane)[:2]
-    return sum(1 for k, entry in reg.items()
-               if entry["enabled"] and _lane_account(data, k)[:2] == mine) or 1
+    """Enabled lanes on the same account (key and currency) as `lane`."""
+    return account_lanes(data, lane, _LANE_FORBIDDEN_KEYS, VAULT_KEY_ID)
 
 
 def _key_lanes(data: dict, lane: int) -> int:
@@ -1265,7 +1260,6 @@ def _mask_key(key: str) -> str:
 VAULT_SERVICE = "wolfbet"
 VAULT_KEY_ID = "default"
 TG_KEY_ID = "telegram"
-TG_TOKEN_RE = re.compile(r"^\d{5,12}:[A-Za-z0-9_-]{30,64}$")
 
 
 def _vault():
@@ -1340,10 +1334,6 @@ def _sync_vault_key() -> None:
     logger.info("API key removed from %s; the vault keeps it", CONFIG_PATH)
 
 
-KEY_SECRET_RE = re.compile(r"^[\x21-\x7e]{8,4096}$")
-KEY_SECRET_HELP = "the key must be 8-4096 printable characters with no spaces"
-
-
 def _key_users(key_id: str, kind: str = "key") -> list:
     """The enabled lanes that bet with vault entry `key_id`: as their key, or their proxy."""
     accounts = _lane_accounts(_read_config_raw())
@@ -1363,19 +1353,10 @@ def _read_key_secret(kind: str = "key") -> str:
     A proxy must be an http, https or socks5 URL; a refusal never repeats what was sent.
     """
     secret = sys.stdin.readline().rstrip("\r\n")
-    if not KEY_SECRET_RE.match(secret):
-        raise _CliError("invalid_secret", KEY_SECRET_HELP, style="red", exit_code=2)
-    if kind == "telegram" and not TG_TOKEN_RE.match(secret):
-        raise _CliError("invalid_secret", "That doesn't look like a Telegram bot token.",
-                        style="red", exit_code=2)
-    if kind == "proxy":
-        try:
-            ok = _validate_proxy(secret) is not None
-        except ValueError:
-            ok = False
-        if not ok:
-            raise _CliError("invalid_secret", "a proxy must be an http://, https:// or socks5:// "
-                            "URL", style="red", exit_code=2)
+    try:
+        check_secret(secret, kind)
+    except ValueError as e:
+        raise _CliError("invalid_secret", str(e), style="red", exit_code=2) from None
     return secret
 
 
@@ -7909,10 +7890,13 @@ def _config_dry_run_data(plan: dict) -> dict:
         return {"key": key, "old": _config_show_value(key, old), "new": _config_show_value(key, new),
                 "apply": "live" if key in _LIVE_RELOAD_KEYS or key == "name" else "restart"}
 
-    base, lanes = [], {}
-    for c in (plan["lanes"] or {}).get("changes", []):
+    base, lanes, warnings = [], {}, []
+    lane_plan = plan["lanes"] or {}
+    for c in lane_plan.get("changes", []):
         if c["lane"] is None:
-            base.append({**entry(c["key"], c["old"], c["new"]), "apply": "restart"})
+            # Count and bet shares change without a restart; budget shares wait for each lane's.
+            budget = c["key"] == "lane_split" and bool({c["old"], c["new"]} & {"budget", "both"})
+            base.append({**entry(c["key"], c["old"], c["new"]), "apply": "restart" if budget else "live"})
         else:
             lanes.setdefault(str(c["lane"]), []).append(
                 {**entry(c["key"], c["old"], c["new"]), "removed": c["removed"]})
@@ -7922,7 +7906,10 @@ def _config_dry_run_data(plan: dict) -> dict:
         for k in list(plan["parsed"]) + derived:
             old = plan["old"][k] if k in plan["old"] else plan["before"][k]
             base.append(entry(k, old, getattr(state, k, None)))
-    warnings = [m[1:].strip() for m in plan["msgs"] if isinstance(m, str) and m.startswith("⚠")]
+    if (any(c["lane"] is None for c in lane_plan.get("changes", []))
+            and _lane_split(lane_plan["raw"]) in ("budget", "both")):
+        warnings.append("Budget shares update when each lane restarts: wolfctl restart K.")
+    warnings += [m[1:].strip() for m in plan["msgs"] if isinstance(m, str) and m.startswith("⚠")]
     return {"base": base, "lanes": lanes, "warnings": warnings}
 
 

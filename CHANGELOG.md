@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.61.3 - a lane-count preview no longer says restart (2026-11-24)
+
+- `--config-dry-run` (the dashboard's **Preview** on the Lanes page) marked every `lanes` and `lane_split` change as `restart`, although `wolfctl lanes N` only starts or stops the lanes that differ and the running lanes keep betting. A count change, and a split change between `none` and `bet`, now say `live`.
+- A split change to or from `budget` or `both` still says `restart`, because budget shares apply when each lane restarts. Any lane-count or split preview with a budget split also carries the warning `Budget shares update when each lane restarts: wolfctl restart K.`
+
+**Tests**: `tests/test_phase11h_config_schema.py` (count and split live, budget split restart plus warning). Version pins updated.
+
+`VERSION` `2.61.2` -> `2.61.3`.
+
+## v2.61.3 - lane accounts and secret checks come from casino-shared (2026-11-25)
+
+- `_lane_account`, `_split_lanes` and the checks on a key, proxy or Telegram token sent to the vault now use casino-shared 0.11.0. Nothing changes in what the bot or `wolfctl` does or prints. With an older casino-shared the CLI prints `casino-shared 0.11.0 or newer is needed: run wolfctl update`.
+
+**Tests**: the whole suite passes unchanged. The version pins are updated.
+
+`VERSION` `2.61.2` -> `2.61.3`.
+
 ## v2.61.2 - lane registry writes come from casino-shared (2026-11-24)
 
 - The config-set lane pair parser, the next lane id, the enabled-count change and the written `lanes` block now come from casino-shared 0.10.0 instead of copies in `wolfbet.py`, so goated and the other bots use the same code. Nothing changes in what the bot or `wolfctl` does or prints.
