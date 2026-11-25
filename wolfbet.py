@@ -1015,7 +1015,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.64.0"
+VERSION      = "2.65.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -4212,14 +4212,15 @@ def _db_start_session() -> int:
     c.execute("""
         INSERT INTO sessions
             (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane,
-             config_snapshot)
-        VALUES (?,?,?,?,?,?,?,?,?)
+             config_snapshot, key_ref)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
     """, (
         datetime.now().isoformat(),
         state.currency, state.game, _strategy_label(),
         state.base_bet, state.multiplier, state.start_balance,
         getattr(state, "lane", 1),
         _session_config_snapshot(),
+        getattr(state, "key_ref", None) or VAULT_KEY_ID,
     ))
     conn.commit()
     sid = c.lastrowid

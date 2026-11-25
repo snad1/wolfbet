@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.65.0 - each session records the key it bet with (2026-11-25)
+
+- The `sessions` table gains `key_ref`, the vault key id the lane bet with (`default` for the main key). It is written once when a session opens, never per bet, so the dashboard can show statistics per casino account.
+- The column is added by the existing idempotent migration (`ALTER TABLE ... ADD COLUMN`); sessions recorded before this version keep it empty and count as the main key.
+
+**Tests**: `tests/test_phase10_lanes.py` (a new session records the lane's key, or `default`; an older database gains the column, twice-run safe). Version pins updated.
+
+`VERSION` `2.64.0` -> `2.65.0`.
+
 ## v2.64.0 / wolfctl v3.28 - every lane is seen and starts with the bot; rolling restart of all lanes (2026-11-25)
 
 - `wolfctl start 1` and `wolfctl restart 1` now also start the enabled lanes that are not running, like `wolfctl start` already did. Lanes added while the bot was stopped used to stay idle when the bot came back through lane 1. Running lanes are never restarted by this; `wolfctl stop 1` still stops lane 1 alone.

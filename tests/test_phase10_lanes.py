@@ -491,6 +491,33 @@ def test_db_start_session_tags_lane(monkeypatch, tmp_path):
     conn.close()
 
 
+def test_db_start_session_records_the_key(monkeypatch, tmp_path):
+    db = _seed(monkeypatch, tmp_path)
+    monkeypatch.setattr(wb.state, "key_ref", "lakai")
+    sid = wb._db_start_session()
+    monkeypatch.setattr(wb.state, "key_ref", None)
+    default = wb._db_start_session()
+    conn = sqlite3.connect(db)
+    rows = dict(conn.execute("SELECT id, key_ref FROM sessions WHERE id IN (?, ?)", (sid, default)))
+    conn.close()
+    assert rows == {sid: "lakai", default: "default"}
+
+
+def test_an_older_database_gains_the_key_column(tmp_path):
+    from core.database import migrate_db
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, started_at TEXT)")
+    conn.execute("INSERT INTO sessions (started_at) VALUES ('2026-11-01T00:00:00')")
+    conn.commit()
+    conn.close()
+    migrate_db(path)
+    migrate_db(path)
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT key_ref FROM sessions").fetchall() == [(None,)]
+    conn.close()
+
+
 def test_lanes_status_table(monkeypatch, tmp_path, capsys):
     base = str(tmp_path / "live.json")
     monkeypatch.setattr(wb, "_BASE_STATE_PATH", base)
