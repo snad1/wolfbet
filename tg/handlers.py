@@ -37,7 +37,7 @@ from core.strategy import (
 from .engine import BettingEngine, STREAK_RESET_REASON
 from .formatter import (
     format_status, format_stop, format_milestone, format_session_row,
-    format_session_detail, format_all_time, format_lastbets,
+    format_session_detail, format_all_time, format_lastbets, format_lanes,
 )
 
 
@@ -218,6 +218,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/pause: Pause (`/pause all` or `/pause 2`)\n"
         "/resume: Resume (`/resume all` or `/resume 2`)\n"
         "/status: Live status (`/status 2` for specific slot)\n"
+        "/lanes: CLI lanes, their key and session (owner)\n"
         "/monitor: Auto-updating status (default 5s)\n"
         "/stats: Session history\n"
         "/session: Detailed session report\n"
@@ -422,6 +423,68 @@ def _validated_path(path: str, *, is_dir: bool) -> bool:
     return os.path.isabs(path) and (os.path.isdir(path) if is_dir else os.path.isfile(path))
 
 
+def _ctl_path() -> str | None:
+    """The installed wolfctl, or None when it is missing or not executable."""
+    path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
+    if _validated_path(path, is_dir=False) and os.access(path, os.X_OK):
+        return path
+    return None
+
+
+LANES_DENIED = "Only the owner can manage lanes."
+LANES_FAILED = "Could not read the lanes. Try again."
+
+
+def _key_label(key_ref: str) -> str:
+    """A vault key as `label (...last4)`; the bare id when the vault doesn't hold it."""
+    try:
+        from shared.core.vault import vault_info
+        info = vault_info("wolfbet", key_ref, log=logger)
+    except ImportError:
+        info = None
+    return f"{info.label} (...{info.last4})" if info else key_ref
+
+
+async def _lanes_text() -> str:
+    """Every CLI lane as text, from `wolfctl lanes --json`; a safe message when that fails."""
+    ctl = _ctl_path()
+    try:
+        if not ctl:
+            raise FileNotFoundError(CTL_NAME)
+        result = await asyncio.to_thread(subprocess.run, [ctl, "lanes", "--json"],
+                                         capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(f"wolfctl lanes rc={result.returncode}")
+        data = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as e:
+        logger.warning("lanes: %s: %s", type(e).__name__, e)
+        return LANES_FAILED if APP_ENV == "production" else f"{LANES_FAILED} ({type(e).__name__})"
+    return format_lanes(data, _key_label)
+
+
+def _lanes_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Refresh", callback_data="lanes_refresh")]])
+
+
+async def cmd_lanes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List every CLI lane with its state, key label and session (owner only)."""
+    if not _is_owner(update.effective_user.id):
+        await update.message.reply_text(LANES_DENIED)
+        return
+    await update.message.reply_text(await _lanes_text(), reply_markup=_lanes_keyboard())
+
+
+async def _lanes_refresh(query) -> None:
+    if not _is_owner(query.from_user.id):
+        await query.answer(LANES_DENIED, show_alert=True)
+        return
+    await query.answer()
+    try:
+        await query.edit_message_text(await _lanes_text(), reply_markup=_lanes_keyboard())
+    except BadRequest:
+        pass
+
+
 def _update_argv(ctl_path: str, repo_dir: str, log_file: str) -> list[str]:
     """Command for systemd-run: argv only, no shell, every value in its own element."""
     return [
@@ -450,8 +513,8 @@ async def cmd_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_owner(user_id):
         await update.message.reply_text("Owner only.")
         return
-    ctl_path = shutil.which(CTL_NAME) or f"/root/.local/bin/{CTL_NAME}"
-    if not _validated_path(ctl_path, is_dir=False) or not os.access(ctl_path, os.X_OK):
+    ctl_path = _ctl_path()
+    if not ctl_path:
         await update.message.reply_text(f"{CTL_NAME} not found in PATH.")
         return
     if not _validated_path(REPO_DIR, is_dir=True):
@@ -1699,6 +1762,9 @@ async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if query.data == "lanes_refresh":
+        await _lanes_refresh(query)
+        return
     await query.answer()
     user_id = query.from_user.id
 

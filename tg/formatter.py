@@ -33,7 +33,7 @@ def _fmti(n) -> str:
 def _safe_code(s) -> str:
     """Escape a string for safe interpolation INSIDE a Markdown V1 code span.
 
-    Only `` ` `` is reserved inside ``…``; *, _, [ are literal. A stray backtick
+    Only `` ` `` is reserved inside ``...``; *, _, [ are literal. A stray backtick
     in a user-rule description or engine status string breaks the surrounding
     code entity and Telegram silently rejects the message.
     """
@@ -219,7 +219,7 @@ def format_status(s: dict) -> str:
     auto_uuid = s.get("auto_uuid")
     if auto_uuid:
         lines.append("")
-        pending = " (restart pending — waiting for win)" if s.get("pending_restart") else ""
+        pending = " (restart pending: waiting for win)" if s.get("pending_restart") else ""
         lines.append(f"\U0001f517 UUID: `{auto_uuid}`{pending}")
 
     lines += ["", f"`{_safe_code(s['status'])}`"]
@@ -289,7 +289,7 @@ def format_milestone(data: dict) -> str:
 
 # ── Single session row for /stats list ───────────────────
 def format_session_row(row) -> str:
-    """Format a session row — expects 27 or 28 columns (with game + config_snapshot)."""
+    """Format a session row: expects 27 or 28 columns (with game + config_snapshot)."""
     if len(row) >= 28:
         (sid, started, ended, cur, game, strat, mult, base, bets, wins, losses,
          profit, wagered, start_bal, end_bal, mws, mls,
@@ -594,3 +594,27 @@ def _calc_uptime(started: str, ended: str) -> str:
     except Exception:
         pass
     return "\u2014"
+
+
+def format_lanes(data: dict, key_label) -> str:
+    """One plain-text line per CLI lane from `wolfctl lanes --json`; `key_label(key_ref)` names
+    the key without its secret."""
+    lines = []
+    for row in sorted(data.get("lanes") or [], key=lambda r: r.get("lane", 0)):
+        lane, st = row.get("lane"), row.get("state")
+        name = (st or {}).get("lane_name")
+        title = f"Lane {lane} · {name}" if name else f"Lane {lane}"
+        if not row.get("alive"):
+            lines.append(f"{title}: stopped")
+            continue
+        if st is None:
+            lines.append(f"{title}: no state yet")
+            continue
+        parts = ["paused" if row.get("paused") else "running",
+                 f"key {key_label(st.get('key_ref') or 'default')}"]
+        if st.get("session_id") is not None:
+            parts.append(f"session {st['session_id']}")
+        profit = float(st.get("profit") or 0)
+        parts.append(f"{profit:+.8f} {str(st.get('currency') or '').upper()}".rstrip())
+        lines.append(f"{title}: {', '.join(parts)}")
+    return "\n".join(lines) if lines else "No lanes."

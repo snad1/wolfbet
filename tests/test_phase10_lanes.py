@@ -791,6 +791,16 @@ def test_state_snapshot_carries_the_lane_name(monkeypatch, tmp_path):
     assert wb._state_snapshot()["lane_name"] is None
 
 
+
+def test_state_snapshot_names_the_lane_key_but_never_the_secret(monkeypatch, tmp_path):
+    _registry_config(monkeypatch, tmp_path, {"1": {}, "3": {"overrides": {"key_ref": "friend-a"}}})
+    monkeypatch.setattr(wb.state, "key_ref", "friend-a")
+    monkeypatch.setattr(wb.state, "api_key", "sk-live-0123456789abcdef")
+    snap = wb._state_snapshot()
+    assert snap["key_ref"] == "friend-a"
+    assert "api_key" not in snap
+    assert "sk-live-0123456789abcdef" not in json.dumps(snap)
+
 def test_a_live_reload_picks_up_a_rename(monkeypatch, tmp_path):
     path, _ = _registry_config(monkeypatch, tmp_path, {"1": {}, "3": {"name": "friend-A"}})
     wb._apply_lane(3)

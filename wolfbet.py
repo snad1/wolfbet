@@ -1015,7 +1015,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.61.3"
+VERSION      = "2.62.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -4692,6 +4692,7 @@ def _state_snapshot() -> dict:
         "lane_share": state.lane_share,
         "lane_split": state.lane_split,
         "lane_name": state.lane_name,
+        "key_ref": state.key_ref,
         "pending_restart": state.pending_restart,
         "code_version": VERSION,
         # v2.37.0: run-wide profit increment

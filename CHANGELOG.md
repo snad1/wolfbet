@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.62.0 / TG v1.27.0 - `/lanes` on Telegram (2026-11-25)
+
+- New Telegram command `/lanes` (owner only): one line per CLI lane with its name, state (running, paused, stopped, or no state yet), key, session id and session profit, plus a **Refresh** button that redraws the list in place. It reads `wolfctl lanes --json` (argv list, no shell, 10 s timeout). Any other chat gets `Only the owner can manage lanes.`, and the Refresh button checks the owner too.
+- The key shows as its vault label and last 4 (`friend (...a1b2)`); a key the vault doesn't hold shows by its id (`default`). No secret reaches the chat or the log. A failed read answers `Could not read the lanes. Try again.`; outside production the error type is added.
+- Each lane's state file now carries `key_ref`, the vault id of the key it bets with (never the key). The lanes-status JSON row shape is unchanged.
+- `/help` and the bot's command menu list `/lanes`.
+
+**Tests**: `tests/test_tg_lanes.py` (format, owner gate on the command and the button, argv and timeout, failed reads, key label), `tests/test_phase10_lanes.py` (the state carries `key_ref` and no secret). Version pins updated.
+
+`VERSION` `2.61.3` -> `2.62.0`; TG `1.26.1` -> `1.27.0`.
+
 ## v2.61.3 - lane accounts and secret checks come from casino-shared; a lane-count preview no longer says restart (2026-11-25)
 
 - `_lane_account`, `_split_lanes` and the checks on a key, proxy or Telegram token sent to the vault now use casino-shared 0.11.0. Nothing changes in what the bot or `wolfctl` does or prints. With an older casino-shared the CLI prints `casino-shared 0.11.0 or newer is needed: run wolfctl update`.
