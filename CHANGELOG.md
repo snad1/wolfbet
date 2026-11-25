@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.63.0 / TG v1.31.0 - `/sessions` on Telegram; `wolfctl stats --before ID` (2026-11-25)
+
+- New Telegram command `/sessions [lane]` (owner only): the last 10 CLI sessions, one line each, such as `#14 · 11-25 12:04-12:31 · 9,812 bets · +0.00012000 USDT` (`12:04-running` while open). Without a lane every lane is listed and lines of lanes above 1 start with `L2 ·`. One button per session, and **Older** pages back in place.
+- Tapping a session shows its start, end, duration, bets with W/L and win rate, wagered, profit, start and end balance, strategy, multiplier and base bet, with **Back** and **Open on dashboard**, a plain link to the dashboard's Sessions page. The bot can't know the dashboard's reset epoch, and a Telegram sign-in opens the limited Telegram account, so the owner signs in there as usual.
+- No stop reason is shown: the sessions table doesn't record one.
+- It reads `wolfctl stats --json` (argv list, no shell, 10 s timeout). No sessions answers `No sessions on lane 2 yet.`; a failed read answers `Could not read the sessions. Try again.`
+- The key picker's **Open dashboard** is now a plain link to the dashboard's Keys page instead of a Telegram sign-in link, which opened the Telegram account rather than Keys.
+- `wolfctl stats --before ID` (and `--stats --before ID`) keeps only sessions older than #ID, with the lane and date filters still applied; the totals follow the same window.
+
+**Tests**: `tests/test_tg_sessions.py` (line and detail format, paging, lane filter, argv and timeout, empty and failed reads, usage, forged buttons, owner gate, dashboard link), `tests/test_tg_lanes.py` (Keys link), `tests/test_phase6d_reset_and_datestats.py` (`--before`). Version pins updated.
+
+`VERSION` `2.62.0` -> `2.63.0`; TG `1.30.0` -> `1.31.0`.
+
 ## TG v1.30.0 - pick a lane's key and proxy from Telegram (2026-11-25)
 
 - Lanes 2-99 in `/lanes` get **Key K** and **Proxy K**. Each lists the saved keys or proxies from the vault by label and last 4 only (`friend (...a1b2)`); the proxy list adds **No proxy**. The secret is never read, sent or logged. The picker says `Add keys on the dashboard Keys page.` and, when the dashboard sign-in is set up, has an **Open dashboard** button with the same one-use link as `/web`.

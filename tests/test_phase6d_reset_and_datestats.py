@@ -32,7 +32,7 @@ def _wolfctl_src() -> str:
 
 # ── VERSION ──────────────────────────────────────────────
 def test_wolfbet_version():
-    assert wb.VERSION == "2.62.0"
+    assert wb.VERSION == "2.63.0"
 
 
 def test_wolfctl_version_constant_3_9():
@@ -186,6 +186,20 @@ def test_stats_window_combined(monkeypatch, tmp_path, capsys):
         os.remove(db)
 
 
+def test_stats_before_pages_back_and_keeps_the_lane_filter(monkeypatch, tmp_path):
+    db = _seed_db(monkeypatch, tmp_path)
+    try:
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE sessions SET lane = 2 WHERE id = 1")
+        conn.commit(); conn.close()
+        assert [s["id"] for s in wb._stats_data(before=3)["sessions"]] == [2, 1]
+        assert [s["id"] for s in wb._stats_data(lane=2, before=3)["sessions"]] == [1]
+        assert wb._stats_data(before=1)["sessions"] == []
+        assert wb._stats_data(before=3)["totals"]["sessions"] == 2
+    finally:
+        os.remove(db)
+
+
 def test_stats_no_filter_unchanged(monkeypatch, tmp_path, capsys):
     """Regression: default path shows all sessions + All-Time label."""
     db = _seed_db(monkeypatch, tmp_path)
@@ -208,7 +222,9 @@ def test_stats_filtered_limit_bumps_to_50():
 def test_argparse_has_since_until():
     src = inspect.getsource(wb)
     assert '"--since"' in src and '"--until"' in src
-    assert "cmd_stats(since=args.since, until=args.until, lane=args.lane, as_json=args.json)" in src
+    assert '"--before"' in src
+    assert ("cmd_stats(since=args.since, until=args.until, lane=args.lane, as_json=args.json,\n"
+            "                  before=args.before)") in src
 
 
 def test_since_until_are_modifiers_not_commands():

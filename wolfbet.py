@@ -1015,7 +1015,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.62.0"
+VERSION      = "2.63.0"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -8822,8 +8822,11 @@ _STATS_TOTAL_COLS = (
     "peak_bps", "peak_bpm", "avg_bps", "max_wins", "avg_wins", "max_losses", "avg_losses")
 
 
-def _stats_data(since: str = None, until: str = None, lane: int = None) -> dict:
-    """Recent sessions in the window (20, or 50 for a date range), the window's totals and time span."""
+def _stats_data(since: str = None, until: str = None, lane: int = None, before: int = None) -> dict:
+    """Recent sessions in the window (20, or 50 for a date range), the window's totals and time span.
+
+    `before` keeps only sessions older than that id, so a caller can page back.
+    """
     if not os.path.exists(DB_PATH):
         raise _CliError("no_database", "No database found.")
     migrate_db(DB_PATH)  # v2.35.0: lane column on DBs the bot hasn't opened yet
@@ -8831,6 +8834,9 @@ def _stats_data(since: str = None, until: str = None, lane: int = None) -> dict:
         where, params, _ = _stats_date_window(since, until, lane)
     except ValueError as e:
         raise _CliError("invalid_window", str(e), style="red") from None
+    if before is not None:
+        where = f"{where} AND id < ?" if where else " WHERE id < ?"
+        params = [*params, int(before)]
     # v2.30.9: range reviews want more rows than the default 20.
     limit = 50 if (since or until) else 20
     conn = _db_conn()
@@ -8871,10 +8877,11 @@ def _stats_data(since: str = None, until: str = None, lane: int = None) -> dict:
             "totals": dict(zip(_STATS_TOTAL_COLS, totals)), "span": span}
 
 
-def cmd_stats(since: str = None, until: str = None, lane: int = None, as_json: bool = False):
-    """Show session statistics, optionally filtered to a date window."""
+def cmd_stats(since: str = None, until: str = None, lane: int = None, as_json: bool = False,
+              before: int = None):
+    """Show session statistics, optionally filtered to a date window or to sessions before an id."""
     try:
-        data = _stats_data(since, until, lane)
+        data = _stats_data(since, until, lane, before)
     except _CliError as e:
         _cli_fail(e, as_json)
         return
@@ -9418,6 +9425,8 @@ def main():
     # live on the standalone parser, NOT the mutually-exclusive command group.
     parser.add_argument("--since", metavar="DATE", help="With --stats/--analytics: window start, server-local time "
                              "(YYYY-MM-DD, 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD HH:MM:SS')")
+    parser.add_argument("--before", type=int, metavar="ID",
+                        help="With --stats: only sessions older than #ID (page back)")
     parser.add_argument("--until", metavar="DATE",
                         help="With --stats/--analytics: window end, same formats "
                              "(bare date = inclusive end of day)")
@@ -9572,7 +9581,8 @@ def main():
         cmd_list_presets()
         return
     if args.stats:
-        cmd_stats(since=args.since, until=args.until, lane=args.lane, as_json=args.json)
+        cmd_stats(since=args.since, until=args.until, lane=args.lane, as_json=args.json,
+                  before=args.before)
         return
     if args.analytics:
         cmd_analytics(since=args.since, until=args.until, lane=args.lane, as_json=args.json)

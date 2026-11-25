@@ -41,6 +41,7 @@ from .engine import BettingEngine, STREAK_RESET_REASON
 from .formatter import (
     format_status, format_stop, format_milestone, format_session_row,
     format_session_detail, format_all_time, format_lastbets, format_lanes,
+    format_cli_session_line, format_cli_session_detail,
 )
 
 
@@ -224,6 +225,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/lanes: CLI lanes, their key and session (owner)\n"
         "/laneadd NAME [from K]: add a CLI lane (owner)\n"
         "/lanerename K NAME: rename a CLI lane (owner)\n"
+        "/sessions [lane]: recent CLI sessions and their ids (owner)\n"
         "/monitor: Auto-updating status (default 5s)\n"
         "/stats: Session history\n"
         "/session: Detailed session report\n"
@@ -766,6 +768,13 @@ def _dashboard_login(user_id: int) -> str | None:
     return dashboard_link.login_url(DASHBOARD_URL, DASHBOARD_SECRET, user_id)
 
 
+def _dashboard_page(path: str) -> str | None:
+    """A plain link to one dashboard page (the owner signs in there), or None when unset."""
+    from .config import DASHBOARD_URL
+    base = (DASHBOARD_URL or "").strip().rstrip("/")
+    return f"{base}/{path}" if base.startswith(("https://", "http://")) else None
+
+
 async def _account_picker(kind: str, k: int, user_id: int) -> tuple:
     """(text, keyboard) listing the saved keys or proxies lane `k` can switch to."""
     if k == 1:
@@ -784,7 +793,7 @@ async def _account_picker(kind: str, k: int, user_id: int) -> tuple:
         text = f"Pick a {word} for lane {k}. {ADD_ON_DASHBOARD}"
     else:
         text = f"No saved {words} yet. {ADD_ON_DASHBOARD}"
-    link = _dashboard_login(user_id)
+    link = _dashboard_page("wolfbet/keys")
     rows.append(([InlineKeyboardButton("Open dashboard", url=link)] if link else []) + [_CANCEL])
     return text, InlineKeyboardMarkup(rows)
 
@@ -852,6 +861,99 @@ async def _account_callback(query) -> None:
         InlineKeyboardButton("Use now", callback_data=f"laneuse:{tail}"),
         InlineKeyboardButton("At session end", callback_data=f"laneuse_end:{tail}"),
         _CANCEL]]))
+
+
+SESSIONS_FAILED = "Could not read the sessions. Try again."
+SESSIONS_USAGE = "Usage: /sessions [lane]"
+SESSIONS_PAGE = 10
+_SESSIONS_CALLBACK = re.compile(r"^(sess|sessd):([0-9]{1,2}):([0-9]{1,10})$")
+
+
+async def _read_sessions(lane: int, before: int | None) -> list:
+    """`wolfctl stats --json` rows, newest first; lane 0 means every lane."""
+    ctl = _ctl_path()
+    if not ctl:
+        raise FileNotFoundError(CTL_NAME)
+    argv = [ctl, "stats", "--json", *(["--lane", str(lane)] if lane else []),
+            *(["--before", str(before)] if before else [])]
+    result = await asyncio.to_thread(subprocess.run, argv, capture_output=True, text=True,
+                                     timeout=10)
+    if result.returncode != 0:
+        try:
+            if json.loads(result.stdout)["error"]["code"] == "no_database":
+                return []
+        except (ValueError, KeyError, TypeError):
+            pass
+        raise RuntimeError(f"wolfctl stats rc={result.returncode}")
+    return list(json.loads(result.stdout).get("sessions") or [])
+
+
+def _no_sessions(lane: int) -> str:
+    return f"No sessions on lane {lane} yet." if lane else "No sessions yet."
+
+
+async def _sessions_view(lane: int, before: int | None = None) -> tuple:
+    """(text, keyboard) for one page of CLI sessions."""
+    try:
+        rows = await _read_sessions(lane, before)
+    except _LANE_READ_ERRORS as e:
+        logger.warning("sessions: %s", type(e).__name__)
+        return SESSIONS_FAILED + _error_suffix(e), None
+    page = rows[:SESSIONS_PAGE]
+    if not page:
+        return _no_sessions(lane), None
+    text = "\n".join(format_cli_session_line(s, show_lane=not lane) for s in page)
+    ids = [s.get("id") for s in page]
+    keyboard = [[InlineKeyboardButton(f"#{sid}", callback_data=f"sessd:{lane}:{sid}")
+                 for sid in ids[i:i + 5]] for i in range(0, len(ids), 5)]
+    if len(rows) > SESSIONS_PAGE:
+        keyboard.append([InlineKeyboardButton("Older", callback_data=f"sess:{lane}:{ids[-1]}")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
+async def _session_detail(lane: int, sid: int) -> tuple:
+    try:
+        rows = await _read_sessions(lane, sid + 1)
+    except _LANE_READ_ERRORS as e:
+        logger.warning("session %d: %s", sid, type(e).__name__)
+        return SESSIONS_FAILED + _error_suffix(e), None
+    row = next((s for s in rows[:1] if s.get("id") == sid), None)
+    back = InlineKeyboardButton("Back", callback_data=f"sess:{lane}:0")
+    if row is None:
+        return f"Session #{sid} was not found.", InlineKeyboardMarkup([[back]])
+    link = _dashboard_page("wolfbet/sessions")
+    buttons = ([InlineKeyboardButton("Open on dashboard", url=link)] if link else []) + [back]
+    return format_cli_session_detail(row), InlineKeyboardMarkup([buttons])
+
+
+async def cmd_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recent CLI-lane sessions with their ids, 10 per page (owner only)."""
+    if not _is_owner(update.effective_user.id):
+        await update.message.reply_text(LANES_DENIED)
+        return
+    args = list(context.args or [])
+    if len(args) > 1 or (args and not _LANE_K.match(args[0])):
+        await update.message.reply_text(SESSIONS_USAGE)
+        return
+    text, keyboard = await _sessions_view(int(args[0]) if args else 0)
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def _sessions_callback(query) -> None:
+    if not _is_owner(query.from_user.id):
+        await query.answer(LANES_DENIED, show_alert=True)
+        return
+    m = _SESSIONS_CALLBACK.match(query.data or "")
+    if not m:
+        await query.answer("Unknown button.", show_alert=True)
+        return
+    stage, lane, n = m.group(1), int(m.group(2)), int(m.group(3))
+    await query.answer()
+    if stage == "sessd":
+        text, keyboard = await _session_detail(lane, n)
+    else:
+        text, keyboard = await _sessions_view(lane, n or None)
+    await _edit_text(query, text, keyboard)
 
 
 async def _named_lane_callback(query) -> None:
@@ -2197,6 +2299,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.data == "lanes_refresh":
         await _lanes_refresh(query)
+        return
+    if (query.data or "").startswith(("sess:", "sessd:")):
+        await _sessions_callback(query)
         return
     if (query.data or "").startswith(("lanepick:", "laneuse:", "laneuse_end:")):
         await _account_callback(query)

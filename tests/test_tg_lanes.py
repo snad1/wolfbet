@@ -21,6 +21,7 @@ from tg import handlers as tg_handlers  # noqa: E402
 from tg.formatter import format_lanes  # noqa: E402
 
 OWNER_ID = 4242
+_REAL_DASHBOARD_PAGE = tg_handlers._dashboard_page
 CTL = "/usr/local/bin/wolfctl"
 SECRET = "sk-live-0123456789abcdefa1b2"
 
@@ -484,7 +485,7 @@ def vault(monkeypatch):
 
     monkeypatch.setattr(shared_vault, "Vault", FakeVault)
     monkeypatch.setattr(shared_vault, "vault_info", lambda service, key_id, log=None: info(key_id))
-    monkeypatch.setattr(tg_handlers, "_dashboard_login", lambda uid: None)
+    monkeypatch.setattr(tg_handlers, "_dashboard_page", lambda path: None)
     return entries
 
 
@@ -507,13 +508,16 @@ def test_the_proxy_picker_lists_proxies_and_no_proxy(ctl, vault):
         [("Cancel", "lanes_refresh")]]
 
 
-def test_an_empty_vault_points_at_the_dashboard_with_a_sign_in_button(ctl, vault, monkeypatch):
+def test_an_empty_vault_points_at_the_dashboard_keys_page(ctl, vault, monkeypatch):
+    import tg.config as tg_config
     vault.clear()
-    monkeypatch.setattr(tg_handlers, "_dashboard_login", lambda uid: "https://dash.test/tg/login#t")
+    monkeypatch.setattr(tg_handlers, "_dashboard_page", _REAL_DASHBOARD_PAGE)
+    monkeypatch.setattr(tg_config, "DASHBOARD_URL", "https://dash.test/")
     _, text, kw = _tap("lane:key:2")[1]
     assert text == "No saved keys yet. Add keys on the dashboard Keys page."
     (open_btn, cancel), = kw["reply_markup"].inline_keyboard
-    assert (open_btn.text, open_btn.url) == ("Open dashboard", "https://dash.test/tg/login#t")
+    assert (open_btn.text, open_btn.url) == ("Open dashboard", "https://dash.test/wolfbet/keys")
+    assert "#token" not in open_btn.url
     assert cancel.callback_data == "lanes_refresh"
 
 
