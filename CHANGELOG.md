@@ -1,5 +1,10 @@
 # Changelog
 
+## TG v1.31.1 - the lane commands come from casino-shared (2026-11-26)
+
+- `/lanes`, the lane buttons, `/laneadd`, `/lanerename`, the key and proxy picker and `/sessions` now run from casino-shared's `shared.tg.lanes`, so the other bots get the same commands. Replies, buttons and confirms are unchanged.
+- The TG bot needs casino-shared 0.13.0; with an older one it stops at start with `casino-shared 0.13.0 or newer is needed: run wolfctl update`.
+
 ## v2.65.0 - each session records the key it bet with (2026-11-25)
 
 - The `sessions` table gains `key_ref`, the vault key id the lane bet with (`default` for the main key). It is written once when a session opens, never per bet, so the dashboard can show statistics per casino account.

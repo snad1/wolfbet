@@ -3,6 +3,11 @@
 import json
 from datetime import datetime
 
+# The CLI-lane lines are shared with every bot's Telegram.
+from shared.tg.lanes import (  # noqa: F401
+    format_cli_session_detail, format_cli_session_line, format_lanes,
+)
+
 
 def _fmt_ts(ts: str, fallback: str = "?") -> str:
     """Format an ISO timestamp to full display: YYYY-MM-DD HH:MM:SS.μs"""
@@ -594,81 +599,3 @@ def _calc_uptime(started: str, ended: str) -> str:
     except Exception:
         pass
     return "\u2014"
-
-
-def format_lanes(data: dict, key_label) -> str:
-    """One plain-text line per CLI lane from `wolfctl lanes --json`; `key_label(key_ref)` names
-    the key without its secret."""
-    lines = []
-    for row in sorted(data.get("lanes") or [], key=lambda r: r.get("lane", 0)):
-        lane, st = row.get("lane"), row.get("state")
-        name = (st or {}).get("lane_name")
-        title = f"Lane {lane} · {name}" if name else f"Lane {lane}"
-        if not row.get("alive"):
-            lines.append(f"{title}: stopped")
-            continue
-        if st is None:
-            lines.append(f"{title}: no state yet")
-            continue
-        parts = ["paused" if row.get("paused") else "running",
-                 f"key {key_label(st.get('key_ref') or 'default')}"]
-        if st.get("session_id") is not None:
-            parts.append(f"session {st['session_id']}")
-        profit = float(st.get("profit") or 0)
-        parts.append(f"{profit:+.8f} {str(st.get('currency') or '').upper()}".rstrip())
-        lines.append(f"{title}: {', '.join(parts)}")
-    return "\n".join(lines) if lines else "No lanes."
-
-
-def _cli_time(value):
-    try:
-        return datetime.fromisoformat(str(value)) if value else None
-    except ValueError:
-        return None
-
-
-def _cli_span(s: dict) -> str:
-    """`11-25 12:04-12:31`, `11-25 23:50-11-26 00:20` across a day, or `11-25 12:04-running`."""
-    start, end = _cli_time(s.get("started_at")), _cli_time(s.get("ended_at"))
-    if start is None:
-        return "?"
-    head = start.strftime("%m-%d %H:%M")
-    if end is None:
-        return f"{head}-running"
-    return f"{head}-{end.strftime('%H:%M' if end.date() == start.date() else '%m-%d %H:%M')}"
-
-
-def _cli_profit(s: dict) -> str:
-    return f"{float(s.get('profit') or 0):+.8f} {str(s.get('currency') or '').upper()}".rstrip()
-
-
-def format_cli_session_line(s: dict, show_lane: bool) -> str:
-    """One line per CLI session from `wolfctl stats --json`."""
-    lane = int(s.get("lane") or 1)
-    tag = f"L{lane} · " if show_lane and lane > 1 else ""
-    bets = int(s.get("total_bets") or 0)
-    return f"{tag}#{s.get('id')} · {_cli_span(s)} · {bets:,} bets · {_cli_profit(s)}"
-
-
-def format_cli_session_detail(s: dict) -> str:
-    """Plain-text detail of one CLI session from `wolfctl stats --json`."""
-    start, end = _cli_time(s.get("started_at")), _cli_time(s.get("ended_at"))
-    bets, wins, losses = (int(s.get(k) or 0) for k in ("total_bets", "wins", "losses"))
-    rate = f"{wins / bets * 100:.1f}%" if bets else "-"
-    lines = [f"Session #{s.get('id')} · lane {int(s.get('lane') or 1)}",
-             f"Start: {start.isoformat(' ', 'seconds') if start else '?'}",
-             f"End: {end.isoformat(' ', 'seconds') if end else 'running'}"]
-    if start and end:
-        total = max(int((end - start).total_seconds()), 0)
-        h, rem = divmod(total, 3600)
-        lines.append(f"Duration: {h}h {rem // 60}m {rem % 60}s")
-    cur = str(s.get("currency") or "").upper()
-    lines += [
-        f"Bets: {bets:,} (W {wins:,} / L {losses:,}, win rate {rate})",
-        f"Wagered: {float(s.get('wagered') or 0):.8f} {cur}".rstrip(),
-        f"Profit: {_cli_profit(s)}",
-        f"Balance: {float(s.get('start_balance') or 0):.8f} -> {float(s.get('end_balance') or 0):.8f}",
-        f"Strategy: {s.get('strategy') or '?'}, {float(s.get('multiplier') or 0):g}x, "
-        f"base {float(s.get('base_bet') or 0):.8f}",
-    ]
-    return "\n".join(lines)
