@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.65.1 - a lane never sits idle after a locked database (2026-11-27)
+
+- A new session waits for the database when another lane holds it locked: it retries with a short backoff (0.5 s up to 5 s, about 2 min in all) and shows `Waiting for the database (another lane is writing)...`. Before, the error ended the betting thread silently; the lane kept saving and showed `Recurring pause` for hours with no bets.
+- An error the betting loop does not handle now stops the lane: it logs the traceback to `~/.wolfbet_logs/wolfbet.log`, stops the casino-side auto run, and shows `STOPPED: internal error: <reason>` in status, `last_error` and the dashboard. A crash in any other thread is logged too.
+- Only lane 1 runs the hourly bet purge, in batches of 5,000 rows with no `VACUUM` (casino-shared `purge_live_bets`). One large delete plus VACUUM on the shared database held the write lock long enough for other lanes' session starts to fail. The startup purge no longer VACUUMs either.
+- Needs casino-shared 0.14.0; with an older one the bot stops at start with `casino-shared 0.14.0 or newer is needed: run wolfctl update`.
+
+**Tests**: `tests/test_phase17_db_lock_recovery.py` (a locked start is waited out; locked too long, or another DB error, raises; a loop crash stops the lane with the reason and stops the auto run; only lane 1 purges, with the batched purge). Version pins updated.
+
+`VERSION` `2.65.0` -> `2.65.1`.
+
 ## TG v1.31.1 - the lane commands come from casino-shared (2026-11-26)
 
 - `/lanes`, the lane buttons, `/laneadd`, `/lanerename`, the key and proxy picker and `/sessions` now run from casino-shared's `shared.tg.lanes`, so the other bots get the same commands. Replies, buttons and confirms are unchanged.

@@ -37,7 +37,7 @@ def _wolfctl_src() -> str:
 
 # ── Version bumps ────────────────────────────────────────
 def test_wolfbet_version_bumped():
-    assert wb.VERSION == "2.65.0"
+    assert wb.VERSION == "2.65.1"
 
 
 def test_wolfctl_version_constant_current():

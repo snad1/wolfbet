@@ -29,4 +29,4 @@ def test_an_older_casino_shared_is_named_instead_of_a_traceback(tmp_path):
     r = subprocess.run([sys.executable, os.path.join(_WOLFBET_DIR, "wolfbet.py"), "--help"],
                        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 1
-    assert r.stderr.strip() == "casino-shared 0.11.0 or newer is needed: run wolfctl update"
+    assert r.stderr.strip() == "casino-shared 0.14.0 or newer is needed: run wolfctl update"

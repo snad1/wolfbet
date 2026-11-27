@@ -41,7 +41,7 @@ from core.strategy import (
     cmp as _cmp, load_rules_from_text as _load_rules_from_text,
 )
 from core.database import init_db as _core_init_db, migrate_db, db_connect, secure_path
-from core.database import cleanup_old_bets, cleanup_live_bets
+from core.database import cleanup_old_bets
 # v2.28.0: shared helpers extracted for CLI ↔ TG parity + dedup.
 from core.validation import finite_float
 from core.net_helpers import (
@@ -81,8 +81,9 @@ try:
         account_lanes, lane_account,
     )
     from shared.core.vault import check_secret, vault_info, vault_secret
+    from shared.core.database import purge_live_bets
 except ImportError:
-    print("casino-shared 0.11.0 or newer is needed: run wolfctl update", file=sys.stderr)
+    print("casino-shared 0.14.0 or newer is needed: run wolfctl update", file=sys.stderr)
     sys.exit(1)
 
 # ══════════════════════════════════════════════════════════
@@ -323,11 +324,13 @@ def _reset_session_for_recurring(delay: Optional[float] = None, reason: str = ""
             state.status = f"Recurring pause {delay:.0f}s before next cycle..."
         logger.info("RECURRING pause %.0fs before next cycle", delay)
         time.sleep(delay)
+    # Outside the lock: the insert may wait for another lane's write to finish.
+    next_session_id = _db_start_session()
     with state.lock:
         # Clear frozen timestamps as we enter the new session.
         state.session_bet_ended_at = None
         state.session_pause_started_at = None
-        state.session_id     = _db_start_session()
+        state.session_id     = next_session_id
         state.session_start  = time.time()
         state.total_bets     = 0
         state.wins           = 0
@@ -1015,7 +1018,7 @@ _BASE_STATE_PATH, _BASE_PID_PATH = STATE_PATH, PID_PATH  # v2.35.0: lane 1 paths
 RUN_PATH     = os.environ.get("WOLFBET_RUN_PATH",     os.path.expanduser("~/.wolfbet_run.json"))
 PRESET_PATH  = os.environ.get("WOLFBET_PRESET_PATH",  os.path.expanduser("~/.wolfbet_presets.json"))
 LOG_DIR      = os.environ.get("WOLFBET_LOG_DIR",      os.path.expanduser("~/.wolfbet_logs"))
-VERSION      = "2.65.0"
+VERSION      = "2.65.1"
 APP_ENV      = os.environ.get("APP_ENV", "production")
 
 # ── Daily rotating logger ──
@@ -3317,6 +3320,43 @@ def _effective_pipeline_depth() -> int:
     return min(requested, _PIPELINE_MAX)
 
 
+INTERNAL_ERROR = "internal error"
+
+
+def _guarded_betting_loop():
+    """Run the betting loop; an error it does not handle stops the lane with the reason.
+
+    Without this a crash ended only the thread: the process, its saves and its live file
+    carried on, and the lane sat idle looking healthy.
+    """
+    try:
+        _run_betting_loop()
+    except Exception as e:
+        logger.exception("Lane %d: betting loop crashed", getattr(state, "lane", 1))
+        reason = f"{INTERNAL_ERROR}: {type(e).__name__}: {str(e)[:120]}"
+        with state.lock:
+            state.running = False
+            state.paused = False
+            state.status = f"STOPPED: {reason}"
+            state.last_error = reason
+        for step in (api_auto_stop if is_auto_game(state.game) else None, _db_save_session,
+                     _save_state_file):
+            if step is None:
+                continue
+            try:
+                step()
+            except Exception:
+                logger.exception("Lane %d: cleanup after the crash failed",
+                                 getattr(state, "lane", 1))
+
+
+def _log_thread_crash(args: threading.ExceptHookArgs) -> None:
+    if args.exc_type is SystemExit:
+        return
+    logger.error("Thread %s died", args.thread.name if args.thread else "?",
+                 exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
 def _run_betting_loop():
     """Dispatcher: selects serial or pipelined loop based on effective depth."""
     depth = _effective_pipeline_depth()
@@ -4206,25 +4246,54 @@ def _session_config_snapshot() -> str:
     return json.dumps(values, default=str, sort_keys=True)
 
 
+DB_START_WAIT_S = 120.0
+DB_LOCKED_STATUS = "Waiting for the database (another lane is writing)..."
+
+
 def _db_start_session() -> int:
+    """Open the next session row, waiting out a database another lane holds locked.
+
+    Every lane writes the same SQLite file, so a long write elsewhere can outlast the
+    connection timeout. Raises after DB_START_WAIT_S; the betting-loop guard then stops
+    the lane with the reason instead of leaving it idle.
+    """
+    delay, waited = 0.5, 0.0
+    while True:
+        try:
+            return _insert_session_row()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or waited >= DB_START_WAIT_S:
+                raise
+            logger.warning("Lane %d: session start waiting, database is locked",
+                           getattr(state, "lane", 1))
+        with state.lock:
+            state.status = DB_LOCKED_STATUS
+        time.sleep(delay)
+        waited += delay
+        delay = min(delay * 2, 5.0)
+
+
+def _insert_session_row() -> int:
     conn = _db_conn()
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO sessions
-            (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane,
-             config_snapshot, key_ref)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
-        datetime.now().isoformat(),
-        state.currency, state.game, _strategy_label(),
-        state.base_bet, state.multiplier, state.start_balance,
-        getattr(state, "lane", 1),
-        _session_config_snapshot(),
-        getattr(state, "key_ref", None) or VAULT_KEY_ID,
-    ))
-    conn.commit()
-    sid = c.lastrowid
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO sessions
+                (started_at, currency, game, strategy, base_bet, multiplier, start_balance, lane,
+                 config_snapshot, key_ref)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            datetime.now().isoformat(),
+            state.currency, state.game, _strategy_label(),
+            state.base_bet, state.multiplier, state.start_balance,
+            getattr(state, "lane", 1),
+            _session_config_snapshot(),
+            getattr(state, "key_ref", None) or VAULT_KEY_ID,
+        ))
+        conn.commit()
+        sid = c.lastrowid
+    finally:
+        conn.close()
     _emit_lifecycle("session_open", _session_open_data(sid))
     return sid
 
@@ -8450,15 +8519,19 @@ def cmd_diagnose():
 def _retention_worker():
     """Hourly bet-row purge: mirrors tg/engine.py:747-758.
 
-    Runs on the CLI daemon; exits when the session ends.
+    Runs on the CLI daemon; exits when the session ends. Every lane shares one database, so
+    only lane 1 purges, in short batches: one big delete plus VACUUM held the write lock long
+    enough for the other lanes' session starts to fail.
     """
+    if getattr(state, "lane", 1) != 1:
+        return
     while state.running or state.paused:
         for _ in range(3600):
             if not (state.running or state.paused):
                 return
             time.sleep(1)
         try:
-            deleted = cleanup_live_bets(DB_PATH, bet_age_days=state.purge_days)
+            deleted = purge_live_bets(DB_PATH, bet_age_days=state.purge_days)
             if deleted:
                 logger.info("RETENTION purged %d bet rows (>%dd)", deleted, state.purge_days)
         except Exception as e:
@@ -9780,7 +9853,7 @@ def main():
 
     # ── Startup retention purge: matches TG's tg/engine.py:979 pattern.
     try:
-        _startup_deleted = cleanup_old_bets(DB_PATH, bet_age_days=state.purge_days)
+        _startup_deleted = cleanup_old_bets(DB_PATH, bet_age_days=state.purge_days, vacuum=False)
         if _startup_deleted:
             logger.info("STARTUP RETENTION purged %d old bet rows (>%dd)",
                         int(_startup_deleted), state.purge_days)
@@ -9794,7 +9867,8 @@ def main():
     _start_events()
 
     # ── Betting thread ────────────────────────────────────
-    t_bet = threading.Thread(target=_run_betting_loop, daemon=True, name="BettingLoop")
+    threading.excepthook = _log_thread_crash
+    t_bet = threading.Thread(target=_guarded_betting_loop, daemon=True, name="BettingLoop")
     t_bet.start()
 
     # ── Retention thread (hourly bet-row purge) ───────────
