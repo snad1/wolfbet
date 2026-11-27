@@ -132,6 +132,26 @@ def test_open_bet_writer_conn_sets_pragmas():
         # NORMAL is integer 1 in SQLite; some builds return string — accept both.
         assert sync in (1, "1", "NORMAL")
         assert int(bt) == 5000
+        limit = conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+        assert int(limit) == wb._WAL_SIZE_LIMIT_BYTES
+        conn.close()
+    finally:
+        _teardown(path)
+
+
+def test_wal_is_cut_back_to_the_limit_after_a_checkpoint(monkeypatch):
+    path = _reset_state_and_writer_stats()
+    monkeypatch.setattr(wb, "_WAL_SIZE_LIMIT_BYTES", 256 * 1024)
+    try:
+        conn = wb._open_bet_writer_conn()
+        conn.execute("CREATE TABLE IF NOT EXISTS ballast (data BLOB)")
+        conn.executemany("INSERT INTO ballast VALUES (?)", [(b"x" * 4096,)] * 1000)
+        conn.commit()
+        assert os.path.getsize(path + "-wal") > 1024 * 1024
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        conn.execute("INSERT INTO ballast VALUES (x'00')")
+        conn.commit()
+        assert os.path.getsize(path + "-wal") <= 256 * 1024
         conn.close()
     finally:
         _teardown(path)

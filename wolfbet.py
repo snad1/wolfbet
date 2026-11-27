@@ -4349,6 +4349,9 @@ _BET_WRITER_INSERT_SQL   = (
 )
 
 
+_WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
+
+
 def _open_bet_writer_conn():
     """Persistent, tuned SQLite connection for the async writer thread.
 
@@ -4357,12 +4360,15 @@ def _open_bet_writer_conn():
     - busy_timeout=5000: WAL + concurrent readers can race; be patient.
     - cache_size=-32000: 32 MB in-memory cache.
     - temp_store=MEMORY: temp tables in RAM.
+    - journal_size_limit: SQLite never shrinks a WAL by itself; this cuts it back to
+      _WAL_SIZE_LIMIT_BYTES after each checkpoint.
     """
     conn = db_connect(DB_PATH)  # WAL journal_mode already set by shared/core/database.
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA cache_size = -32000")
     conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute(f"PRAGMA journal_size_limit = {int(_WAL_SIZE_LIMIT_BYTES)}")
     return conn
 
 
